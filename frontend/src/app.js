@@ -7,7 +7,7 @@ import { createAttentionTracker, agentPath } from './attention.js';
 import { watchStickyColumns } from './sticky-columns.js';
 import { highlight, highlightDiff, languageFor } from './highlight.js';
 import { hydrateDemoActivity } from './demo-activity.js';
-import { initialWorkspaces, flatten, transition, activeAgents, archiveAgent, restoreAgent } from './model.js';
+import { initialWorkspaces, flatten, transition, activeAgents, archiveAgent, restoreAgent, terminateAgent as markTerminated } from './model.js';
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let workspaces;
@@ -22,9 +22,9 @@ let stopWatchingColumns = () => {};
 const newlyWaitingAgents = createAttentionTracker();
 const workspace = () => workspaces.find(w => w.id === active);
 const save = () => { try { localStorage.setItem('xhaos-v1', JSON.stringify(workspaces)); } catch { toast('Browser storage unavailable; changes last for this session.'); } };
-const labels = { running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete' };
+const labels = { running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 const icon = (name, size=18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${({grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',list:'<path d="M4 5h16M4 12h16M4 19h16"/>',plus:'<path d="M12 5v14M5 12h14"/>',arrow:'<path d="m9 5 7 7-7 7"/>',send:'<path d="m4 12 16-8-6 16-3-7-7-1Z"/>',mic:'<rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',search:'<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>',bolt:'<path d="m13 2-9 12h7l-1 8 10-12h-7l1-8Z"/>',plug:'<path d="M8 2v5m8-5v5M6 7h12v4a6 6 0 0 1-12 0V7Zm6 10v5"/>',chat:'<path d="M4 4h16v13H9l-5 4V4Z"/>',settings:'<path d="M9.2 3.5 9.8 2h4.4l.6 1.5.4 1.6 1.5.9 1.6-.5 1.6.2 2.2 3.8-.8 1.3-1.2 1.1v1.8l1.2 1.1.8 1.3-2.2 3.8-1.6.2-1.6-.5-1.5.9-.4 1.6-.6 1.5H9.8l-.6-1.5-.4-1.6-1.5-.9-1.6.5-1.6-.2-2.2-3.8.8-1.3 1.2-1.1v-1.8l-1.2-1.1-.8-1.3 2.2-3.8 1.6-.2 1.6.5 1.5-.9.4-1.6Z"/><circle cx="12" cy="12" r="3"/>',check:'<path d="m5 12 4 4L19 6"/>',pause:'<path d="M9 5v14M15 5v14"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',terminal:'<path d="m4 5 6 7-6 7m9 0h7"/>'})[name] || ''}</svg>`;
-function badge(a) { if(a.status==='paused')return '';return `<span class="status-dot ${a.status}" role="img" aria-label="${labels[a.status]}" title="${labels[a.status]}"></span>`; }
+function badge(a) { if(a.status==='paused'||a.status==='terminated')return '';return `<span class="status-dot ${a.status}" role="img" aria-label="${labels[a.status]}" title="${labels[a.status]}"></span>`; }
 function descendantAttention(a) {
  return a.status !== 'waiting' && activeAgents(a.children || []).some(agent => agent.status === 'waiting')
   ? '<span class="status-dot waiting" role="img" aria-label="Subagent needs your attention" title="Subagent needs your attention"></span>' : '';
@@ -48,7 +48,7 @@ function activity(a) {
  }).join('')}${(a.notes||[]).map(note=>`<div class="activity-entry user-entry" aria-label="Your message"><div class="markdown-body">${markdown(note)}</div></div>`).join('')}</div>`;
 }
 function removeControl(a) {
- return `<details class="agent-menu"><summary aria-label="Actions for agent ${a.id}" title="Agent actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></summary><div class="agent-menu-items"><button type="button" data-menu-target="${a.id}">${selectedAgents.has(a.id)?'Detach from':'Attach to'} composer</button><button type="button" data-archive="${a.id}">Close agent</button></div></details>`;
+ return `<details class="agent-menu"><summary aria-label="Actions for agent ${a.id}" title="Agent actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></summary><div class="agent-menu-items"><button type="button" data-menu-target="${a.id}">${selectedAgents.has(a.id)?'Detach from':'Attach to'} composer</button><button type="button" data-terminate="${a.id}">Terminate agent</button></div></details>`;
 }
 function subagentChips(a) {
  const subs=(a.children||[]).filter(agent=>!agent.archivedAt);
@@ -163,19 +163,19 @@ function showPanel(title, content) {
 function showMcp() {
  showPanel('MCP connections','<p>Server-owned connections: filesystem, repositories, and custom MCP servers. No servers are connected in this prototype.</p>');
 }
-function removeAgent(id) {
- archiveAgent(workspace().agents,id);
+function terminateAgent(id) {
+ markTerminated(workspace().agents,id);
  selectedAgents.delete(id);
  for(const target of [...selectedAgents])if(!activeAgents(workspace().agents).some(agent=>agent.id===target))selectedAgents.delete(target);
- save();render();toast(`Agent #${id} removed from view. Restore it with /history.`);
+ save();render();toast(`Agent #${id} terminated. View retained history with /history.`);
 }
 function showHistory() {
  const archived=flatten(workspace().agents).filter(agent=>agent.archivedAt);
- showPanel('Removed agents',archived.length?archived.map(agent=>`<div class="history-row"><span class="agent-id">#${agent.id}</span><span>${esc(agent.title)}</span><button class="text-button" data-restore="${agent.id}">Restore</button></div>`).join(''):'<p>No removed agents. Use an agent’s ⋯ menu → Close agent to remove it from view.</p>');
+ showPanel('Terminated agents',archived.length?archived.map(agent=>`<div class="history-row"><span class="agent-id">#${agent.id}</span><span>${esc(agent.title)}</span><button class="text-button" data-restore="${agent.id}">Restore</button></div>`).join(''):'<p>No terminated agents. Use an agent’s ⋯ menu → Terminate agent to remove it from view.</p>');
  document.querySelectorAll('[data-restore]').forEach(button=>button.onclick=()=>{restoreAgent(workspace().agents,Number(button.dataset.restore));save();render();showHistory();});
 }
 function showStatus() {
- showPanel('Status indicators',`<div class="status-examples">${Object.entries(labels).filter(([status])=>status!=='paused').map(([status,label])=>`<span>${badge({status})}${label}</span>`).join('')}</div><p>The yellow ring expands around a solid attention dot. An extra yellow dot on a parent means a subagent needs attention.</p>`);
+ showPanel('Status indicators',`<div class="status-examples">${Object.entries(labels).filter(([status])=>!['paused','terminated'].includes(status)).map(([status,label])=>`<span>${badge({status})}${label}</span>`).join('')}</div><p>The yellow ring expands around a solid attention dot. An extra yellow dot on a parent means a subagent needs attention.</p>`);
 }
 function showChannels(channelId) {
  const w=workspace(), channels=w.channels||[];
@@ -254,7 +254,7 @@ function bind() {
  });
  document.querySelectorAll('[data-menu-target]').forEach(button=>button.onclick=()=>{toggleRecipient(Number(button.dataset.menuTarget));button.closest('details').open=false;});
 
- document.querySelectorAll('[data-archive]').forEach(button=>button.onclick=()=>removeAgent(Number(button.dataset.archive)));
+ document.querySelectorAll('[data-terminate]').forEach(button=>button.onclick=()=>terminateAgent(Number(button.dataset.terminate)));
  document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>{transition(flatten(workspace().agents).find(a=>a.id===+b.dataset.id),b.dataset.action);save();render();});
  $('#collapse-all').onclick=()=>{const close=!activeAgents(workspace().agents).every(a=>collapsed.has(a.id));activeAgents(workspace().agents).forEach(a=>close?collapsed.add(a.id):collapsed.delete(a.id));render();};
  $('#new-agent').onclick=focusNewAgent;
@@ -294,8 +294,8 @@ const slashCommands = [
  ['new', 'New agent', '/new Describe the task'],
  ['mcp', 'MCP connections', '/mcp'],
  ['layout', 'Choose columns: 1, 2, or 3', '/layout 3'],
- ['remove', 'Remove an agent from view', '/remove 11'],
- ['history', 'Removed agents and restore', '/history'],
+ ['terminate', 'Terminate an agent and its subagents', '/terminate [agent ID]'],
+ ['history', 'Terminated agents and retained history', '/history'],
  ['restore', 'Restore a removed agent', '/restore 11'],
  ['channels', 'Agent communication channels', '/channels'],
  ['search', 'Find agents; no query clears search', '/search title or ID'],
@@ -326,7 +326,14 @@ function runSlashCommand(value, attachments = []) {
  if(name==='mcp'){showMcp();return;}
  if(name==='layout'){const count=Number(args.trim());if(![1,2,3].includes(count)){showPanel('Layout','<p>Use /layout 1, /layout 2, or /layout 3.</p>');return;}layout=count===1?'list':count===3?'three':'grid';draft='';render();return;}
  if(name==='history'){showHistory();return;}
- if(name==='remove'||name==='restore'){if(!/^#?\d+$/.test(args.trim())){toast(`Use /${name} followed by an agent ID.`);return;}const id=Number(args.trim().replace('#',''));if(!flatten(workspace().agents).some(agent=>agent.id===id)){toast('Agent not found.');return;}if(name==='remove')removeAgent(id);else{restoreAgent(workspace().agents,id);save();render();}return;}
+ if(name==='terminate'){
+  const explicit=args.trim();
+  if(explicit&&!/^#?\d+$/.test(explicit)){toast('Use /terminate, or /terminate followed by one agent ID.');return;}
+  const candidates=activeAgents(workspace().agents).filter(agent=>explicit?agent.id===Number(explicit.replace('#','')):selectedAgents.has(agent.id));
+  if(candidates.length!==1){toast('Attach one active agent, or specify its ID.');return;}
+  terminateAgent(candidates[0].id);return;
+ }
+ if(name==='remove'||name==='restore'){if(!/^#?\d+$/.test(args.trim())){toast(`Use /${name} followed by an agent ID.`);return;}const id=Number(args.trim().replace('#',''));if(!flatten(workspace().agents).some(agent=>agent.id===id)){toast('Agent not found.');return;}if(name==='remove')terminateAgent(id);else{restoreAgent(workspace().agents,id);save();render();}return;}
  if(name==='channels'){showChannels();return;}
  if(name==='new'){if(args.trim())newAgent(args.trim(),'anthropic','',attachments);else focusNewAgent();return;}
  if(name==='search'){search=args.trim();draft='';closePanel();render();return;}

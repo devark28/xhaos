@@ -44,7 +44,7 @@ Voice should produce a proposed command, including target workspace and agent ID
 
 Keep three separate identities: an agent is a reusable configured worker; a task is a queued unit of work; a session is an execution attempt or conversation with a particular task. Reusing an agent must not implicitly carry every previous conversation into the next task. Record the selected context and explicit handoff summary per session.
 
-The prototype's remove action archives cards and keeps their transcripts, attachments, and IDs recoverable. It is not process termination. Before execution exists, define separate stop/cancel and archive commands; pending approvals and running work need server-enforced lifecycle rules. Do not discard the audit log when hiding a card. Sessions and task queues are planned, not implemented by the card archive.
+The prototype’s Terminate action marks an agent and its descendants terminated and hides its card while retaining transcripts, attachments, and IDs. It only changes local state; no backend process exists to cancel yet. Restoring a card must not resume the terminated session. Before execution exists, define separate stop/cancel and archive commands; pending approvals and running work need server-enforced lifecycle rules. Do not discard the audit log when hiding a card. Sessions and task queues are planned, not implemented by the card archive.
 
 ## Channels between projects and agents
 
@@ -69,3 +69,5 @@ Treat `/tmp` files as a transient interoperability transport. The server's durab
 3. Agent channel inspection and agent-to-agent coordination, including owner-directed channel setup.
 
 No per-task checklist UI or delivery-state dashboard is planned. Delivery cursors and idempotency remain internal backend reliability mechanisms rather than user-facing management features.
+
+The next execution-policy and first-dogfooding contract is recorded in [permissions](permissions.md).

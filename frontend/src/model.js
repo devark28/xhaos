@@ -47,3 +47,16 @@ export function restoreAgent(agents, id) {
   };
   if(!visit(agents))throw new Error('Agent not found.');
 }
+export function terminateAgent(agents, id) {
+  const agent=flatten(agents).find(agent=>agent.id===id);
+  if(!agent)throw new Error('Agent not found.');
+  const timestamp=new Date().toISOString();
+  for(const member of flatten([agent])){
+    member.status='terminated';
+    member.terminatedAt=timestamp;
+    member.message='Terminated locally. No execution backend is connected.';
+    member.activity ||= [];
+    member.activity.push({kind:'system',text:member.message});
+  }
+  agent.archivedAt=timestamp;
+}

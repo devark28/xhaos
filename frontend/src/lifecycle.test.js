@@ -32,3 +32,14 @@ test('channels validate membership and append messages without modifying previou
  archiveAgent(w.agents,11);
  assert.throws(()=>createChannel(w,'other',[11,12],11),/active/);
 });
+test('termination ends the entire subtree and restoring a card does not resume execution',async()=>{
+ const { terminateAgent }=await import('./model.js');
+ const w=initialWorkspaces()[0];
+ terminateAgent(w.agents,11);
+ const subtree=flatten([w.agents.find(a=>a.id===11)]);
+ assert.ok(subtree.every(agent=>agent.status==='terminated'&&agent.terminatedAt));
+ assert.ok(!activeAgents(w.agents).some(agent=>agent.id===11));
+ restoreAgent(w.agents,11);
+ assert.ok(activeAgents(w.agents).some(agent=>agent.id===11));
+ assert.ok(subtree.every(agent=>agent.status==='terminated'));
+});
