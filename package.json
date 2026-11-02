@@ -1,0 +1,11 @@
+{
+  "name": "xhaos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "check": "node --check frontend/src/app.js && node --check scripts/dev.mjs",
+    "test": "node --test frontend/src/*.test.js"
+  }
+}

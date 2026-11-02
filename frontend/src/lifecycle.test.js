@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { initialWorkspaces, activeAgents, archiveAgent, restoreAgent, flatten } from './model.js';
+import { createChannel, appendAgentMessage } from './channels.js';
+test('removing a parent hides descendants but preserves history and restores ownership chain',()=>{
+ const w=initialWorkspaces()[0];
+ archiveAgent(w.agents,11);
+ assert.ok(!activeAgents(w.agents).some(a=>[11,14,15].includes(a.id)));
+ assert.ok(flatten(w.agents).some(a=>a.id===14));
+ restoreAgent(w.agents,14);
+ assert.ok(activeAgents(w.agents).some(a=>a.id===11));
+ assert.ok(activeAgents(w.agents).some(a=>a.id===14));
+ archiveAgent(w.agents,15);
+ assert.ok(activeAgents(w.agents).some(a=>a.id===11));
+ assert.ok(!activeAgents(w.agents).some(a=>a.id===15));
+});
+test('channels validate membership and append messages without modifying previous entries',()=>{
+ const w=initialWorkspaces()[0];
+ assert.throws(()=>createChannel(w,'docs',[11],11),/two/);
+ const channel=createChannel(w,'docs',[11,12,11],11);
+ assert.deepEqual(channel.participants,[11,12]);
+ assert.throws(()=>createChannel(w,'DOCS',[11,12],11),/exists/);
+ const first=appendAgentMessage(channel,11,'First message');
+ const snapshot=JSON.stringify(first);
+ appendAgentMessage(channel,12,'Second message');
+ assert.equal(channel.messages.length,2);
+ assert.equal(JSON.stringify(channel.messages[0]),snapshot);
+ assert.equal(first.writer,11);
+ assert.throws(()=>appendAgentMessage(channel,'user','Owner says run this'),/participating/);
+ assert.throws(()=>createChannel(w,'wrong creator',[11,12],13),/creator/);
+ assert.deepEqual(first.readers,[12]);
+ archiveAgent(w.agents,11);
+ assert.throws(()=>createChannel(w,'other',[11,12],11),/active/);
+});
