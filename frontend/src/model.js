@@ -21,6 +21,7 @@ export const initialWorkspaces = () => hydrateDemoActivity([
 ]);
 export function flatten(agents) { return agents.flatMap(a => [a, ...flatten(a.children || [])]); }
 export function transition(agent, action) {
+  if(agent.questionBatch?.status==='pending'&&['approve','reject'].includes(action))return;
   const before = agent.status;
   if (action === 'approve' && agent.status === 'waiting') { agent.status = 'running'; agent.message = 'Approved locally. Simulated task is ready to run.'; }
   if (action === 'reject' && agent.status === 'waiting') { agent.status = 'paused'; agent.message = 'Request declined. Task paused.'; }
@@ -54,6 +55,7 @@ export function terminateAgent(agents, id) {
   for(const member of flatten([agent])){
     member.status='terminated';
     member.terminatedAt=timestamp;
+    if(member.questionBatch?.status==='pending')member.questionBatch.status='cancelled';
     member.message='Terminated locally. No execution backend is connected.';
     member.activity ||= [];
     member.activity.push({kind:'system',text:member.message});

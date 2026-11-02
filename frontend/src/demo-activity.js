@@ -1,3 +1,4 @@
+import { demoQuestions } from './questions.js';
 // Preview fixtures only. Commands and outputs below are examples, never executed.
 const samples = {
   11: ['Build the workspace foundation', [
@@ -83,6 +84,7 @@ export function hydrateDemoActivity(workspaces) {
   const visit = agents => agents.forEach(agent => {
     const sample = samples[agent.id];
     if (sample?.[0] === agent.title) agent.demo = true;
+    if(agent.demo&&agent.id===12&&agent.status==='waiting'&&!agent.questionBatch){agent.questionBatch=demoQuestions();}
     if (!agent.activity && sample?.[0] === agent.title) {
       agent.activity = sample[1].map(([kind, text, command, output]) => ({ kind, text, command, output }));
     }

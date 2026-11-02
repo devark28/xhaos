@@ -15,7 +15,7 @@ test('typing resumes without hijacking controls, shortcuts, selection, or IME',(
 });
 test('a click saves the caret and subsequent typing targets the last editor',()=>{
  const listeners={}, inserted=[];let captured=false;
- const editor={id:'new-agent-prompt',focus(options){assert.equal(options.preventScroll,true);},insertText:text=>inserted.push(text),closest:()=>({inert:false})};
+ const editor={id:'new-agent-prompt',focus(options){assert.equal(options.preventScroll,true);},insertText:text=>inserted.push(text),closest:selector=>selector==='form'?{inert:false}:null};
  const doc={activeElement:{captureSelection(){captured=true;}},addEventListener:(type,fn)=>listeners[type]=fn,getElementById:id=>id===editor.id?editor:null,querySelector:selector=>selector==='#command-menu'?{hidden:true}:null};
  const win={getSelection:()=>({isCollapsed:true}),addEventListener:(type,fn)=>listeners[type]=fn};
  installTypingFlow(doc,win);

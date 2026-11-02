@@ -20,7 +20,7 @@ export function installTypingFlow(doc, win) {
       activationTarget:Boolean(focused?.closest?.('button,a,summary'))
     }))return;
     const editor=doc.getElementById(lastEditor)||doc.getElementById('command');
-    if(!editor||editor.closest('form')?.inert)return;
+    if(!editor||editor.closest('[hidden]')||editor.closest('form')?.inert)return;
     event.preventDefault();
     editor.focus({preventScroll:true});
     editor.insertText(event.key);
