@@ -16,7 +16,7 @@ Use read-only as the default for review/research subagents. A parent can request
 
 ## Automode is not a capability grant
 
-The server computes the effective policy from global holds, workspace/project restrictions, agent permissions, and inherited limits. The most restrictive applicable rule wins. A classifier can only assess actions already eligible under that policy; it cannot override read-only, grant commits, or release an AFK hold. Missing context, uncertain classification, and classifier failures leave requests for human review.
+The server computes the effective policy from workspace/project restrictions, persisted agent permissions, and inherited limits. The most restrictive applicable rule wins. A classifier can only assess actions already eligible under that policy; it cannot override read-only, grant commits, or change owner-configured policy. Missing context, uncertain classification, and classifier failures leave requests for human review.
 
 Keep filesystem writes, shell processes, Git staging/committing, network operations, and pushes separately classified. A read-only flag must cover mutating shell commands and MCP tools too; disabling only the editor tool would not enforce it. Push permission is separate from permission to create a local commit.
 
@@ -26,11 +26,15 @@ Keep filesystem writes, shell processes, Git staging/committing, network operati
 
 `Commit allowed` makes local commits eligible for the configured approval policy. It does not imply unrestricted shell access, write access to other repositories, or permission to push.
 
-## AFK hold
+## Detached frontend and unattended operation
 
-Disabling automode alone is insufficient: already-approved writes could continue. Provide an owner-controlled hold on new mutations, per agent or across agents. It stops dispatching new writes, commits, and other mutations at the execution gate. Park the session at that boundary rather than generating a backlog of edits for later classification. Bounded read-only analysis may continue if explicitly allowed.
+AFK is not an execution mode. Browser presence, inactivity, disconnection, and closing the desktop window must not change agent permissions or pause the headless service. The frontend is a client of a backend-owned runtime, not the owner of that runtime's lifetime. For the Wails server-mode MVP, disconnecting a browser tab must not stop execution. A later local desktop client must leave a separately managed backend running when its window closes unless the owner requests shutdown.
 
-Already-running processes may have performed effects; a switch cannot undo them. Request cancellation where supported and show the remaining in-flight operation. Check policy again immediately before every side effect. Use policy versions so queued approvals and classifier results cannot execute after permissions change. Resuming the hold does not automatically approve pending work.
+The backend persists sessions, approval requests, policy settings, and event history. While no frontend is attached, it continues model turns, channel coordination, read-only work, and mutations allowed by each agent's saved policy. Eligible actions in Auto mode are classified and executed on the server. Requests requiring manual review, including review-before-commit, remain pending; only the dependent operation/session waits. Independent agents continue. Do not accumulate speculative writes beyond a blocked action boundary.
+
+Reconnecting fetches the current snapshot and replays missed events and pending requests. Do not assume a socket disconnect means an agent crashed, reset sessions on reconnect, or require a frontend heartbeat for approval classification.
+
+Changing access or approval settings is an explicit owner action, available through any authenticated client. For example, the owner can make an agent read-only or require manual approval before leaving; absence itself does not make that change. Recheck policy immediately before each side effect, and invalidate stale approvals/classifier results using policy versions. Permission changes cannot undo effects of an already-running process; termination/cancellation handles stopping that work separately.
 
 ## Termination
 
@@ -40,6 +44,6 @@ The prototype models termination and retained history locally. Real cancellation
 
 ## First dogfooding slice
 
-Start with a small headless Rust service that persists sessions and policies, runs one real model/runner adapter, streams its transcript, and enforces every tool request through the gate. Run it against the Xhaos repository with `RW + Manual + Review commit`. Use it to implement the next small feature and review the diff before committing. Add the remaining providers, MCP adapters, classifier, and Tauri shell after that path works.
+Start with a small headless Go/Wails server that persists sessions and policies, runs one real model/runner adapter, streams its transcript, and enforces every tool request through the gate. Run it against the Xhaos repository with `RW + Manual + Review commit`. Use it to implement the next small feature and review the diff before committing. Add the remaining providers, MCP adapters, and classifier after that path works.
 
-Respect the small local disk budget: avoid a large dependency stack and uncontrolled Rust target caches. Choose and report the build/cache footprint before expanding the backend.
+Respect the small local disk budget: avoid a large dependency stack and uncontrolled Go build/module caches. Check the available Go toolchain, Wails prerequisites, and free space first. Keep temporary build and module caches under `/tmp`; report the expected and measured footprint before expanding the backend.

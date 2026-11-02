@@ -2,15 +2,19 @@
 
 ## Two independent parts
 
-`frontend/` is a static web client, suitable for the browser today and Tauri's webview later. `scripts/dev.mjs` only serves frontend files; it is not the agent backend. `frontend/src/model.js` currently supplies mock state. There is no React runtime or dependency tree; native browser controls and event delegation can support a compact UI without a large bundle. Current rendering replaces the main view after an interaction; before streaming real events, update individual agent cards, preserve focus, and batch updates once per animation frame. Virtualize large networks based on profiling.
+`frontend/` is a static web client, suitable for the browser today and Wails later. `scripts/dev.mjs` only serves frontend files; it is not the agent backend. `frontend/src/model.js` currently supplies mock state. There is no React runtime or dependency tree; native browser controls and event delegation can support a compact UI without a large bundle. Current rendering replaces the main view after an interaction; before streaming real events, update individual agent cards, preserve focus, and batch updates once per animation frame. Virtualize large networks based on profiling.
 
-A future Rust workspace should contain a headless `xhaos-server` binary and a shared protocol crate. The server must run without Tauri, locally or on a VPS/VM. A small Tauri shell can optionally start that server on the local machine, while remote clients use the same protocol. Keep model credentials, MCP connections, filesystem access, process execution, and permission enforcement on the server. Do not compile this part until the UI direction is settled.
+Wails v3 with Go is the chosen framework and language for the prototype and MVP. Use Wails headless server mode to serve the frontend over HTTP and expose Go services through generated bindings, with Wails events over WebSocket. This lets the browser receive the complete UI from the backend and avoids writing a custom transport for the first version. The current browser-only UI remains unchanged while the backend is built. Check the installed Go version, Wails prerequisites, and free disk before installing or compiling; keep Go build and module caches out of the project and on `/tmp` while local disk is constrained.
 
-## Suggested protocol
+The server owns runtime lifetime: closing or disconnecting a browser client does not stop agents or change their saved policies. Server-side automode continues eligible work unattended; manual requests remain pending and block only dependent work. Reconnection restores current sessions and missed events. Keep model credentials, MCP connections, filesystem access, process execution, and permission enforcement on the server. Wails' server build is the MVP headless host; later, a Wails desktop shell may connect to the same local server. Do not make the desktop window the owner of execution lifetime.
 
-Use authenticated HTTP commands and a resumable event stream. Model workspaces, agents, parent IDs, channels, requests, and events explicitly. IDs shown in the UI are integers; issue them atomically on the server. Commands include create task, send message, pause, resume, approve request, and decline request. Each command should have an idempotency key. Approval must reference a specific pending request and its action parameters, not merely an agent ID. The server validates workspace membership, permissions, request expiry, and current state before executing anything.
+## Client/backend contract
 
-Persist state and an event sequence in SQLite for a single host. Clients first fetch a snapshot, then subscribe from its sequence; reconnect with replay or a fresh snapshot. Workspace isolation must be enforced on every command, event subscription, filesystem root, and MCP connection. Browser storage is only a prototype convenience, not a security boundary.
+For the MVP, use Wails service bindings as the frontend-to-Go RPC mechanism and Wails WebSocket events for live updates. Define app-level service interfaces and typed DTOs independently of Wails so domain behavior stays testable and can gain another transport later. Model workspaces, agents, parent IDs, channels, requests, and events explicitly. IDs shown in the UI are integers; issue them atomically on the server. Commands include create task, send message, pause, resume, approve request, and decline request. Each mutation should have an idempotency key. Approval must reference a specific pending request and its action parameters, not merely an agent ID. The server validates workspace membership, permissions, request expiry, and current state before executing anything.
+
+Persist state and a monotonically increasing event sequence in SQLite for a single host. On connect or reconnect, the client fetches a snapshot or asks for events after its last sequence, then deduplicates live WebSocket events by sequence. Wails events are a live notification path; durable history and replay come from the application service and database. Workspace isolation must be enforced on every command, event subscription, filesystem root, and MCP connection. Browser storage is only a prototype convenience, not a security boundary.
+
+The headless Wails server should serve the UI and runtime from the same origin. Wails server mode's binding/runtime protocol is the MVP transport, not a public language-neutral API. Do not implement a second custom wire protocol now. If later clients need independent access (such as a TUI, non-Wails desktop shell, or third-party integration), add a documented `/api/v1` HTTP/WebSocket adapter over the same Go services. For VPS deployment, add real authentication and authorization, TLS or a trusted TLS reverse proxy, and restrictive origin configuration; origin checks alone are not authentication.
 
 ## Model adapters
 
@@ -18,9 +22,9 @@ Model portability is a core requirement. Initial execution adapters target Anthr
 
 Each server-owned provider configuration has an adapter kind, endpoint, credential reference, and available model IDs. An agent selects a provider configuration and model ID, with a workspace default. Subagents inherit that selection unless an explicit override is allowed. Persist the resolved selection for every run; never silently change providers after a failure.
 
-Define a provider-neutral Rust adapter interface for starting a streamed turn and cancelling it. Normalize text deltas, tool-call arguments and completion, usage, finish reasons, and failures into typed events. Retain provider-specific conversation data on the server where round-tripping requires it. The harness owns the agent loop and MCP dispatch; adapters translate model requests and tool results. Advertise capabilities such as tool calling, structured output, vision, and context limits per configured model instead of assuming parity. Validate required capabilities before starting a task. Retries must not repeat executed tools.
+Define a provider-neutral Go adapter interface for starting a streamed turn and cancelling it. Normalize text deltas, tool-call arguments and completion, usage, finish reasons, and failures into typed events. Retain provider-specific conversation data on the server where round-tripping requires it. The harness owns the agent loop and MCP dispatch; adapters translate model requests and tool results. Advertise capabilities such as tool calling, structured output, vision, and context limits per configured model instead of assuming parity. Validate required capabilities before starting a task. Retries must not repeat executed tools.
 
-Local inference is a server endpoint, not a requirement to load model weights into Tauri. It can run beside the backend on a PC or on a separate host reachable from the VPS. Configure protocol compatibility explicitly and verify it per adapter rather than assuming every endpoint behaves identically. Model size, quantization, hardware, and latency can be chosen later without changing the frontend protocol.
+Local inference is a server endpoint, not a requirement to load model weights into Wails. It can run beside the backend on a PC or on a separate host reachable from the VPS. Configure protocol compatibility explicitly and verify it per adapter rather than assuming every endpoint behaves identically. Model size, quantization, hardware, and latency can be chosen later without changing the frontend contract.
 
 The browser prototype records provider and optional model ID on new tasks. These are selection metadata only; provider discovery, credentials, connectivity, and execution remain unimplemented.
 
@@ -35,10 +39,11 @@ Voice should produce a proposed command, including target workspace and agent ID
 ## Next implementation steps
 
 1. Refine the browser interaction and density with realistic agent counts.
-2. Define a versioned protocol and replace mock state with a client adapter.
-3. Build the headless Rust backend and server-enforced approval queue.
-4. Add MCP and model adapters behind the server boundary.
-5. Package the same client in Tauri with optional local server lifecycle management.
+2. Verify Go 1.26+, Wails v3 server prerequisites, and a `/tmp` cache plan before compiling.
+3. Create a minimal Wails headless server that serves the existing frontend and exposes a health service.
+4. Replace mock state through a frontend service adapter while persisting sessions, policy, and sequenced events in SQLite.
+5. Add one model/runner adapter and enforce the approval gate before dogfooding a small Xhaos change.
+6. Add MCP and remaining model adapters behind the same Go service boundary.
 
 ## Agents, tasks, sessions, and removal
 
@@ -67,7 +72,30 @@ Treat `/tmp` files as a transient interoperability transport. The server's durab
 1. Per-agent session history with resume, fork, and intentional context selection.
 2. Read-only visibility into queues maintained by agents. Do not introduce a harness-owned task queue without a new requirement.
 3. Agent channel inspection and agent-to-agent coordination, including owner-directed channel setup.
+4. Durable, inspectable memory, kept separate from per-session compaction summaries.
 
 No per-task checklist UI or delivery-state dashboard is planned. Delivery cursors and idempotency remain internal backend reliability mechanisms rather than user-facing management features.
 
 The next execution-policy and first-dogfooding contract is recorded in [permissions](permissions.md).
+
+## Structured questions
+
+Expose a backend tool for requesting a batch of questions: stable request ID, agent/session ID, questions with stable IDs, prompt, options, single/multiple selection, required flag, and optional custom answer text. Persist requests while no frontend is connected. Elevate questions to the composer question inbox, separate from permission requests. Use horizontal question-title tabs, one full question at a time, then a per-agent response overview. Enter submits that agent's batch and advances to the next waiting agent. Cards link back to the inbox; normal message drafts remain available in a separate composer view.
+
+Submit one structured answer batch against the immutable request ID. Validate every required answer and all option IDs before accepting anything; deduplicate retries and reject stale/cancelled/previously resolved batches. Record provenance and the answer event in session history, then unblock only the waiting turn. Pending questions are not tool approvals: allow/deny commands and an approval classifier cannot silently answer them. Termination cancels outstanding questions. Optional policy for another agent to answer questions must be an explicit future capability, not inferred from frontend absence.
+
+## Memory and context compaction
+
+Compaction and memory solve related but different problems. A compaction summary carries the current session forward when its conversation is shortened; it should preserve the active task, decisions, constraints, and unresolved work, with links to the source events. Durable memory stores selected knowledge for reuse across sessions, such as owner preferences, project conventions, architecture decisions, and lessons learned. Neither mechanism should silently replace the full session history.
+
+Keep memory entries explicit, inspectable, editable, deletable, and attributable to their source (owner, agent, or imported skill), with created/updated timestamps. Memory belongs to a workspace and is shared by its agents; the current workspace supplies scope, so the owner does not choose it for each entry. Retrieve only relevant entries when building a turn, and show which memories were included. Treat agent-written memories as suggestions subject to a configurable save policy; never let memory grant tools or permissions. Surface stale or conflicting memories with provenance and recency so the owner can resolve them. Memory retrieval should work independently of provider adapters, and compaction summaries should remain session records rather than being promoted automatically to durable memory.
+
+The UI should provide a small workspace memory view and a way to inspect relevant memories from an agent or session. Do not turn memory into another dashboard or inject the entire store into every prompt. The browser prototype has a local-only Memories panel; backend storage and context retrieval are not implemented.
+
+## Drawings in the composer
+
+The lightweight SVG sketchpad in the browser prototype is temporary. Target an Excalidraw-style canvas embedded in the composer, using the Obsidian plugin workflow as the reference: switch between writing and drawing in the same task, attach a drawing to the prompt, and reopen/edit it later from the task or session. Preserve the editable vector scene as the attachment's canonical data and include a rendered preview for providers that accept images; do not reduce the saved drawing to a PNG alone. Keep the scene format and editor boundary shared between browser and Wails so the drawing engine can be replaced without changing task/session APIs. The current prototype only exports PNG and is not the final interaction or storage format.
+
+## Skills
+
+User-defined instruction packages are a first-class requirement, separate from tools and execution permissions. See [skills](skills.md) for package discovery, per-agent activation, versioned loading, and the channels example. Skill loading belongs to the backend and must work with every model adapter.

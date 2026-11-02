@@ -1,6 +1,6 @@
 # Xhaos
 
-A lightweight agent orchestration workspace. This first iteration is a dependency-free browser UI with simulated tasks. No Rust installation, package installation, bundler, or build cache is needed.
+A lightweight agent orchestration workspace. This iteration is a dependency-free browser UI with simulated tasks. No Go/Wails installation, package installation, frontend bundler, or native build cache is needed to run the current browser prototype.
 
 ## Run
 
@@ -16,6 +16,10 @@ Open http://localhost:5173. Use `PORT=5174 npm run dev` to choose another port. 
 npm run check
 npm test
 ```
+
+## Backend direction
+
+Wails v3 with Go is selected for prototyping and the MVP. The planned headless Wails server will serve the complete frontend over HTTP, expose typed Go services through generated Wails bindings, and send live events over Wails WebSockets. This uses Wails' existing client/runtime protocol; the MVP does not need a second custom transport. Keep app-level services, DTOs, idempotency, and durable event sequence independent of Wails so another transport can be added later. A browser disconnect must not stop backend work. Before building, verify Go 1.26+, Wails' platform prerequisites, and free disk; keep temporary Go build/module caches under `/tmp` while disk is constrained. For remote use, add authentication and TLS; origin checks alone do not authenticate users.
 
 ## Attachments and Markdown
 
@@ -35,13 +39,13 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 - Allow/Deny acts on the request shown on that card. Pause/resume buttons are removed; the legacy slash commands still change mock state. Open the ⋯ menu after the chevron and choose Terminate agent to terminate an agent and its subagents; `/history` retains its transcript and can bring the terminated card back into view without restarting it. Menus also attach/detach recipients. Termination marks the whole subtree as terminated and preserves tasks, attachments, and history. This is local state only until the backend can cancel running work.
 - Expand an agent or subagent to read multi-step sample conversations and saved notes inline. Click a tool call or edit to reveal its output or diff. Samples include shell commands, MCP calls, and approval requests; none are executed. Existing seeded tasks receive these sample transcripts without clearing saved state.
 - New agent, the `Ctrl/Cmd+Alt+N` shortcut, and `/new` without a task open a draft agent card. Enter the task, choose a single `<model>-<model_id>` profile from the dropdown in the new-agent card header, then press Enter to create or Escape to cancel. Shift+Enter adds a line. The prompt grows with its content and cannot be resized manually. Draft input survives layout changes; creation stores the full prompt and model selection. Dropdown examples include Claude-opus-5.5, GPT-6.1-sol, Claude-haiku-5.5, Claude-sonnet-5.5, DeepSeek-chat, and Local-small-quantized. These are prototype display choices, not live provider discovery or verified API identifiers; backend adapters will map them to configured provider IDs. The selected model ID is saved with the task. Provider adapters remain planned; no task is executed. Settings, MCP information, command help, and voice consent open inline as closable cards in the agent area.
-- Click an agent header or its chevron to expand/collapse the transcript. The separate `#ID` button toggles that agent as a recipient chip in the main composer. You can select several agents. Type normally and send to those recipients; detach with × on the chip or click the ID again.
+- Click an agent header or its chevron to expand/collapse the transcript. Double-click the agent header to attach or detach it as a composer recipient; with the header focused, `Alt+Enter` does the same. The `#ID` is a label, not a separate button. You can select several agents, then send normally; detach with × on a recipient chip or repeat the attach action.
 - Create a task with New agent, the `Ctrl/Cmd+Alt+N` shortcut, or the command bar when no recipients are selected. `Ctrl/Cmd+K` focuses the command bar.
-- Type `/` to open the command menu. Commands include `/new task`, `/search query` (or `/search` to clear), `/mcp`, `/layout 1|2|3`, `/channels`, `/history`, `/terminate`, `/allow`, `/deny`, and `/help`. `/allow` and `/deny` act on one attached agent with a pending request, or accept an explicit agent ID. `/help status` shows the real status dots and attention pulse; it is also linked from help. Older `/approve` and `/decline` aliases remain supported. Arrow keys navigate the menu; Escape dismisses it. Enter submits the composer; Shift+Enter adds a line.
+- Type `/` to open the command menu. Commands include `/new task`, `/search query` (or `/search` to clear), `/mcp`, `/memory`, `/layout 1|2|3`, `/channels`, `/history`, `/terminate`, `/allow`, `/deny`, and `/help`. `/allow`, `/deny`, `/pause`, and `/resume` act on eligible attached agents, or accept one explicit agent ID. Ineligible targets are skipped and reported. Questionnaires require answers, not approval; `/allow` and `/deny` never answer or dismiss them. `/help status` shows the real status dots and attention pulse; it is also linked from help. Older `/approve` and `/decline` aliases remain supported. Arrow keys navigate the menu; Escape dismisses it. Enter submits the composer; Shift+Enter adds a line.
 - The command center occupies roughly the top quarter of the window, above the scrolling agent area. Collapse and layout controls are in the top-right ribbon beside MCP and settings; search is available through `/search`. Neutral surfaces use grayscale; only agent status dots use semantic colors.
 - Dictation uses the browser speech API when supported, after an explicit microphone action. Review the transcript before sending. Availability, permissions, and provider processing depend on the browser.
 
-Task data persists in browser local storage, not on a server. Clear the `xhaos-v1` local-storage entry to restore seed data. The demo contains no credentials or real integrations. MCP, agent execution, remote connections, Tauri, and automatic approval classification are not implemented.
+Task data persists in browser local storage, not on a server. Clear the `xhaos-v1` local-storage entry to restore seed data; workspace memory notes use `xhaos-memory-v1`. The demo contains no credentials or real integrations. MCP, agent execution, remote connections, Wails integration, and automatic approval classification are not implemented.
 
 See [the architecture direction](docs/architecture.md) for the frontend/backend split.
 
@@ -64,3 +68,21 @@ Agent groups always align at the top, including sparse lists and shorter columns
 Planned scope: per-agent session history and a read-only view of agent-managed queues. A harness-managed task queue, per-task checklist UI, and delivery-state dashboard are not currently planned.
 
 `/terminate` targets one attached agent, or accepts an explicit ID. Terminated agents are not resumed by restoring their cards from history.
+
+## Questions from agents
+
+Questions are elevated to the composer's Questions view, with horizontal short-title tabs. Only the active question and its options/free-text answer are shown. Custom answer fields grow with content and cannot be resized manually. The Review tab shows the response overview; Enter submits that agent's batch, then opens the next waiting agent. There is no send button and no cross-agent combined submission. Enter advances through questions; Shift+Enter adds a line in a custom answer. Draft answers persist between tabs and message view.
+
+A simulated planning agent asks a three-question batch on first load of this experimental version. It is added once, marked as simulated, and does not reappear after completion or termination. Actual question delivery requires the backend.
+
+## Memory and compaction
+
+The Memories icon beside Channels and MCP opens the current workspace's compact memory panel. Add, edit, and delete notes without selecting a scope; all agents in that workspace share them. Enter saves, Shift+Enter adds a line, and Escape cancels editing. Notes are saved in this browser only; backend storage and context retrieval are planned. Compaction summarizes an ongoing session so it can continue with less conversation in active context. Durable memory is selected knowledge reused across sessions, such as preferences, project conventions, and decisions. A summary or memory must not replace full session history or grant permissions.
+
+## Sketching
+
+Draw currently opens a lightweight temporary sketchpad, not Excalidraw. The target is an Excalidraw-style canvas embedded in the composer, like the Obsidian plugin: switch between text and drawing, attach the editable scene to a task, and reopen it from that task later. The final attachment should retain vector scene data plus a preview image. The current prototype only exports PNG and will be replaced; it is not the target drawing UI or storage format.
+
+## Skills
+
+Skills are planned backend instruction packages, with user/workspace/project sources and per-agent activation. See [skills design](docs/skills.md); no skill loader is implemented in the browser prototype.
