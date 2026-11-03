@@ -138,24 +138,24 @@ const blank = (preset: PresetName): ProviderForm => ({ id: presets[preset].id, k
 function Providers({ message, testing }: { message?: string; testing?: string }) {
   const backend = useApp(s => s.backendVersion !== null);
   const providers = useApp(s => s.providers);
-  const [preset, setPreset] = useState<PresetName>('anthropic');
-  // A preset that is already saved opens it for editing.
-  const formFor = (name: PresetName): ProviderForm => {
-    const saved = providers.find(p => p.id === presets[name].id);
-    return saved ? { id: saved.id, kind: saved.kind, name: saved.name, baseUrl: saved.baseUrl || '', apiKey: '', models: saved.models.join(', ') } : blank(name);
-  };
-  const [form, setForm] = useState<ProviderForm>(() => formFor('anthropic'));
+  // The form starts empty: a preset fills only its own defaults, and Edit
+  // is the one way to load a saved provider into it.
+  const [preset, setPreset] = useState<PresetName | ''>('');
+  const [form, setForm] = useState<ProviderForm>(() => blank('other'));
   if (!backend) return <Shell title="Models"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
-  const editing = providers.find(p => p.id === form.id.trim());
+  const [editingId, setEditingId] = useState('');
+  const editing = providers.find(p => p.id === editingId);
+  const clash = !editing && providers.some(p => p.id === form.id.trim());
   const set = (field: keyof ProviderForm) => (event: { target: { value: string } }) => setForm({ ...form, [field]: event.target.value });
-  const choose = (name: PresetName) => { setPreset(name); setForm(formFor(name)); };
+  const choose = (name: PresetName | '') => { setPreset(name); setEditingId(''); setForm(blank(name || 'other')); };
   const edit = (id: string) => {
     const p = providers.find(x => x.id === id);
     if (!p) return;
     setPreset(p.kind === 'anthropic' ? 'anthropic' : 'other');
+    setEditingId(p.id);
     setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', ') });
   };
-  const save = async () => { if (await saveProvider(form)) setForm({ ...form, apiKey: '' }); };
+  const save = async () => { if (preset && await saveProvider(form)) choose(''); };
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
   const openai = form.kind === 'openai';
   return (
@@ -181,7 +181,8 @@ function Providers({ message, testing }: { message?: string; testing?: string })
       <div id="provider-form" onKeyDown={onEnter} {...stylex.props(provider.form)}>
         <div {...stylex.props(provider.formHead)}>
           <span {...stylex.props(provider.label)}>{editing ? `Edit ${editing.name}` : 'Add a provider'}</span>
-          <select id="provider-preset" aria-label="Provider preset" value={preset} onChange={event => choose(event.target.value as PresetName)} {...stylex.props(provider.input)}>
+          <select id="provider-preset" aria-label="Provider preset" value={preset} onChange={event => choose(event.target.value as PresetName | '')} {...stylex.props(provider.input)}>
+            <option value="">Choose a provider…</option>
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI</option>
             <option value="deepseek">DeepSeek</option>
@@ -189,6 +190,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
             <option value="other">Other OpenAI-compatible</option>
           </select>
         </div>
+        {preset && <>
         <div {...stylex.props(provider.grid)}>
           <label htmlFor="provider-id" {...stylex.props(provider.fieldLabel)}>ID</label>
           <input id="provider-id" value={form.id} onChange={set('id')} placeholder="e.g. groq" autoComplete="off" spellCheck="false" {...stylex.props(provider.input)} />
@@ -205,10 +207,12 @@ function Providers({ message, testing }: { message?: string; testing?: string })
           <input id="provider-models" value={form.models} onChange={set('models')} autoComplete="off" spellCheck="false"
             placeholder={openai ? 'Comma-separated; empty asks the endpoint for its list' : 'Comma-separated; empty uses the defaults'} {...stylex.props(provider.input)} />
         </div>
+        {clash && <p {...stylex.props(provider.message)}>A provider with ID “{form.id.trim()}” exists: saving updates it (an empty key or model list keeps its own).</p>}
         <div {...stylex.props(provider.formActions)}>
-          {editing && <Button id="provider-new" onClick={() => { setPreset('other'); setForm(blank('other')); }}>Add another</Button>}
-          <Button id="provider-save" onClick={save}>{editing ? 'Save changes' : 'Add provider'}</Button>
+          <Button id="provider-cancel" onClick={() => choose('')}>Cancel</Button>
+          <Button id="provider-save" onClick={save}>{editing || clash ? 'Save changes' : 'Add provider'}</Button>
         </div>
+        </>}
         <P muted>Keys are sent to the Xhaos server, encrypted at rest, and never shown again. Anyone who can open this page can use them. Local servers (Ollama, llama.cpp, vLLM) need no key: the Xhaos server talks to them, so the URL is as seen from the server.</P>
       </div>
       {message && <p id="provider-message" {...stylex.props(provider.message)}>{message}</p>}

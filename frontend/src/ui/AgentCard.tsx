@@ -162,9 +162,10 @@ export const AgentCard = memo(function AgentCard({ agent }: { agent: Agent }) {
 });
 
 const header = stylex.create({
-  root: { display: 'flex', alignItems: 'center' },
+  // The whole header row highlights on hover, not just the title button.
+  root: { display: 'flex', alignItems: 'center', borderRadius: 3, backgroundColor: { default: 'transparent', ':hover': colors.hover } },
   rootNested: { position: 'relative', minHeight: 32 },
-  attached: { backgroundColor: colors.attached },
+  attached: { backgroundColor: { default: colors.attached, ':hover': colors.attached } },
   branch: { position: 'absolute', width: 13, borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: colors.lineSoft, left: -14, top: '50%' },
   row: {
     flexGrow: 1,
@@ -186,7 +187,7 @@ const header = stylex.create({
     fontFamily: 'inherit',
     fontSize: 'inherit',
     borderWidth: 0,
-    backgroundColor: { default: 'transparent', ':hover': colors.hover, ':focus-visible': '#2b2b2b' },
+    backgroundColor: { default: 'transparent', ':focus-visible': '#2b2b2b' },
   },
   rowNested: { alignSelf: 'stretch', minHeight: 32, gap: 7, paddingBlock: 7, paddingRight: 8, borderRadius: 2, fontSize: 11 },
   id: {
