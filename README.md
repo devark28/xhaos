@@ -8,7 +8,7 @@ Requires Node.js 22.18 or newer (the tests run as TypeScript directly). Run `npm
 
 ```sh
 npm run dev        # prototype UI on http://localhost:5173; rebuilds the bundle on change
-npm run build      # one production build of frontend/dist/app.js and app.css
+npm run build      # one production build of frontend/dist/index.js and index.css
 npm run typecheck  # strict TypeScript check of the frontend (tests are only type-stripped)
 npm run check      # typecheck, build, plus a syntax check of the dev server
 npm test           # unit tests for the frontend logic modules
@@ -16,12 +16,12 @@ npm test           # unit tests for the frontend logic modules
 
 Use `PORT=5174 npm run dev` to choose another port. The dev server binds to loopback only. Stop with Ctrl+C.
 
-The frontend is TypeScript and React, bundled by esbuild into `frontend/dist/app.js` and `app.css` (gitignored):
+The frontend is TypeScript and React, bundled by esbuild into `frontend/dist/index.js` and `index.css` (gitignored):
 
 - `frontend/src/*.ts` are framework-free logic modules (model, questions, markdown, highlight, backend sync, composer intent) with unit tests; `types.ts` holds the shared view and backend shapes.
 - `ui/state/` holds the application state in one [zustand](https://zustand.docs.pmnd.rs) store (`store.ts`), with actions split by feature: `composer.ts`, `agents.ts`, `panels.ts`, `questions.ts`, and `backend.ts` (connection and sync). Components subscribe to just the state they render. `ui/keys.ts` installs the page-wide keys (Esc closes the topmost menu or the `/btw` answer).
 - `ui/kit.tsx` has the shared building blocks (buttons, status dots, chips, keys); `ui/App.tsx` the page layout and agent grid; `ui/SidePanel.tsx` the right-hand panel; `ui/AgentCard.tsx`, `ui/Transcript.tsx`, `ui/Decisions.tsx`, `ui/Composer.tsx`, `ui/Panels.tsx`, and `ui/QuestionInbox.tsx` the features.
-- Styling is [StyleX](https://stylexjs.com): each component defines its styles next to its markup, and colors, fonts, and breakpoints come from `ui/theme/tokens.stylex.ts`. The build compiles them to atomic CSS. `ui/global.css` keeps only the page reset and the markup React does not render itself (Markdown and syntax-highlighted HTML, the `<xhaos-input>` field, the sketch pad, the toast).
+- Styling is [StyleX](https://stylexjs.com): each component defines its styles next to its markup, and colors, fonts, and breakpoints come from `ui/theme/tokens.stylex.ts`. The build compiles them to atomic CSS. `ui/global.css` keeps only the page reset and the markup React does not render itself (Markdown and syntax-highlighted HTML, the `<xhaos-input>` field).
 
 The composer field is still the native `<xhaos-input>` element. It owns its own content, and React never re-renders it.
 
@@ -130,7 +130,7 @@ The Memories icon in the side panel opens the current workspace's compact memory
 
 ## Sketching
 
-Draw currently opens a lightweight temporary sketchpad, not Excalidraw. The target is an Excalidraw-style canvas embedded in the composer, like the Obsidian plugin: switch between text and drawing, attach the editable scene to a task, and reopen it from that task later. The final attachment should retain vector scene data plus a preview image. The current prototype only exports PNG and will be replaced; it is not the target drawing UI or storage format.
+The composer's Draw tab is an [Excalidraw](https://excalidraw.com) board in dark mode. It loads on first use (its code is a separate chunk) and serves its fonts from this server, so nothing is fetched from a CDN. The board is kept in this browser between visits. Attach the drawing to your next message as an image (PNG) or as Excalidraw data: the `.excalidraw` scene JSON, which a model can read and edit like code. Attachments are stored in this browser and not yet sent to backend agents.
 
 ## Skills
 

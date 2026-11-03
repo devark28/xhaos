@@ -1,6 +1,6 @@
 /* Global styles: the page base, plus markup that React does not render
    itself (Markdown and syntax-highlighted HTML strings, the contenteditable
-   input, the sketch pad). Components style themselves with
+   input). Components style themselves with
    StyleX; its generated rules are appended to this file by the build. */
 
 /* The base reset sits in the lowest layer, so component styles (StyleX,
@@ -63,20 +63,3 @@ xhaos-input[data-empty="true"]::before {
 xhaos-input p { margin: 0; line-height: inherit; }
 xhaos-input :is(strong, b) { font-weight: 700; }
 xhaos-input :is(em, i) { font-style: italic; }
-
-/* ---- sketch pad (drawing.ts markup) ---------------------------------------- */
-.drawing-toolbar {
-  display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 11px;
-  flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; min-height: 30px; scrollbar-width: thin;
-}
-.drawing-toolbar :is(button, select) { color: #aaa; background: transparent; padding: 5px 7px; border: 0; border-radius: 3px; font-size: 12px; cursor: pointer; }
-.drawing-toolbar button:disabled { opacity: .3; cursor: default; }
-.drawing-toolbar button[aria-pressed="true"] { background: #363636; color: #fff; }
-.drawing-tool-group { display: flex; gap: 2px; }
-.drawing-colors { display: flex; align-items: center; gap: 5px; margin: 0 7px; }
-.drawing-colors button { width: 15px; height: 15px; padding: 0; border-radius: 50%; background: var(--swatch); }
-.drawing-colors button[aria-pressed="true"] { box-shadow: 0 0 0 2px #777; background: var(--swatch); }
-.drawing-toolbar .draw-attach { margin-left: auto; color: #ddd; }
-.draw-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; border-radius: 3px; overscroll-behavior: contain; }
-#draw-surface { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: crosshair; }
-.draw-text-input { position: absolute; max-width: 70%; background: #262626; color: #eee; padding: 3px 5px; border: 0; font-size: 16px; }

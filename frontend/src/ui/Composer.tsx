@@ -1,8 +1,7 @@
 // The command center: Message / Draw tabs, the composer form, and a /btw answer.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Suspense, lazy, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { bindEditor } from '../editor.ts';
-import { drawingView, bindDrawing } from '../drawing.ts';
 import { composerPlaceholder } from '../composer-target.ts';
 import { markdown } from '../markdown.ts';
 import { activeAgents } from '../model.ts';
@@ -12,7 +11,7 @@ import { Button } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Badge } from './AgentCard.tsx';
 import { useShallow } from 'zustand/react/shallow';
-import { useApp, get, update, toast, workspaceOf } from './state/store.ts';
+import { useApp, get, toast, workspaceOf } from './state/store.ts';
 import {
   modelOptions, currentChoice, setModel, onText, chooseCommand, closeCommandMenu, clearComposer, submitCommand, closeBtw,
   addFiles, removeFile, registerInput, getDraft,
@@ -197,20 +196,16 @@ function BtwAside() {
   );
 }
 
+// Excalidraw is large, so the Draw tab loads it on first use.
+const Draw = lazy(() => import('./Draw.tsx'));
 function DrawingPane() {
-  const markup = useMemo(() => ({ __html: drawingView() }), []);
   const drawing = useApp(s => s.mode === 'draw');
-  useEffect(() => {
-    if (!drawing) return;
-    bindDrawing({
-      onAttach: file => { update(s => { s.pendingFiles.push(file); s.mode = 'message'; }); toast('Sketch attached. Add a message and send when ready.'); },
-      onBack: showMessageComposer,
-      notify: toast,
-    });
-  }, [drawing]);
-  return drawing
-    ? <section key="draw" id="drawing-pane" dangerouslySetInnerHTML={markup} {...stylex.props(area.drawing)} />
-    : <section key="idle" id="drawing-pane" hidden />;
+  if (!drawing) return null;
+  return (
+    <section id="drawing-pane" {...stylex.props(area.drawing)}>
+      <Suspense fallback={<p {...stylex.props(aside.muted)}>Loading the drawing board…</p>}><Draw /></Suspense>
+    </section>
+  );
 }
 
 export function ComposerArea() {

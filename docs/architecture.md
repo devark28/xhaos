@@ -2,7 +2,7 @@
 
 ## Two independent parts
 
-`frontend/` is a TypeScript React web client bundled by esbuild into `frontend/dist/app.js` and `app.css` (styles via StyleX). The Go server serves it, or `scripts/dev.mjs` does for prototype work; neither is the agent backend in prototype mode. React components live in `frontend/src/ui/`, and framework-free logic modules (model, questions, backend sync, composer intent) stay in `frontend/src/` so they remain unit-testable. Live reply text repaints at most once per animation frame. Virtualize large networks based on profiling.
+`frontend/` is a TypeScript React web client bundled by esbuild into `frontend/dist/index.js` and `index.css` (styles via StyleX). The Go server serves it, or `scripts/dev.mjs` does for prototype work; neither is the agent backend in prototype mode. React components live in `frontend/src/ui/`, and framework-free logic modules (model, questions, backend sync, composer intent) stay in `frontend/src/` so they remain unit-testable. Live reply text repaints at most once per animation frame. Virtualize large networks based on profiling.
 
 Wails v3 with Go is the chosen framework and language for the prototype and MVP. Use Wails headless server mode to serve the frontend over HTTP and expose Go services through generated bindings, with Wails events over WebSocket. This lets the browser receive the complete UI from the backend and avoids writing a custom transport for the first version. The current browser-only UI remains unchanged while the backend is built. Check the installed Go version, Wails prerequisites, and free disk before installing or compiling; keep Go build and module caches out of the project and on `/tmp` while local disk is constrained.
 
