@@ -211,6 +211,5 @@ export interface ToolInfo {
   source: string;
 }
 export interface ToolCatalog {
-  root: string;
   tools: ToolInfo[];
 }

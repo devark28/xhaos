@@ -110,6 +110,7 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		}
 		call.Summary = in.Command
 		call.Commit = commitRE.MatchString(in.Command)
+		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
 		return call, nil
 	case "search":
 		if err := need("pattern", in.Pattern); err != nil {
@@ -123,8 +124,13 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 			return call, err
 		}
 	}
-	if _, err := Resolve(root, in.Path); err != nil {
+	path, err := Resolve(root, in.Path)
+	if err != nil {
 		return call, err
+	}
+	if call.Effect == Write && insideGit(root, path) {
+		// Hooks in .git run on commit: a file write must not plant one.
+		return call, errors.New("files inside .git cannot be written; use git commands")
 	}
 	call.Summary = in.Path
 	if c.Name == "search" {
@@ -241,6 +247,20 @@ func Resolve(root, rel string) (string, error) {
 		return "", fmt.Errorf("%s is outside the workspace", rel)
 	}
 	return path, nil
+}
+
+// insideGit reports whether path is in the project's .git directory.
+func insideGit(root, path string) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(realRoot, path)
+	if err != nil {
+		return false
+	}
+	first := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+	return first == ".git"
 }
 
 func mustResolve(root, rel string) string { p, _ := Resolve(root, rel); return p }

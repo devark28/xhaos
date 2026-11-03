@@ -3,6 +3,7 @@ package agent_test
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"xhaos/app/agent"
@@ -19,7 +20,7 @@ func open(t *testing.T) (*backend.Services, *[]eventlog.Event, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "xhaos.db")
 	var published []eventlog.Event
-	s, err := backend.Open(path, backend.Options{DisableRuns: true, Publish: func(e eventlog.Event) { published = append(published, e) }})
+	s, err := backend.Open(path, backend.Options{Root: t.TempDir(), DisableRuns: true, Publish: func(e eventlog.Event) { published = append(published, e) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,5 +141,20 @@ func TestCreateWithPromptRecordsFirstMessageAndSnapshotCarriesTranscript(t *test
 	}
 	if _, err := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "e", WorkspaceID: ws}); !errors.Is(err, apperr.Invalid) {
 		t.Fatalf("no title and no prompt: err = %v, want Invalid", err)
+	}
+}
+
+func TestNoProjectNoAgents(t *testing.T) {
+	s, err := backend.Open(filepath.Join(t.TempDir(), "x.db"), backend.Options{DisableRuns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// Without -root nothing is registered: the server's folder is not a project.
+	if projects, _ := s.Projects.Projects(ws); len(projects) != 0 {
+		t.Fatalf("projects = %+v", projects)
+	}
+	if _, err := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "x"}); err == nil || !strings.Contains(err.Error(), "Files tab") {
+		t.Fatalf("Create without a project = %v", err)
 	}
 }

@@ -44,36 +44,18 @@ func Migrate(db *sql.DB) error {
 	return err
 }
 
-// EnsureDefault registers root as the workspace's first project when it has
-// none, so a fresh server (and agents created before projects existed) work
-// in the folder the server was started for.
-func EnsureDefault(db *sql.DB, workspaceID, root string) error {
+// Ensure registers path as a project of the workspace unless it already is.
+func Ensure(db *sql.DB, workspaceID, path string) error {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("%w: %s does not exist", apperr.Invalid, path)
+	}
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM projects WHERE workspace_id = ?`, workspaceID).Scan(&n); err != nil || n > 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM projects WHERE workspace_id = ? AND path = ?`, workspaceID, real).Scan(&n); err != nil || n > 0 {
 		return err
 	}
-	_, err := add(db, workspaceID, root, "", time.Now())
+	_, err = add(db, workspaceID, real, "", time.Now())
 	return err
-}
-
-// AdoptOrphans puts agents created before projects existed into the project
-// for root (the folder the server runs in, which is where they worked), or
-// the workspace's first project when root is not one.
-func AdoptOrphans(db *sql.DB, workspaceID, root string) (int64, error) {
-	var id int64
-	real, _ := filepath.EvalSymlinks(root)
-	err := db.QueryRow(`SELECT id FROM projects WHERE workspace_id = ? AND path = ?`, workspaceID, real).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		id, err = First(db, workspaceID)
-	}
-	if err != nil || id == 0 {
-		return 0, err
-	}
-	res, err := db.Exec(`UPDATE agents SET project_id = ? WHERE workspace_id = ? AND project_id IS NULL`, id, workspaceID)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
 }
 
 const selectProject = `SELECT id, workspace_id, name, path, created_at FROM projects`

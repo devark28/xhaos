@@ -6,7 +6,6 @@ package backend
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"xhaos/app/btw"
 	"xhaos/app/llm/openai"
@@ -30,7 +29,7 @@ type Options struct {
 	Publish  eventlog.Publisher // committed events
 	Notify   run.Notifier       // live, unpersisted reply deltas
 	Adapters []llm.Adapter      // nil: the real adapters (Anthropic)
-	Root     string             // directory agent tools work in; empty: the current directory
+	Root     string             // a folder to register as a project at startup (optional)
 	// DisableRuns stops owner messages from starting model turns (storage tests).
 	DisableRuns bool
 }
@@ -94,25 +93,19 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := opts.Root
-	if root == "" {
-		if root, err = os.Getwd(); err != nil {
+	// Root, when given, is registered as a project. Nothing is registered
+	// implicitly: a server started from a home folder or an empty VPS must
+	// not turn that folder into a project.
+	if opts.Root != "" {
+		root, err := filepath.Abs(opts.Root)
+		if err != nil {
 			return nil, err
 		}
+		if err := project.Ensure(db, workspace.DefaultID, root); err != nil {
+			return nil, fmt.Errorf("project %s: %w", root, err)
+		}
 	}
-	if root, err = filepath.Abs(root); err != nil {
-		return nil, err
-	}
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("workspace root %s is not a directory", root)
-	}
-	if err := project.EnsureDefault(db, workspace.DefaultID, root); err != nil {
-		return nil, fmt.Errorf("default project: %w", err)
-	}
-	if _, err := project.AdoptOrphans(db, workspace.DefaultID, root); err != nil {
-		return nil, fmt.Errorf("adopt agents into projects: %w", err)
-	}
-	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify, root)
+	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify)
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
 		return p.Path, err
@@ -130,7 +123,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		Events:     eventlog.NewService(db),
 		Providers:  provider.NewService(providers),
 		Btw:        btw.NewService(agents, providers),
-		Tools:      tool.NewService(root),
+		Tools:      tool.NewService(),
 		Projects:   project.NewService(db),
 	}, nil
 }

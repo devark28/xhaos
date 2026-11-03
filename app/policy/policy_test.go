@@ -44,11 +44,16 @@ func TestGate(t *testing.T) {
 		{Policy{"ro", "auto", "allowed"}, EffectRead, false, Allow},
 		{Policy{"ro", "auto", "allowed"}, EffectWrite, false, Deny},
 		{Policy{"ro", "auto", "allowed"}, EffectExec, false, Deny},
-		{Policy{"rw", "auto", "review"}, EffectExec, false, Allow},
-		{Policy{"rw", "auto", "review"}, EffectExec, true, Ask},
-		{Policy{"rw", "auto", "blocked"}, EffectExec, true, Deny},
-		{Policy{"rw", "auto", "allowed"}, EffectExec, true, Allow},
-		{Policy{"rw", "manual", "allowed"}, EffectExec, true, Ask},
+		// Auto review: file writes and local git run; other commands still ask.
+		{Policy{"rw", "auto", "review"}, EffectWrite, false, Allow},
+		{Policy{"rw", "auto", "review"}, EffectGit, false, Allow},
+		{Policy{"rw", "auto", "review"}, EffectExec, false, Ask},
+		{Policy{"rw", "auto", "review"}, EffectGit, true, Ask},
+		{Policy{"rw", "auto", "allowed"}, EffectGit, true, Allow},
+		{Policy{"rw", "auto", "allowed"}, EffectExec, true, Ask}, // a push always asks
+		{Policy{"rw", "auto", "blocked"}, EffectGit, true, Deny},
+		{Policy{"rw", "manual", "allowed"}, EffectGit, false, Ask},
+		{Policy{"ro", "auto", "allowed"}, EffectGit, false, Deny},
 	}
 	for _, c := range cases {
 		if got, _ := c.p.Gate(c.effect, c.commit); got != c.want {

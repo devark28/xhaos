@@ -125,3 +125,67 @@ func TestCancelKillsTheWholeCommand(t *testing.T) {
 		t.Fatalf("command still running: %s", out)
 	}
 }
+
+func TestClassifyCommand(t *testing.T) {
+	cases := map[string]string{
+		// read: inspects the project only
+		"ls -la":                         Read,
+		"git status":                     Read,
+		"git log --oneline -5 | head -3": Read,
+		"git diff HEAD~1 -- src/a.go":    Read,
+		"git branch -a":                  Read,
+		"git remote -v":                  Read,
+		"grep -rn 'func (s' app | wc -l": Read,
+		"find . -name '*.go'":            Read,
+		"cat README.md && git show HEAD": Read,
+		"git log 2>&1":                   Read,
+		"echo 'a > b'":                   Exec, // conservative: any > asks, even quoted
+		// local git changes
+		"git add -A && git commit -m \"fix: a; b\"": Git,
+		"git switch -c feature/x":                   Git,
+		"git switch main":                           Git,
+		"git status; git add a.go":                  Git,
+		// everything else asks
+		"git push":                 Exec,
+		"git push origin main":     Exec,
+		"git add . && git push":    Exec,
+		"git branch -D old":        Exec,
+		"git checkout -- .":        Exec,
+		"git reset --hard":         Exec,
+		"git -C /etc status":       Exec,
+		"git -c core.pager=sh log": Exec,
+		"git diff --output=x.txt":  Exec,
+		"cat /etc/passwd":          Exec,
+		"cat ../secret":            Exec,
+		"ls ~":                     Exec,
+		"echo hi > a.txt":          Exec,
+		"cat $(echo /etc/passwd)":  Exec,
+		"cat `x`":                  Exec,
+		"echo \"$HOME\"":           Exec,
+		"FOO=1 git status":         Exec,
+		"./script.sh":              Exec,
+		"find . -name x -delete":   Exec,
+		"find . -exec rm {} ;":     Exec,
+		"rm -rf build":             Exec,
+		"sleep 1 & ls":             Exec,
+		"npm test":                 Exec,
+		"ls 'unbalanced":           Exec,
+		"git status | sh":          Exec,
+	}
+	for line, want := range cases {
+		if got := ClassifyCommand(line); got != want {
+			t.Errorf("ClassifyCommand(%q) = %s, want %s", line, got, want)
+		}
+	}
+}
+
+func TestWritesIntoGitAreRefused(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o755)
+	if _, err := Prepare(root, call("write_file", map[string]any{"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"})); err == nil {
+		t.Fatal("a write into .git was accepted")
+	}
+	if _, err := Prepare(root, call("write_file", map[string]any{"path": ".gitignore", "content": "x\n"})); err != nil {
+		t.Fatalf(".gitignore refused: %v", err)
+	}
+}

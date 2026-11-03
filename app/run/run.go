@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -41,7 +42,6 @@ type Runner struct {
 	agents    *agent.Store
 	providers *provider.Store
 	notify    Notifier
-	root      string // tools' folder for agents without a project
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
@@ -54,18 +54,18 @@ type Runner struct {
 }
 
 // New creates a runner whose tools work inside root.
-func New(agents *agent.Store, providers *provider.Store, notify Notifier, root string) *Runner {
+func New(agents *agent.Store, providers *provider.Store, notify Notifier) *Runner {
 	if notify == nil {
 		notify = func(Delta) {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Runner{agents: agents, providers: providers, notify: notify, root: root, ctx: ctx, cancel: cancel, active: map[key]bool{}, stops: map[key]context.CancelFunc{}}
+	return &Runner{agents: agents, providers: providers, notify: notify, ctx: ctx, cancel: cancel, active: map[key]bool{}, stops: map[key]context.CancelFunc{}}
 }
 
 // rootFor is the folder an agent's tools work in.
 func (r *Runner) rootFor(a agent.Agent) (string, error) {
 	if a.ProjectID == 0 || r.ProjectRoot == nil {
-		return r.root, nil
+		return "", errors.New("this agent has no project; its tools have no folder to work in")
 	}
 	return r.ProjectRoot(a.WorkspaceID, a.ProjectID)
 }

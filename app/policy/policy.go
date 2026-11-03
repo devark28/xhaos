@@ -59,13 +59,18 @@ const (
 
 // Effects a tool call can have (see package tool).
 const (
-	EffectRead  = "read"
-	EffectWrite = "write"
-	EffectExec  = "exec"
+	EffectRead  = "read"  // reads in the project (files, or read-only commands)
+	EffectWrite = "write" // file changes in the project
+	EffectGit   = "git"   // local git changes: add, commit, switch
+	EffectExec  = "exec"  // any other command
 )
 
 // Gate decides what happens to a tool call with the given effect. commit
 // marks a git commit or push, which the Commit field governs on its own.
+//
+// Reads always run. Under auto review, file writes and local git changes
+// run without asking; any other command always waits for the owner, so an
+// agent never runs arbitrary programs (or pushes) unnoticed.
 func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 	if effect == EffectRead {
 		return Allow, ""
@@ -81,7 +86,10 @@ func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 			return Ask, "commits and pushes need review"
 		}
 	}
-	if p.Review == "auto" {
+	switch {
+	case effect == EffectExec:
+		return Ask, "only read-only commands and local git changes run without you"
+	case p.Review == "auto":
 		return Allow, ""
 	}
 	return Ask, "changes need review"

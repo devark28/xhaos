@@ -300,10 +300,11 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 			}
 			req.ProjectID = first
 		}
-		if req.ProjectID != 0 {
-			if _, err := project.Get(tx, req.WorkspaceID, req.ProjectID); err != nil {
-				return err
-			}
+		if req.ProjectID == 0 {
+			return fmt.Errorf("%w: add a project (a folder for the agent to work in) in the Files tab first", apperr.Invalid)
+		}
+		if _, err := project.Get(tx, req.WorkspaceID, req.ProjectID); err != nil {
+			return err
 		}
 		if req.Policy != nil {
 			p = *req.Policy

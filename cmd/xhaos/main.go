@@ -45,7 +45,7 @@ func main() {
 	frontend := flag.String("frontend", "frontend", "directory containing the static frontend (served from disk)")
 	dbPath := flag.String("db", defaultDBPath(), "SQLite database path")
 	verbose := flag.Bool("verbose", false, "log every request and connection")
-	root := flag.String("root", ".", "workspace directory agent tools read, change, and run commands in")
+	root := flag.String("root", "", "register this folder as a project at startup (optional; add projects in the Files tab)")
 	flag.Parse()
 
 	if _, err := os.Stat(filepath.Join(*frontend, "index.html")); err != nil {
@@ -100,8 +100,7 @@ func main() {
 	if port == "" {
 		port = "5180"
 	}
-	absRoot, _ := filepath.Abs(*root)
-	log.Printf("xhaos %s: http://%s:%s (db %s, workspace %s)", version, host, port, *dbPath, absRoot)
+	log.Printf("xhaos %s: http://%s:%s (db %s)", version, host, port, *dbPath)
 	if err := wailsApp.Run(); err != nil {
 		log.Fatal(err)
 	}

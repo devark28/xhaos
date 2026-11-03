@@ -263,7 +263,11 @@ function Settings() {
   );
 }
 
-const effectNotes = { read: 'runs at once', write: 'gated: asks under manual review', exec: 'gated like a write' };
+const effectNotes = {
+  read: 'runs at once',
+  write: 'asks under manual review; runs under auto',
+  exec: 'read-only commands run at once; git add, commit and switch run under auto; anything else always asks',
+};
 function Tools() {
   const catalog = useApp(s => s.tools);
   const backend = useApp(s => s.backendVersion !== null);

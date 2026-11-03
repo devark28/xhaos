@@ -8,19 +8,18 @@ type Info struct {
 	Source      string `json:"source"` // "built-in"; MCP servers will add their own
 }
 
-// Catalog is what agents can call and where they work.
+// Catalog is what agents can call.
 type Catalog struct {
-	Root  string `json:"root"`
 	Tools []Info `json:"tools"`
 }
 
 // Service lists tools to the client. Agents do not use it.
-type Service struct{ root string }
+type Service struct{}
 
-func NewService(root string) *Service { return &Service{root: root} }
+func NewService() *Service { return &Service{} }
 
 func (s *Service) Catalog() Catalog {
-	c := Catalog{Root: s.root}
+	c := Catalog{}
 	for _, t := range Specs() {
 		c.Tools = append(c.Tools, Info{Name: t.Name, Description: t.Description, Effect: effects[t.Name], Source: "built-in"})
 	}
