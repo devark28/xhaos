@@ -25,17 +25,16 @@ export function Badge({ agent, size }: { agent: Pick<Agent, 'status'> & Partial<
 }
 
 // ---- header ----------------------------------------------------------------
-// Click toggles the card; double-click (or Alt+Enter) attaches it (clicks.ts).
+// Click toggles the card; double-click, Ctrl/Cmd+click, or Alt+Enter attaches it (clicks.ts).
 const clickKey = (id: number) => `agent:${id}`;
 const onRowClick = (event: MouseEvent, id: number) => onToggleClick(event, clickKey(id), () => toggleAgent(id), () => toggleRecipient(id));
 const onRowKey = (event: KeyboardEvent, id: number) => onAttachKey(event, clickKey(id), () => toggleRecipient(id));
-const clearClickTimer = (id: number) => clearClick(clickKey(id));
 
 function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; closed: boolean; nested: boolean; attached: boolean }) {
   // The project name shows once there is more than one to tell apart.
   const project = useApp(s => (s.projects.length > 1 ? s.projects.find(p => p.id === agent.projectId)?.name : undefined));
   return (
-    <button type="button" data-collapse={agent.id} data-agent-row-id={agent.id} aria-keyshortcuts="Alt+Enter" title="Double-click to attach or detach; Alt+Enter when focused" aria-expanded={!closed}
+    <button type="button" data-collapse={agent.id} data-agent-row-id={agent.id} aria-keyshortcuts="Alt+Enter" title="Click to open or close; double-click or Ctrl+click (Alt+Enter when focused) to attach to the composer" aria-expanded={!closed}
       aria-label={`${closed ? 'Expand' : 'Collapse'} agent ${agent.id}: ${agent.title}${attached ? ', attached to composer' : ''}`}
       onClick={event => onRowClick(event, agent.id)} onKeyDown={event => onRowKey(event, agent.id)}
       {...stylex.props(header.row, nested && header.rowNested)}>
@@ -66,7 +65,7 @@ function SubagentChips({ agent }: { agent: Agent }) {
 function Disclosure({ agent, closed }: { agent: Agent; closed: boolean }) {
   return (
     <Button variant="icon" data-collapse={agent.id} aria-expanded={!closed} aria-label={`${closed ? 'Expand' : 'Collapse'} agent ${agent.id}`}
-      onClick={() => { clearClickTimer(agent.id); toggleAgent(agent.id); }} sx={header.disclosure}>
+      onClick={() => { clearClick(clickKey(agent.id)); toggleAgent(agent.id); }} sx={header.disclosure}>
       <span {...stylex.props(header.chevron, !closed && header.chevronOpen)}><Icon name="arrow" size={16} /></span>
     </Button>
   );

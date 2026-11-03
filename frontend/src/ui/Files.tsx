@@ -42,14 +42,14 @@ function Tree({ project, dir, depth }: { project: Project; dir: string; depth: n
 function ProjectRow({ project }: { project: Project }) {
   const open = useApp(s => s.openDirs.has(dirKey(project.id, '')));
   const attached = useApp(s => s.attachedProject === project.id);
-  const key = `project:${project.id}`;
   const attach = () => toggleProjectAttachment(project.id);
+  const key = `project:${project.id}`;
   const agents = useApp(s => s.workspaces.flatMap(w => w.agents).filter(a => a.projectId === project.id && !a.archivedAt).length);
   return (
     <div data-project={project.id} data-attached={attached || undefined} {...stylex.props(styles.project, attached && styles.attached)}>
       <div {...stylex.props(styles.projectHead)}>
         <button type="button" aria-expanded={open} aria-pressed={attached} aria-keyshortcuts="Alt+Enter"
-          title="Click to open; double-click (or Alt+Enter) to attach it to the composer, so new agents work here"
+          title="Click to open; double-click or Ctrl+click (or Alt+Enter) to attach it to the composer, so new agents work here"
           onClick={event => onToggleClick(event, key, () => toggleDir(project.id, ''), attach)} onKeyDown={event => onAttachKey(event, key, attach)}
           {...stylex.props(styles.row, styles.projectButton)}>
           <span {...stylex.props(styles.chevron, open && styles.chevronOpen)}><Icon name="arrow" size={10} /></span>
@@ -76,7 +76,7 @@ export function Files() {
     if (await addProject(path.current.value, name.current?.value || '')) { path.current.value = ''; if (name.current) name.current.value = ''; }
   };
   return <>
-    <p {...stylex.props(styles.intro)}>Each agent works in one project: its tools only reach that folder. Double-click a project to attach it to the composer; new agents then start there. Agents in different projects coordinate through channels.</p>
+    <p {...stylex.props(styles.intro)}>Each agent works in one project: its tools only reach that folder. Double-click (or Ctrl+click) a project to attach it to the composer; new agents then start there. Agents in different projects coordinate through channels.</p>
     <div {...stylex.props(styles.list)}>{projects.map(p => <ProjectRow key={p.id} project={p} />)}</div>
     <div id="project-form" {...stylex.props(styles.form)}
       onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); add(); } }}>
