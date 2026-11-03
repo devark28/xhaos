@@ -16,8 +16,9 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
   { kind: 'files', id: 'files', icon: 'folder', label: 'Files' },
   { kind: 'channels', id: 'channels', icon: 'chat', label: 'Channels' },
   { kind: 'memories', id: 'memories', icon: 'memory', label: 'Memories' },
-  { kind: 'tools', id: 'integrations', icon: 'plug', label: 'Tools and MCP' },
-  { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings', also: ['providers'] },
+  { kind: 'providers', id: 'providers', icon: 'chip', label: 'Models' },
+  { kind: 'tools', id: 'integrations', icon: 'plug', label: 'Tools (built-in and MCP)' },
+  { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings' },
 ];
 
 export function SidePanel() {

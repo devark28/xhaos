@@ -145,7 +145,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
     return saved ? { id: saved.id, kind: saved.kind, name: saved.name, baseUrl: saved.baseUrl || '', apiKey: '', models: saved.models.join(', ') } : blank(name);
   };
   const [form, setForm] = useState<ProviderForm>(() => formFor('anthropic'));
-  if (!backend) return <Shell title="Model providers"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
+  if (!backend) return <Shell title="Models"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
   const editing = providers.find(p => p.id === form.id.trim());
   const set = (field: keyof ProviderForm) => (event: { target: { value: string } }) => setForm({ ...form, [field]: event.target.value });
   const choose = (name: PresetName) => { setPreset(name); setForm(formFor(name)); };
@@ -159,7 +159,8 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
   const openai = form.kind === 'openai';
   return (
-    <Shell title="Model providers">
+    <Shell title="Models">
+      <P muted>Providers give agents their models. Each new agent uses the model picked next to the composer.</P>
       <div>
         {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
@@ -267,12 +268,13 @@ function Tools() {
   const catalog = useApp(s => s.tools);
   const backend = useApp(s => s.backendVersion !== null);
   return (
-    <Shell title="Tools and MCP">
+    <Shell title="Tools">
       {!backend ? <P>Tools run on the Go backend. Run scripts/server.sh and open its page.</P>
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
-          <P>Built-in tools, part of Xhaos (not MCP). Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first.</P>
+          <h3 {...stylex.props(tools.subheading, tools.first)}>Built-in</h3>
+          <P>Part of Xhaos itself, no MCP server needed. Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first.</P>
           <div {...stylex.props(tools.list)}>
             {catalog.tools.map(t => (
               <div key={t.name} data-tool={t.name} {...stylex.props(tools.row)}>
@@ -283,7 +285,7 @@ function Tools() {
             ))}
           </div>
           <h3 {...stylex.props(tools.subheading)}>MCP servers</h3>
-          <P muted>None yet. Adding MCP servers (local commands and remote URLs) is the next step; their tools will appear here and pass the same policy gate.</P>
+          <P muted>None yet. MCP servers (local commands and remote URLs) are next; their tools will be listed here and pass the same policy gate as the built-in ones.</P>
         </>}
     </Shell>
   );
@@ -406,4 +408,5 @@ const tools = stylex.create({
   gated: { color: colors.effectWrite },
   description: { gridColumn: '2', marginTop: 2, marginBottom: 0, color: colors.textDim },
   subheading: { fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 4, color: colors.text },
+  first: { marginTop: 0 },
 });

@@ -14,6 +14,7 @@ export function selectPanel(kind: PanelKind) {
   if (kind === 'questions') showQuestions(get().questionAgentId);
   else if (kind === 'tools') showTools();
   else if (kind === 'files') showFiles();
+  else if (kind === 'providers') showProviders();
   else openPanel(kind);
 }
 export function showQuestions(id: number | null) {

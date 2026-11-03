@@ -56,6 +56,26 @@ func EnsureDefault(db *sql.DB, workspaceID, root string) error {
 	return err
 }
 
+// AdoptOrphans puts agents created before projects existed into the project
+// for root (the folder the server runs in, which is where they worked), or
+// the workspace's first project when root is not one.
+func AdoptOrphans(db *sql.DB, workspaceID, root string) (int64, error) {
+	var id int64
+	real, _ := filepath.EvalSymlinks(root)
+	err := db.QueryRow(`SELECT id FROM projects WHERE workspace_id = ? AND path = ?`, workspaceID, real).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		id, err = First(db, workspaceID)
+	}
+	if err != nil || id == 0 {
+		return 0, err
+	}
+	res, err := db.Exec(`UPDATE agents SET project_id = ? WHERE workspace_id = ? AND project_id IS NULL`, id, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 const selectProject = `SELECT id, workspace_id, name, path, created_at FROM projects`
 
 func scan(r interface{ Scan(...any) error }) (Project, error) {

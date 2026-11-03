@@ -2,11 +2,11 @@ package run_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +24,7 @@ import (
 	"xhaos/app/project"
 	"xhaos/app/provider"
 	"xhaos/app/run"
+	"xhaos/app/sqlitedb"
 	"xhaos/app/workspace"
 )
 
@@ -636,4 +637,47 @@ func TestOpenAICompatibleAgentUsesTools(t *testing.T) {
 		t.Fatalf("requests = %d, first = %v", len(requests), requests[0])
 	}
 	_ = a
+}
+
+// Agents from before projects (no project) join the root folder's project on
+// the next start.
+func TestOldAgentsJoinTheRootProject(t *testing.T) {
+	root, other := t.TempDir(), t.TempDir()
+	path := filepath.Join(t.TempDir(), "x.db")
+	open := func() *backend.Services {
+		s, err := backend.Open(path, backend.Options{Root: root, DisableRuns: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	s := open()
+	p2, err := s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "old", WorkspaceID: ws, Title: "old"})
+	kept, _ := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "kept", WorkspaceID: ws, Title: "kept", ProjectID: p2.ID})
+	s.Close()
+
+	db, err := sqlitedb.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agents SET project_id = NULL WHERE id = ?`, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s = open()
+	defer s.Close()
+	snap, _ := s.Agents.Snapshot(ws)
+	projects, _ := s.Projects.Projects(ws)
+	got := map[int64]int64{}
+	for _, a := range snap.Agents {
+		got[a.ID] = a.ProjectID
+	}
+	if got[old.ID] != projects[0].ID || got[kept.ID] != p2.ID {
+		t.Fatalf("projects after restart = %v (root project %d, other %d)", got, projects[0].ID, p2.ID)
+	}
 }

@@ -109,6 +109,9 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	if err := project.EnsureDefault(db, workspace.DefaultID, root); err != nil {
 		return nil, fmt.Errorf("default project: %w", err)
 	}
+	if _, err := project.AdoptOrphans(db, workspace.DefaultID, root); err != nil {
+		return nil, fmt.Errorf("adopt agents into projects: %w", err)
+	}
 	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify, root)
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
