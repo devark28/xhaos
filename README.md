@@ -1,21 +1,65 @@
 # Xhaos
 
-A lightweight agent orchestration workspace. This iteration is a dependency-free browser UI with simulated tasks. No Go/Wails installation, package installation, frontend bundler, or native build cache is needed to run the current browser prototype.
+A lightweight agent orchestration workspace: a React browser UI and a headless Go backend (Wails v3 server mode). Without the backend, the UI runs as a local prototype with sample agents.
 
 ## Run
 
-Requires Node.js 20 or newer.
+Requires Node.js 22.18 or newer (the tests run as TypeScript directly). Run `npm install` once; it installs React, StyleX, TypeScript, and esbuild.
 
 ```sh
-npm run dev
+npm run dev        # prototype UI on http://localhost:5173; rebuilds the bundle on change
+npm run build      # one production build of frontend/dist/app.js and app.css
+npm run typecheck  # strict TypeScript check of the frontend (tests are only type-stripped)
+npm run check      # typecheck, build, plus a syntax check of the dev server
+npm test           # unit tests for the frontend logic modules
 ```
 
-Open http://localhost:5173. Use `PORT=5174 npm run dev` to choose another port. The server binds to loopback only. Stop with Ctrl+C.
+Use `PORT=5174 npm run dev` to choose another port. The dev server binds to loopback only. Stop with Ctrl+C.
+
+The frontend is TypeScript and React, bundled by esbuild into `frontend/dist/app.js` and `app.css` (gitignored):
+
+- `frontend/src/*.ts` are framework-free logic modules (model, questions, markdown, highlight, backend sync, composer intent) with unit tests; `types.ts` holds the shared view and backend shapes.
+- `ui/store.ts` holds state and actions, and components re-render when it changes. `ui/keys.ts` installs the page-wide keys (Esc closes the topmost menu, panel, or `/btw` answer).
+- `ui/kit.tsx` has the shared building blocks (buttons, status dots, chips, keys); `ui/App.tsx` the ribbon and agent grid; `ui/AgentCard.tsx`, `ui/Transcript.tsx`, `ui/Decisions.tsx`, `ui/Composer.tsx`, `ui/Panels.tsx`, and `ui/QuestionInbox.tsx` the features.
+- Styling is [StyleX](https://stylexjs.com): each component defines its styles next to its markup, and colors, fonts, and breakpoints come from `ui/theme/tokens.stylex.ts`. The build compiles them to atomic CSS. `ui/global.css` keeps only the page reset and the markup React does not render itself (Markdown and syntax-highlighted HTML, the `<xhaos-input>` field, the sketch pad, the toast).
+
+The composer field is still the native `<xhaos-input>` element. It owns its own content, and React never re-renders it.
+
+## Backend (Go, Wails v3 server mode)
+
+Requires Go 1.26+. The backend is Go: `cmd/xhaos` is the Wails headless host and `app/` holds transport-independent feature packages. `frontend/src/server-client.ts` is the browser-side client; under `npm run dev` it finds no Wails runtime and the prototype keeps using mock state.
 
 ```sh
-npm run check
-npm test
+scripts/server.sh                                   # flags: -root DIR, -db PATH, -frontend DIR, -verbose
+CGO_ENABLED=1 go test -tags server,purego,libsqlite3 ./...
 ```
+
+Open http://localhost:5180 (override with `WAILS_SERVER_PORT`). The server serves `frontend/` from disk, so frontend edits need only a reload. When connected, the page shows a toast, sets `<html data-backend="…">`, and exposes `window.xhaos` (for example `await xhaos.call('agent', 'Snapshot', 'default')`). Cards show the backend's agents and transcripts, and creating agents and sending messages go to the server. The prototype's sample agents are mixed in, renumbered from #9000 and marked `· sample`; actions on them stay in the browser. Use `/samples off` or `/samples on` to hide or show them. Attachments are not wired to the backend yet; on real agents they say so.
+
+Agents work in the workspace directory (`-root`, default the current directory) with six tools: `list_dir`, `read_file`, `search`, `write_file`, `edit_file`, and `bash`. Paths are confined to the root, symlinks included; `bash` runs there but can reach anything the server user can, so it is gated like a write. Every call passes the policy gate first. Reads run at once. With the default policy, writes and commands wait: the card shows each call with its diff or command and Allow/Deny, and `Allow all N` when several wait. A read-only agent has writes and commands denied; `git commit`/`git push` follow the commit setting even under auto review. Once every waiting call is decided, the allowed ones run in order and the model gets all results (denials as errors). Owner messages sent while calls wait reach the model after the results. Stop (agent menu, or `/pause`) cancels the running turn and kills a running command with its children; the agent pauses and your next message continues it. Terminate ends the agent and its subagents and denies their waiting calls. Agents left running by a stopped server continue on the next start. `/btw <question>` asks the composer's model about your agents ("what is #12 doing?", "summarize everyone's status") from a read-only digest of each agent's status, waiting calls, and recent transcript; the answer shows above the composer and nothing is written to any agent. Agents have no such tool; they will coordinate through channels. The log shows warnings only unless you pass `-verbose`.
+
+Build tags: `server` selects Wails server mode, and `purego` keeps Wails off its cgo GTK webview. `libsqlite3` makes `mattn/go-sqlite3` link the system `libsqlite3` dynamically (it needs `libsqlite3-dev` to build and `libsqlite3-0` at runtime). cgo is on only for SQLite. State lives in SQLite at `~/.local/share/xhaos/xhaos.db`, outside the repo.
+
+`app/` is organized by feature. Each package owns its types, rules, and tables, and the shared pieces are reused rather than duplicated:
+
+| Package | Owns |
+|---|---|
+| `workspace` | Workspaces; seeds `default`. |
+| `agent` | Agents and subagents (integer IDs, parent IDs), `Create`, `Message`, and the workspace `Snapshot`. |
+| `policy` | Per-agent policy (`RW + Manual + Review commit` by default) and its ordering; a subagent can't exceed its parent. `Gate` decides allow, ask, or deny for each tool call. |
+| `tool` | Tool definitions, input validation, path confinement, and execution inside the workspace root. |
+| `btw` | Side questions about the workspace, answered from a read-only digest; writes nothing. |
+| `run` | The turn loop: model call, tool calls through the gate, results back to the model; Stop, and resume after restart. |
+| `provider`, `secretbox`, `llm` | Provider configs with API keys sealed at rest, and the provider-neutral model interface with its adapters (`llm/anthropic`). |
+| `eventlog` | The shared per-workspace event log with gap-free sequence numbers, plus `EventsAfter`. |
+| `idempotency` | The shared retry guard. A retry returns the original result; reusing a key for a different request is a conflict. |
+| `sqlitedb`, `apperr` | Opening the database, timestamp helpers, and shared error kinds. |
+| `backend` | Composition: migration order and service construction. |
+| `health` | Liveness and version. |
+
+Only `cmd/xhaos` imports Wails. Every committed event is pushed live as the Wails event `xhaos:event`. The browser loads a snapshot, applies events in sequence order, drops duplicates, and catches up through `EventsAfter` on a gap or when the tab becomes visible again.
+
+Measured footprint: about 140 MB of modules and 240 MB of build cache in `/tmp`, plus a 17 MB binary.
 
 ## Backend direction
 
@@ -35,12 +79,12 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 - Two-column mode uses independent sticky stacks: a short column stays visible while a longer column scrolls. Columns taller than the viewport stop when their bottom reaches the viewport bottom. Expanding cards and resizing the window recalculate that limit. Single-column and mobile layouts scroll normally.
 - Agent transcripts start collapsed. Subagents stay inside expanded parent cards with indentation and connectors. Parent headers show subagent ID chips; click a chip to open that subagent inside its parent. Use chevrons to expand transcripts, and `/layout 1`, `/layout 2`, or `/layout 3` to choose column count.
 - Tool calls and code have no nested boxes; lightweight lexical coloring distinguishes JavaScript, Rust, JSON, shell commands, and diffs. Tool output still expands inline.
-- Status uses vivid dots: green for running, blue for complete, yellow for attention. Paused agents show no status dot. Attention uses an expanding ring around a solid dot. New attention requests scroll into view once, without changing keyboard focus or opening collapsed trees. A parent shows an extra attention dot for waiting subagents. Reduced-motion preferences disable animation and smooth scrolling.
+- Status uses vivid dots: green for running, blue for complete, yellow for attention. Paused agents show no status dot. Attention uses an expanding ring around a solid dot. New attention requests scroll into view once, without changing keyboard focus or opening collapsed trees. A parent shows only its own status dot; a waiting subagent is indicated only by its own dot (on its header and its ID chip), never by an extra dot on the parent. Reduced-motion preferences disable animation and smooth scrolling.
 - Allow/Deny acts on the request shown on that card. Pause/resume buttons are removed; the legacy slash commands still change mock state. Open the ⋯ menu after the chevron and choose Terminate agent to terminate an agent and its subagents; `/history` retains its transcript and can bring the terminated card back into view without restarting it. Menus also attach/detach recipients. Termination marks the whole subtree as terminated and preserves tasks, attachments, and history. This is local state only until the backend can cancel running work.
 - Expand an agent or subagent to read multi-step sample conversations and saved notes inline. Click a tool call or edit to reveal its output or diff. Samples include shell commands, MCP calls, and approval requests; none are executed. Existing seeded tasks receive these sample transcripts without clearing saved state.
-- New agent, the `Ctrl/Cmd+Alt+N` shortcut, and `/new` without a task open a draft agent card. Enter the task, choose a single `<model>-<model_id>` profile from the dropdown in the new-agent card header, then press Enter to create or Escape to cancel. Shift+Enter adds a line. The prompt grows with its content and cannot be resized manually. Draft input survives layout changes; creation stores the full prompt and model selection. Dropdown examples include Claude-opus-5.5, GPT-6.1-sol, Claude-haiku-5.5, Claude-sonnet-5.5, DeepSeek-chat, and Local-small-quantized. These are prototype display choices, not live provider discovery or verified API identifiers; backend adapters will map them to configured provider IDs. The selected model ID is saved with the task. Provider adapters remain planned; no task is executed. Settings, MCP information, command help, and voice consent open inline as closable cards in the agent area.
+- The composer is the only way to create agents; there is no New agent button or draft card. With no recipients attached, Enter creates a new agent from the text, and the placeholder says "New agent". With recipients attached, Enter messages them, and the placeholder names them. `/new task` with one agent attached creates a subagent of it. `Ctrl/Cmd+Alt+N` detaches all recipients and focuses the composer. The model for new agents is a borderless dropdown next to the composer's attach button; it is hidden while recipients are attached and is remembered per browser. Anthropic entries are real API model IDs (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`); the others are prototype labels until the backend lists configured providers. The selection is saved with the agent; on the backend page the list comes from configured providers and the agent runs on that model.
 - Click an agent header or its chevron to expand/collapse the transcript. Double-click the agent header to attach or detach it as a composer recipient; with the header focused, `Alt+Enter` does the same. The `#ID` is a label, not a separate button. You can select several agents, then send normally; detach with × on a recipient chip or repeat the attach action.
-- Create a task with New agent, the `Ctrl/Cmd+Alt+N` shortcut, or the command bar when no recipients are selected. `Ctrl/Cmd+K` focuses the command bar.
+- `Ctrl/Cmd+K` focuses the composer.
 - Type `/` to open the command menu. Commands include `/new task`, `/search query` (or `/search` to clear), `/mcp`, `/memory`, `/layout 1|2|3`, `/channels`, `/history`, `/terminate`, `/allow`, `/deny`, and `/help`. `/allow`, `/deny`, `/pause`, and `/resume` act on eligible attached agents, or accept one explicit agent ID. Ineligible targets are skipped and reported. Questionnaires require answers, not approval; `/allow` and `/deny` never answer or dismiss them. `/help status` shows the real status dots and attention pulse; it is also linked from help. Older `/approve` and `/decline` aliases remain supported. Arrow keys navigate the menu; Escape dismisses it. Enter submits the composer; Shift+Enter adds a line.
 - The command center occupies roughly the top quarter of the window, above the scrolling agent area. Collapse and layout controls are in the top-right ribbon beside MCP and settings; search is available through `/search`. Neutral surfaces use grayscale; only agent status dots use semantic colors.
 - Dictation uses the browser speech API when supported, after an explicit microphone action. Review the transcript before sending. Availability, permissions, and provider processing depend on the browser.
@@ -57,7 +101,11 @@ No automatic channel creation or delivery runs in this browser prototype. The em
 
 See [architecture](docs/architecture.md) for the intended headless protocol and optional disk-file bridge.
 
-Message updates refresh only affected transcripts and preserve their internal scroll offsets and expanded tool outputs. Full-view rerenders also retain transcript offsets. Most cards still use shared HTML rendering functions; the editor is a native reusable component, without React or added dependencies.
+React updates keep transcript scroll offsets and expanded tool outputs, and an open panel survives live updates.
+
+- **Clearing the composer:** press Esc twice quickly to clear its text. Attachments stay. A single Esc closes the slash-command menu.
+- **Working indicator:** while an agent is running and no reply text has arrived yet, its transcript shows a rotating verb ("Thinking…", "Drafting…") with elapsed seconds, and its header shows the verb next to the status dot. Streaming replies end with a blinking caret.
+- **Accent colour:** the violet `brand` colour in `ui/theme/tokens.stylex.ts` marks things that need you: the Questions tab, "Questions waiting", Allow buttons, approval requests, and the questionnaire. Status dots keep their semantic colours.
 
 ## Typing flow and layout
 
@@ -71,7 +119,7 @@ Planned scope: per-agent session history and a read-only view of agent-managed q
 
 ## Questions from agents
 
-Questions are elevated to the composer's Questions view, with horizontal short-title tabs. Only the active question and its options/free-text answer are shown. Custom answer fields grow with content and cannot be resized manually. The Review tab shows the response overview; Enter submits that agent's batch, then opens the next waiting agent. There is no send button and no cross-agent combined submission. Enter advances through questions; Shift+Enter adds a line in a custom answer. Draft answers persist between tabs and message view.
+Questions never take over the composer: it stays on Message on load and when new questions arrive. The asking agent's pulsing attention dot and the **Questions · N** composer tab announce them; open the tab to answer. The Questions view has horizontal short-title tabs. Only the active question and its options/free-text answer are shown. Custom answer fields grow with content and cannot be resized manually. The Review tab shows the response overview; Enter submits that agent's batch, then opens the next waiting agent. There is no send button and no cross-agent combined submission. Enter advances through questions; Shift+Enter adds a line in a custom answer. Draft answers persist between tabs and message view.
 
 A simulated planning agent asks a three-question batch on first load of this experimental version. It is added once, marked as simulated, and does not reappear after completion or termination. Actual question delivery requires the backend.
 
