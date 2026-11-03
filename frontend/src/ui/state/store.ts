@@ -10,13 +10,13 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
-import type { Agent, Memory, Provider, ToolCatalog, Workspace } from '../../types.ts';
+import type { Agent, FileEntry, Memory, Project, Provider, ToolCatalog, Workspace } from '../../types.ts';
 
 enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
-export type PanelKind = 'questions' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation';
+export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation';
 export interface Panel { kind: PanelKind; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];
@@ -30,6 +30,10 @@ export interface State {
   memories: Memory[];
   providers: Provider[];
   tools: Tools; // loaded when the tools panel opens
+  projects: Project[];
+  attachedProject: number | null; // project attached to the composer: where new agents work
+  files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
+  openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
   layout: Layout;
   search: string;
@@ -68,6 +72,10 @@ function initial(): State {
     memories: load<Memory[]>('xhaos-memory-v1', () => []),
     providers: [],
     tools: null,
+    projects: [],
+    attachedProject: null,
+    files: {},
+    openDirs: new Set(),
     layout: 'grid',
     search: '',
     collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),

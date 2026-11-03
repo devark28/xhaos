@@ -38,9 +38,17 @@ function resolve(text: string, recipients: number[]): Intent {
   return { kind: 'create', prompt, parentId: 0 };
 }
 
-export const composerPlaceholder = (recipients: number[]): string => recipients.length
+export const composerPlaceholder = (recipients: number[], project?: string): string => recipients.length
   ? `Message ${recipients.map(id => '#' + id).join(', ')} — or /new to add a subagent, / for commands`
-  : 'New agent — describe the task, or / for commands';
+  : project ? `New agent in ${project} — describe the task, or / for commands` : 'New agent — describe the task, or / for commands';
+
+// An attached project says where new agents work. Messages never move an
+// agent, so when agents are messaged with a project attached, every one must
+// already work in it; projectConflict returns the first that does not.
+export function projectConflict<A extends { id: number; projectId?: number }>(agents: A[], projectId: number | null): A | null {
+  if (!projectId) return null;
+  return agents.find(agent => (agent.projectId || 0) !== projectId) || null;
+}
 
 // Typing #12 followed by a space attaches agent 12 (when it exists) and
 // removes the mention from the text; \#12 keeps it as text. Only a mention

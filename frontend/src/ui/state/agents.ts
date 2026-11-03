@@ -10,6 +10,8 @@ import { update, get, workspace, workspaceOf, findAgent, findAgentIn, focusLater
 import { call, connected, isSample } from './backend.ts';
 import { clearComposer, currentChoice, focusComposer } from './composer.ts';
 import { showProviders } from './panels.ts';
+import { projectName } from './projects.ts';
+import { projectConflict } from '../../composer-target.ts';
 import type { Agent, Attachment } from '../../types.ts';
 
 export function toggleAgent(id: number) {
@@ -94,7 +96,15 @@ export async function newAgent(prompt: string, attachments: Attachment[] = [], p
     if (!choice) { toast('Add a model provider first.'); showProviders(); return false; }
     if (attachments.length) { toast('Attachments are not sent to the backend yet; remove them to create the agent.'); return false; }
     try {
-      const agent = await call<Agent>('agent', 'Create', { idempotencyKey: idempotencyKey(), workspaceId: get().active, parentId, prompt, provider: choice.provider, model: choice.model });
+      // Subagents work in their parent's project; an attached project must match it.
+      const attached = get().attachedProject;
+      const parent = parentId ? findAgent(parentId) : undefined;
+      if (parent && attached && (parent.projectId || 0) !== attached) {
+        toast(`#${parentId} works in ${projectName(parent.projectId) || 'another project'}; its subagents do too. Detach ${projectName(attached)} to add one.`);
+        return false;
+      }
+      const projectId = parentId ? 0 : attached || 0;
+      const agent = await call<Agent>('agent', 'Create', { idempotencyKey: idempotencyKey(), workspaceId: get().active, parentId, projectId, prompt, provider: choice.provider, model: choice.model });
       clearComposer();
       toast(`Agent #${agent.id} created${parentId ? ` under #${parentId}` : ''}.`);
       return true;
@@ -121,6 +131,13 @@ export async function newAgent(prompt: string, attachments: Attachment[] = [], p
 
 export async function sendMessage(agentIds: number[], text: string, attachments: Attachment[] = []) {
   const real = agentIds.filter(id => connected() && !isSample(id));
+  // A message never moves an agent to another project (see projectConflict).
+  const attached = get().attachedProject;
+  const conflict = projectConflict(real.map(id => findAgent(id)).filter(a => a !== undefined), attached);
+  if (conflict) {
+    toast(`#${conflict.id} works in ${projectName(conflict.projectId) || 'another project'}, not ${projectName(attached)}. Detach the project to message it.`);
+    return;
+  }
   if (real.length) {
     if (attachments.length) { toast('Attachments are not sent to the backend yet; remove them to send.'); return; }
     try { await call('agent', 'Message', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentIds: real, body: text }); }

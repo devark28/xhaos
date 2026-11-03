@@ -9,6 +9,7 @@ import { Icon } from './Icon.tsx';
 import { Transcript } from './Transcript.tsx';
 import { DecisionButtons, useNeedsDecision } from './Decisions.tsx';
 import { WorkingLabel } from './Working.tsx';
+import { clearClick, onAttachKey, onToggleClick } from './clicks.ts';
 import { useApp } from './state/store.ts';
 import { toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent } from './state/agents.ts';
 import { showQuestions } from './state/panels.ts';
@@ -24,28 +25,22 @@ export function Badge({ agent, size }: { agent: Pick<Agent, 'status'> & Partial<
 }
 
 // ---- header ----------------------------------------------------------------
-// One click toggles (after a short delay); a double-click attaches the agent
-// to the composer instead. Keyboard activation (detail 0) toggles at once.
-const clickTimers = new Map<number, ReturnType<typeof setTimeout>>();
-const clearClickTimer = (id: number) => { clearTimeout(clickTimers.get(id)); clickTimers.delete(id); };
-function onRowClick(event: MouseEvent, id: number) {
-  clearClickTimer(id);
-  if (event.detail >= 2) { if (event.detail === 2) toggleRecipient(id); return; }
-  if (event.detail === 0) { toggleAgent(id); return; }
-  clickTimers.set(id, setTimeout(() => { clickTimers.delete(id); toggleAgent(id); }, 300));
-}
-function onRowKey(event: KeyboardEvent, id: number) {
-  if (event.altKey && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); clearClickTimer(id); toggleRecipient(id); }
-}
+// Click toggles the card; double-click (or Alt+Enter) attaches it (clicks.ts).
+const clickKey = (id: number) => `agent:${id}`;
+const onRowClick = (event: MouseEvent, id: number) => onToggleClick(event, clickKey(id), () => toggleAgent(id), () => toggleRecipient(id));
+const onRowKey = (event: KeyboardEvent, id: number) => onAttachKey(event, clickKey(id), () => toggleRecipient(id));
+const clearClickTimer = (id: number) => clearClick(clickKey(id));
 
 function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; closed: boolean; nested: boolean; attached: boolean }) {
+  // The project name shows once there is more than one to tell apart.
+  const project = useApp(s => (s.projects.length > 1 ? s.projects.find(p => p.id === agent.projectId)?.name : undefined));
   return (
     <button type="button" data-collapse={agent.id} data-agent-row-id={agent.id} aria-keyshortcuts="Alt+Enter" title="Double-click to attach or detach; Alt+Enter when focused" aria-expanded={!closed}
       aria-label={`${closed ? 'Expand' : 'Collapse'} agent ${agent.id}: ${agent.title}${attached ? ', attached to composer' : ''}`}
       onClick={event => onRowClick(event, agent.id)} onKeyDown={event => onRowKey(event, agent.id)}
       {...stylex.props(header.row, nested && header.rowNested)}>
       <span aria-hidden="true" {...stylex.props(header.id, nested && header.idNested, attached && header.idAttached)}>#{agent.id}</span>
-      <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{agent.role || agent.modelLabel || ''}{agent.sample ? ' · sample' : ''}</span>
+      <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{project && !nested ? `${project} · ` : ''}{agent.role || agent.modelLabel || ''}{agent.sample ? ' · sample' : ''}</span>
       <span data-title {...stylex.props(header.title, nested && header.titleNested)}>{agent.title}</span>
     </button>
   );

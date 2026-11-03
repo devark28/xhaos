@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveSubmit, composerPlaceholder, takeMention } from './composer-target.ts';
+import { resolveSubmit, composerPlaceholder, takeMention, projectConflict } from './composer-target.ts';
 import { viewFromSnapshot, applyEvent, applyDelta, pickerChoices } from './backend-view.ts';
 import { findModel, loadModelChoice, saveModelChoice, modelChoices } from './models.ts';
 
@@ -103,4 +103,14 @@ test('#N then a space attaches an existing agent; \\#N stays text', () => {
   assert.equal(takeMention('/terminate #2 ', exists), null);
   assert.deepEqual(resolveSubmit('see \\#2 and \\#3', [5]), { kind: 'message', agentIds: [5], body: 'see #2 and #3' });
   assert.equal(resolveSubmit('fix \\#4').prompt, 'fix #4');
+});
+
+test('an attached project names where new agents go and must match messaged agents', () => {
+  assert.match(composerPlaceholder([], 'api'), /^New agent in api/);
+  assert.match(composerPlaceholder([4], 'api'), /^Message #4/);
+  const agents = [{ id: 1, projectId: 2 }, { id: 3, projectId: 5 }];
+  assert.equal(projectConflict(agents, null), null);
+  assert.equal(projectConflict(agents.slice(0, 1), 2), null);
+  assert.equal(projectConflict(agents, 2).id, 3);
+  assert.equal(projectConflict([{ id: 9 }], 2).id, 9); // no project is not "the same project"
 });

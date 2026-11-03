@@ -5,6 +5,7 @@ import { viewFromSnapshot, applyEvent, applyDelta } from '../../backend-view.ts'
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
 import { update, get, workspaceOf, toast, errorText, save } from './store.ts';
+import { refreshProjects } from './projects.ts';
 import type { Agent, BackendEvent, Snapshot, Workspace } from '../../types.ts';
 
 let backend: Backend | null = null;
@@ -81,6 +82,7 @@ async function startBackend(connection: Backend) {
   const sync = createSync({ call: connection.call, events: connection.events, workspaceId: 'default', onSnapshot, onEvent, onError: () => toast('Lost sync with the backend; will retry.') });
   (globalThis as any).xhaos = { ...connection, sync }; // for console use
   try { update(s => { s.backendVersion = connection.status.version; }); await refreshProviders(); } catch { /* providers stay empty */ }
+  try { await refreshProjects(); } catch { /* projects stay empty */ }
   // Live reply text: apply at most once per frame while replies stream.
   let pending: { workspaceId: string; agentId: number; text: string }[] = [];
   connection.events?.On?.(DELTA_EVENT_NAME, event => {

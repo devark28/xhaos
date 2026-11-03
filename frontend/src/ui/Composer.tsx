@@ -18,6 +18,7 @@ import {
   addFiles, removeFile, registerInput, getDraft,
 } from './state/composer.ts';
 import { detachRecipient } from './state/agents.ts';
+import { detachProject } from './state/projects.ts';
 import { showMessageComposer, showDraw, dictate } from './state/panels.ts';
 import type { XhaosInput } from '../rich-input.ts';
 
@@ -51,9 +52,17 @@ function RecipientChips() {
   // Select stable references; derive arrays outside the selector.
   const agents = activeAgents(useApp(s => workspaceOf(s).agents));
   const chips = [...selected].map(id => agents.find(a => a.id === id)).filter(agent => agent !== undefined);
-  if (!chips.length) return null;
+  const project = useApp(s => s.projects.find(p => p.id === s.attachedProject));
+  if (!chips.length && !project) return null;
   return (
     <div id="composer-targets" {...stylex.props(form.targets)}>
+      {project && (
+        <span data-recipient-project={project.id} title={project.path} {...stylex.props(form.recipient)}>
+          <Icon name="folder" size={12} />
+          <span {...stylex.props(form.ellipsis)}>{project.name}</span>
+          <Button data-detach-project={project.id} aria-label={`Detach project ${project.name}`} onClick={detachProject} sx={form.chipButton}>×</Button>
+        </span>
+      )}
       {chips.map(agent => (
         <span key={agent.id} data-recipient={agent.id} {...stylex.props(form.recipient)}>
           <Badge agent={agent} />
@@ -141,6 +150,7 @@ function ComposerForm() {
   const sending = useApp(s => s.sending);
   const recording = useApp(s => s.recording);
   const selected = useApp(s => s.selected);
+  const projectName = useApp(s => s.projects.find(p => p.id === s.attachedProject)?.name);
   useLayoutEffect(() => {
     registerInput(input.current);
     const unbind = bindEditor(input.current!, holder.current!, {
@@ -153,7 +163,7 @@ function ComposerForm() {
       onSubmit={event => { event.preventDefault(); submitCommand(input.current!.value); }} {...stylex.props(form.root, dragging && form.dragging)}>
       <RecipientChips />
       <xhaos-input ref={input} id="command" contentEditable="true" role="textbox" aria-multiline="true" aria-label="Agent command"
-        data-placeholder={composerPlaceholder([...selected])} spellCheck="true" suppressContentEditableWarning {...stylex.props(form.input)} />
+        data-placeholder={composerPlaceholder([...selected], projectName)} spellCheck="true" suppressContentEditableWarning {...stylex.props(form.input)} />
       <PendingFiles />
       <div data-editor="command" {...stylex.props(form.tools)}>
         <Button data-pick title="Attach files" aria-label="Attach files" onClick={() => files.current?.click()} sx={form.pick}>＋</Button>

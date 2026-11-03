@@ -9,6 +9,7 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
   return {
     id: agent.id,
     parentId: agent.parentId || 0,
+    projectId: agent.projectId || 0,
     title: agent.title,
     role: agent.role || '',
     status: statuses[agent.status] || 'idle',

@@ -41,13 +41,16 @@ type Runner struct {
 	agents    *agent.Store
 	providers *provider.Store
 	notify    Notifier
-	root      string // workspace directory tools run in
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	active    map[key]bool // value: another turn requested while running
-	stops     map[key]context.CancelFunc
+	root      string // tools' folder for agents without a project
+	// ProjectRoot, when set, maps an agent's project to the folder its tools
+	// work in. Agents in different projects cannot see each other's files.
+	ProjectRoot func(workspaceID string, projectID int64) (string, error)
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	active      map[key]bool // value: another turn requested while running
+	stops       map[key]context.CancelFunc
 }
 
 // New creates a runner whose tools work inside root.
@@ -57,6 +60,14 @@ func New(agents *agent.Store, providers *provider.Store, notify Notifier, root s
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{agents: agents, providers: providers, notify: notify, root: root, ctx: ctx, cancel: cancel, active: map[key]bool{}, stops: map[key]context.CancelFunc{}}
+}
+
+// rootFor is the folder an agent's tools work in.
+func (r *Runner) rootFor(a agent.Agent) (string, error) {
+	if a.ProjectID == 0 || r.ProjectRoot == nil {
+		return r.root, nil
+	}
+	return r.ProjectRoot(a.WorkspaceID, a.ProjectID)
 }
 
 // Resume continues agents left running by a previous server process.
@@ -212,7 +223,12 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			creds, kind = c, p.Kind
 		}
 
-		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, r.root), Tools: tool.Specs()}
+		root, err := r.rootFor(a)
+		if err != nil {
+			fail(fmt.Sprintf("Cannot use the agent's project: %v.", err))
+			return
+		}
+		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, root), Tools: tool.Specs()}
 		prefix := Prefix(turn)
 		for _, m := range conv {
 			switch m.From {
@@ -282,6 +298,11 @@ func lastReply(conv []agent.MessageData) int {
 // every call is decided it runs the allowed ones in order, records their
 // results for the model, and returns true.
 func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply agent.MessageData) bool {
+	root, err := r.rootFor(a)
+	if err != nil {
+		slog.Error("run: project root", "agent", a.ID, "err", err)
+		return false
+	}
 	states, err := r.agents.Tools(ws, a.ID)
 	if err != nil {
 		slog.Error("run: load tool states", "agent", a.ID, "err", err)
@@ -299,7 +320,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			waiting = waiting || st.State == agent.ToolPending
 			continue
 		}
-		call, err := tool.Prepare(r.root, c)
+		call, err := tool.Prepare(root, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
 		switch {
 		case reply.Stop == "max_tokens":
@@ -337,10 +358,10 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {
 				// Prepare again: files may have changed while the call waited.
-				call, err := tool.Prepare(r.root, c)
+				call, err := tool.Prepare(root, c)
 				out := ""
 				if err == nil {
-					out, err = tool.Execute(ctx, r.root, call)
+					out, err = tool.Execute(ctx, root, call)
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {

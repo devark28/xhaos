@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"xhaos/app/btw"
+	"xhaos/app/project"
 	"xhaos/app/tool"
 
 	"xhaos/app/agent"
@@ -43,6 +44,7 @@ type Services struct {
 	Providers  *provider.Service
 	Btw        *btw.Service
 	Tools      *tool.Service
+	Projects   *project.Service
 }
 
 // Open opens the database at path (the API key encryption key is kept beside
@@ -68,6 +70,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		{"workspace", workspace.Migrate},
 		{"eventlog", eventlog.Migrate},
 		{"idempotency", idempotency.Migrate},
+		{"project", project.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -102,7 +105,14 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("workspace root %s is not a directory", root)
 	}
+	if err := project.EnsureDefault(db, workspace.DefaultID, root); err != nil {
+		return nil, fmt.Errorf("default project: %w", err)
+	}
 	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify, root)
+	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
+		p, err := project.Get(db, workspaceID, projectID)
+		return p.Path, err
+	}
 	if !opts.DisableRuns {
 		agents.Wake = runner.Kick
 		agents.Halt = runner.Stop
@@ -117,6 +127,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		Providers:  provider.NewService(providers),
 		Btw:        btw.NewService(agents, providers),
 		Tools:      tool.NewService(root),
+		Projects:   project.NewService(db),
 	}, nil
 }
 

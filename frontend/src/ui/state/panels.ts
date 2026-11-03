@@ -3,6 +3,7 @@
 import { update, get, focusLater, toast, errorText, saveMemories, pendingQuestions, type Layout, type Panel, type PanelKind } from './store.ts';
 import { call, connected, refreshProviders } from './backend.ts';
 import { focusComposer, setDraft } from './composer.ts';
+import { refreshProjects } from './projects.ts';
 import type { Provider } from '../../types.ts';
 
 export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { update(s => { s.panel = { kind, ...args }; }); }
@@ -12,6 +13,7 @@ export function showDraw() { update(s => { s.mode = 'draw'; }); }
 export function selectPanel(kind: PanelKind) {
   if (kind === 'questions') showQuestions(get().questionAgentId);
   else if (kind === 'tools') showTools();
+  else if (kind === 'files') showFiles();
   else openPanel(kind);
 }
 export function showQuestions(id: number | null) {
@@ -37,6 +39,13 @@ export function saveMemory(editId: string | null, content: string) {
 export function deleteMemory(id: string) {
   update(s => { s.memories = s.memories.filter(memory => memory.id !== id); });
   saveMemories(); openPanel('memories');
+}
+
+// ---- files -------------------------------------------------------------------
+// showFiles opens the Files panel with the project list fresh from the server.
+export async function showFiles() {
+  openPanel('files');
+  try { await refreshProjects(); } catch (error) { toast(`Could not load projects: ${errorText(error)}`); }
 }
 
 // ---- tools and providers ---------------------------------------------------

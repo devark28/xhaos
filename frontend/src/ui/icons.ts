@@ -14,6 +14,8 @@ export const iconPaths = {
   check: '<path d="m5 12 4 4L19 6"/>',
   question: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 0 1 4.8.8c0 1.7-2.4 2.2-2.4 3.7M12 17.2h.01"/>',
   columns: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M9 4v16M15 4v16"/>',
+  folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5Z"/>',
+  file: '<path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
 };
 export type IconName = keyof typeof iconPaths;

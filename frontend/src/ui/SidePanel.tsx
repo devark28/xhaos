@@ -13,6 +13,7 @@ import type { IconName } from './icons.ts';
 // Each tab keeps the element ID its old ribbon button had.
 const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?: PanelKind[] }[] = [
   { kind: 'questions', id: 'show-questions', icon: 'question', label: 'Questions' },
+  { kind: 'files', id: 'files', icon: 'folder', label: 'Files' },
   { kind: 'channels', id: 'channels', icon: 'chat', label: 'Channels' },
   { kind: 'memories', id: 'memories', icon: 'memory', label: 'Memories' },
   { kind: 'tools', id: 'integrations', icon: 'plug', label: 'Tools and MCP' },
@@ -59,8 +60,8 @@ const side = stylex.create({
   attention: { color: colors.brand },
   badge: {
     position: 'absolute',
-    top: -3,
-    right: -6,
+    top: 0,
+    right: -5,
     display: 'inline-flex',
     alignItems: 'center',
     gap: 2,

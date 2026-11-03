@@ -16,6 +16,7 @@ import (
 	"xhaos/app/idempotency"
 	"xhaos/app/llm"
 	"xhaos/app/policy"
+	"xhaos/app/project"
 	"xhaos/app/sqlitedb"
 	"xhaos/app/workspace"
 )
@@ -59,6 +60,7 @@ type Agent struct {
 	ID          int64         `json:"id"`
 	WorkspaceID string        `json:"workspaceId"`
 	ParentID    int64         `json:"parentId,omitempty"`
+	ProjectID   int64         `json:"projectId,omitempty"` // the folder its tools work in; 0 for agents made before projects
 	Title       string        `json:"title"`
 	Role        string        `json:"role,omitempty"`
 	Status      string        `json:"status"`
@@ -123,8 +125,9 @@ type CreateRequest struct {
 	IdempotencyKey string         `json:"idempotencyKey"`
 	WorkspaceID    string         `json:"workspaceId"`
 	ParentID       int64          `json:"parentId,omitempty"`
-	Title          string         `json:"title"`            // one line; derived from Prompt when empty
-	Prompt         string         `json:"prompt,omitempty"` // the task, recorded as the first owner message
+	ProjectID      int64          `json:"projectId,omitempty"` // 0: the parent's project, else the workspace's first
+	Title          string         `json:"title"`               // one line; derived from Prompt when empty
+	Prompt         string         `json:"prompt,omitempty"`    // the task, recorded as the first owner message
 	Role           string         `json:"role,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
@@ -159,7 +162,8 @@ CREATE TABLE IF NOT EXISTS agents (
 	access        TEXT NOT NULL,
 	review        TEXT NOT NULL,
 	commit_policy TEXT NOT NULL,
-	created_at    TEXT NOT NULL
+	created_at    TEXT NOT NULL,
+	project_id    INTEGER REFERENCES projects(id)
 );`
 
 // Service is the agent API. Every exported method is callable by clients.
@@ -190,6 +194,9 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 		publish = func(eventlog.Event) {}
 	}
 	if _, err := db.Exec(schema); err != nil {
+		return nil, fmt.Errorf("migrate agents: %w", err)
+	}
+	if err := addColumn(db, "agents", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
 	}
 	return &Service{db: db, publish: publish, now: time.Now}, nil
@@ -282,6 +289,21 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 				return fmt.Errorf("%w: subagent policy exceeds parent #%d", apperr.Invalid, parent.ID)
 			}
 			p = parent.Policy
+			if req.ProjectID != 0 && req.ProjectID != parent.ProjectID {
+				return fmt.Errorf("%w: a subagent works in its parent's project", apperr.Invalid)
+			}
+			req.ProjectID = parent.ProjectID
+		} else if req.ProjectID == 0 {
+			first, err := project.First(tx, req.WorkspaceID)
+			if err != nil {
+				return err
+			}
+			req.ProjectID = first
+		}
+		if req.ProjectID != 0 {
+			if _, err := project.Get(tx, req.WorkspaceID, req.ProjectID); err != nil {
+				return err
+			}
 		}
 		if req.Policy != nil {
 			p = *req.Policy
@@ -290,10 +312,10 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 			return err
 		}
 		at := s.now()
-		res, err := tx.Exec(`INSERT INTO agents (workspace_id, parent_id, title, role, status, provider, model, access, review, commit_policy, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		res, err := tx.Exec(`INSERT INTO agents (workspace_id, parent_id, title, role, status, provider, model, access, review, commit_policy, created_at, project_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			req.WorkspaceID, sqlitedb.NullID(req.ParentID), req.Title, req.Role, StatusIdle, req.Provider, req.Model,
-			p.Access, p.Review, p.Commit, sqlitedb.Stamp(at))
+			p.Access, p.Review, p.Commit, sqlitedb.Stamp(at), sqlitedb.NullID(req.ProjectID))
 		if err != nil {
 			return err
 		}
@@ -543,13 +565,13 @@ func (s *Service) emit(events []eventlog.Event) {
 	}
 }
 
-const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at FROM agents`
+const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0) FROM agents`
 
 func scan(r interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
 	var at string
 	err := r.Scan(&a.ID, &a.WorkspaceID, &a.ParentID, &a.Title, &a.Role, &a.Status, &a.Provider, &a.Model,
-		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at)
+		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID)
 	a.CreatedAt = sqlitedb.ParseStamp(at)
 	return a, err
 }
@@ -674,4 +696,28 @@ func (st *Store) write(workspaceID string, id int64, fn func(*sql.Tx, time.Time)
 	}
 	st.publish(ev)
 	return nil
+}
+
+// addColumn adds a column to a table created by an older build.
+func addColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }

@@ -12,6 +12,7 @@ const services = {
   provider: 'xhaos/app/provider.Service',
   btw: 'xhaos/app/btw.Service',
   tool: 'xhaos/app/tool.Service',
+  project: 'xhaos/app/project.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

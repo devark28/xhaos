@@ -18,6 +18,7 @@ import (
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
 	"xhaos/app/policy"
+	"xhaos/app/project"
 	"xhaos/app/provider"
 	"xhaos/app/run"
 	"xhaos/app/workspace"
@@ -487,5 +488,84 @@ func TestBtwAnswersWithoutTouchingAnyAgent(t *testing.T) {
 	}
 	if _, err := h.s.Btw.Ask(btw.AskRequest{WorkspaceID: ws, Question: " ", Provider: "f", Model: "m1"}); err == nil {
 		t.Fatal("empty question accepted")
+	}
+}
+
+func TestAgentsWorkInTheirProject(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	os.MkdirAll(filepath.Join(other, "src"), 0o755)
+	os.WriteFile(filepath.Join(other, "src", "a.go"), []byte("package a\n"), 0o644)
+	os.Symlink(root, filepath.Join(other, "escape"))
+	h := setupIn(t, root, toolModel([]llm.ToolCall{tc("w", "write_file", map[string]any{"path": "note.txt", "content": "hi\n"})}))
+	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The server root is the first project, created at startup.
+	projects, err := h.s.Projects.Projects(ws)
+	realRoot, _ := filepath.EvalSymlinks(root)
+	if err != nil || len(projects) != 1 || projects[0].Path != realRoot {
+		t.Fatalf("default projects = %+v, %v", projects, err)
+	}
+	p, err := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: other, Name: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"relative/dir", filepath.Join(other, "missing"), filepath.Join(other, "src", "a.go"), other} {
+		if _, err := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: bad}); err == nil {
+			t.Errorf("Add(%q) succeeded", bad)
+		}
+	}
+
+	files, err := h.s.Projects.Files(project.FilesRequest{WorkspaceID: ws, ProjectID: p.ID})
+	if err != nil || len(files) != 2 || files[0].Name != "escape" && files[0].Name != "src" {
+		t.Fatalf("files = %+v, %v", files, err)
+	}
+	inner, err := h.s.Projects.Files(project.FilesRequest{WorkspaceID: ws, ProjectID: p.ID, Dir: "src"})
+	if err != nil || len(inner) != 1 || inner[0].Path != "src/a.go" || inner[0].Size != 10 {
+		t.Fatalf("src = %+v, %v", inner, err)
+	}
+	for _, dir := range []string{"..", "escape", "/etc"} {
+		if _, err := h.s.Projects.Files(project.FilesRequest{WorkspaceID: ws, ProjectID: p.ID, Dir: dir}); err == nil {
+			t.Errorf("Files(%q) left the project", dir)
+		}
+	}
+
+	// An agent in the other project writes there, not in the server root.
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "p", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto, ProjectID: p.ID})
+	if err != nil || a.ProjectID != p.ID {
+		t.Fatalf("Create = %+v, %v", a, err)
+	}
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	if _, err := os.Stat(filepath.Join(other, "note.txt")); err != nil {
+		t.Fatal("write did not land in the project folder")
+	}
+	if _, err := os.Stat(filepath.Join(root, "note.txt")); err == nil {
+		t.Fatal("write landed in the server root")
+	}
+
+	// Subagents inherit the project; top-level agents default to the first.
+	sub, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "s", WorkspaceID: ws, ParentID: a.ID, Title: "sub"})
+	if err != nil || sub.ProjectID != p.ID {
+		t.Fatalf("subagent = %+v, %v", sub, err)
+	}
+	if _, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "s2", WorkspaceID: ws, ParentID: a.ID, Title: "sub", ProjectID: projects[0].ID}); err == nil {
+		t.Fatal("subagent moved to another project")
+	}
+	top, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "t", WorkspaceID: ws, Title: "top"})
+	if err != nil || top.ProjectID != projects[0].ID {
+		t.Fatalf("top-level default = %+v, %v", top, err)
+	}
+
+	// A project with agents cannot be removed; an unused one can.
+	if err := h.s.Projects.Remove(project.RemoveRequest{WorkspaceID: ws, ID: p.ID}); err == nil {
+		t.Fatal("removed a project that has agents")
+	}
+	empty := t.TempDir()
+	q, _ := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: empty})
+	if err := h.s.Projects.Remove(project.RemoveRequest{WorkspaceID: ws, ID: q.ID}); err != nil {
+		t.Fatal(err)
 	}
 }

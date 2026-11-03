@@ -58,6 +58,7 @@ export interface QuestionBatch {
 export interface Agent {
   id: number;
   parentId?: number;
+  projectId?: number;
   title: string;
   status: Status;
   role?: string;
@@ -130,6 +131,7 @@ export interface BackendAgent {
   id: number;
   workspaceId: string;
   parentId?: number;
+  projectId?: number;
   title: string;
   role?: string;
   status: string;
@@ -187,6 +189,19 @@ export interface Provider {
   models: string[];
   hasKey: boolean;
   keyHint?: string;
+}
+
+export interface Project {
+  id: number;
+  workspaceId: string;
+  name: string;
+  path: string; // a folder on the server
+}
+export interface FileEntry {
+  name: string;
+  path: string; // relative to the project
+  dir?: boolean;
+  size?: number;
 }
 
 export interface ToolInfo {

@@ -9,6 +9,7 @@ import { Button, Chip, StatusDot } from './kit.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
 import { QuestionInbox } from './QuestionInbox.tsx';
+import { Files } from './Files.tsx';
 import { useApp, workspaceOf } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
 import { restore } from './state/agents.ts';
@@ -218,7 +219,7 @@ function Tools() {
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
-          <P>Built-in tools, part of Xhaos (not MCP). Every agent can call them in <code>{catalog.root}</code>; each call passes the agent's policy first.</P>
+          <P>Built-in tools, part of Xhaos (not MCP). Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first.</P>
           <div {...stylex.props(tools.list)}>
             {catalog.tools.map(t => (
               <div key={t.name} data-tool={t.name} {...stylex.props(tools.row)}>
@@ -247,6 +248,7 @@ export function Panel() {
   const panel = useApp(s => s.panel);
   let body: ReactNode = null;
   if (panel.kind === 'questions') body = <Shell title="Questions"><div id="question-inbox" {...stylex.props(shell.questions)}><QuestionInbox /></div></Shell>;
+  else if (panel.kind === 'files') body = <Shell title="Files"><Files /></Shell>;
   else if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
   else if (panel.kind === 'channels') body = <Channels channelId={panel.channelId} />;
   else if (panel.kind === 'providers') body = <Providers message={panel.message} testing={panel.testing} />;
