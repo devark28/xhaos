@@ -81,6 +81,13 @@ func NewStore(db *sql.DB, box *secretbox.Box, adapters []llm.Adapter, defaults m
 	return &Store{db: db, box: box, adapters: byKind, defaults: defaults}, nil
 }
 
+// keyOptional reports whether a kind's adapter can work without an API key
+// (local OpenAI-compatible servers usually take none).
+func (st *Store) keyOptional(kind string) bool {
+	k, ok := st.adapters[kind].(interface{ KeyOptional() bool })
+	return ok && k.KeyOptional()
+}
+
 // Adapter returns the adapter for kind, or nil.
 func (st *Store) Adapter(kind string) llm.Adapter { return st.adapters[kind] }
 
@@ -107,6 +114,9 @@ func (st *Store) Credentials(id string) (Provider, llm.Credentials, error) {
 		return p, llm.Credentials{}, err
 	}
 	if sealed == "" {
+		if st.keyOptional(p.Kind) {
+			return p, llm.Credentials{BaseURL: p.BaseURL}, nil
+		}
 		return p, llm.Credentials{}, fmt.Errorf("%w: provider %q has no API key", apperr.Invalid, id)
 	}
 	key, err := st.box.Unseal(sealed)
@@ -153,6 +163,21 @@ func (s *Service) Save(req SaveRequest) (Provider, error) {
 	if len(models) == 0 {
 		models = s.st.defaults[req.Kind]
 	}
+	if len(models) == 0 {
+		// Re-saving (e.g. a new key) keeps the provider's current list.
+		if old, _, err := scan(s.st.db.QueryRow(selectProvider+` WHERE id = ?`, req.ID)); err == nil {
+			models = old.Models
+		}
+	}
+	if len(models) == 0 {
+		// No list given and no defaults (OpenAI-compatible endpoints differ):
+		// ask the endpoint, with the key being saved or the stored one.
+		listed, err := s.listModels(req)
+		if err != nil {
+			return Provider{}, fmt.Errorf("%w: list the models to offer, or fix the endpoint: %v", apperr.Invalid, err)
+		}
+		models = listed
+	}
 	modelsJSON, _ := json.Marshal(models)
 	key := strings.TrimSpace(req.APIKey)
 	sealed, hint := "", ""
@@ -195,7 +220,28 @@ func (s *Service) Test(id string) (TestResult, error) {
 	if err != nil {
 		return TestResult{Message: err.Error()}, nil
 	}
-	return TestResult{OK: true, Message: fmt.Sprintf("Key works; %d models available.", len(models)), Models: models}, nil
+	what := "Key works"
+	if !p.HasKey {
+		what = "Endpoint works"
+	}
+	return TestResult{OK: true, Message: fmt.Sprintf("%s; %d models available.", what, len(models)), Models: models}, nil
+}
+
+// listModels asks the endpoint being saved for its models.
+func (s *Service) listModels(req SaveRequest) ([]string, error) {
+	creds := llm.Credentials{APIKey: strings.TrimSpace(req.APIKey), BaseURL: strings.TrimSpace(req.BaseURL)}
+	if creds.APIKey == "" {
+		if _, stored, err := s.st.Credentials(req.ID); err == nil {
+			creds.APIKey = stored.APIKey
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	models, err := s.st.adapters[req.Kind].Models(ctx, creds)
+	if err == nil && len(models) == 0 {
+		err = errors.New("the endpoint lists no models")
+	}
+	return models, err
 }
 
 func cleanList(in []string) []string {

@@ -2,6 +2,8 @@ package run_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"xhaos/app/btw"
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
+	"xhaos/app/llm/openai"
 	"xhaos/app/policy"
 	"xhaos/app/project"
 	"xhaos/app/provider"
@@ -568,4 +571,69 @@ func TestAgentsWorkInTheirProject(t *testing.T) {
 	if err := h.s.Projects.Remove(project.RemoveRequest{WorkspaceID: ws, ID: q.ID}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// An agent on an OpenAI-compatible endpoint: the runner's tool loop works
+// through the openai adapter (tool call, gate, result, final answer).
+func TestOpenAICompatibleAgentUsesTools(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "hello.txt"), []byte("hi"), 0o644)
+	var mu sync.Mutex
+	var requests []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		requests = append(requests, body)
+		n := len(requests)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		} else {
+			msgs := body["messages"].([]any)
+			last := msgs[len(msgs)-1].(map[string]any)
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"saw %s\"},\"finish_reason\":\"stop\"}]}\n\n", strings.TrimSpace(last["content"].(string)))
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	s, err := backend.Open(filepath.Join(t.TempDir(), "x.db"), backend.Options{Root: root, Adapters: []llm.Adapter{openai.Adapter{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Providers.Save(provider.SaveRequest{ID: "local", Kind: "openai", BaseURL: srv.URL, Models: []string{"m"}}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "what is here?", Provider: "local", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap, _ := s.Agents.Snapshot(ws)
+		got := ""
+		for _, e := range snap.Transcript {
+			if e.Kind == agent.EventMessage && strings.Contains(string(e.Data), `"from":"agent"`) && strings.Contains(string(e.Data), "saw") {
+				got = string(e.Data)
+			}
+		}
+		if got != "" {
+			if !strings.Contains(got, "saw hello.txt") {
+				t.Fatalf("final reply = %s", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no final reply; transcript: %v", snap.Transcript)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 || requests[0]["model"] != "m" || requests[0]["tools"] == nil {
+		t.Fatalf("requests = %d, first = %v", len(requests), requests[0])
+	}
+	_ = a
 }

@@ -24,4 +24,4 @@ export function saveModelChoice(id: string, storage: Storage | undefined = globa
 }
 
 export const modelLabel = (provider?: string, model?: string): string =>
-  modelChoices.find(choice => choice.provider === provider && choice.model === model)?.label || [provider, model].filter(Boolean).join('-');
+  modelChoices.find(choice => choice.provider === provider && choice.model === model)?.label || model || provider || '';

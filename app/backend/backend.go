@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"xhaos/app/btw"
+	"xhaos/app/llm/openai"
 	"xhaos/app/project"
 	"xhaos/app/tool"
 
@@ -83,7 +84,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	}
 	adapters := opts.Adapters
 	if adapters == nil {
-		adapters = []llm.Adapter{anthropic.Adapter{}}
+		adapters = []llm.Adapter{anthropic.Adapter{}, openai.Adapter{}}
 	}
 	providers, err := provider.NewStore(db, box, adapters, map[string][]string{anthropic.Kind: anthropic.DefaultModels})
 	if err != nil {

@@ -2,6 +2,9 @@ package provider_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,5 +62,41 @@ func TestKeysAreHiddenKeptAndTestable(t *testing.T) {
 	s.Providers.Save(provider.SaveRequest{ID: "main", Kind: "stub", APIKey: "sk-wrong"})
 	if res, _ := s.Providers.Test("main"); res.OK {
 		t.Fatal("wrong key reported OK")
+	}
+}
+
+func TestOpenAICompatibleProvidersMayBeKeyless(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"id":"qwen3:8b"},{"id":"llama3.3"}]}`)
+	}))
+	defer srv.Close()
+	s, err := backend.Open(filepath.Join(t.TempDir(), "x.db"), backend.Options{DisableRuns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// No key and no model list: the models come from the endpoint.
+	p, err := s.Providers.Save(provider.SaveRequest{ID: "local", Kind: "openai", Name: "Local", BaseURL: srv.URL + "/v1"})
+	if err != nil || p.HasKey || strings.Join(p.Models, ",") != "llama3.3,qwen3:8b" {
+		t.Fatalf("saved = %+v, %v", p, err)
+	}
+	res, err := s.Providers.Test("local")
+	if err != nil || !res.OK || !strings.HasPrefix(res.Message, "Endpoint works") {
+		t.Fatalf("test = %+v, %v", res, err)
+	}
+	// A wrong endpoint with no models listed is refused, not saved empty.
+	if _, err := s.Providers.Save(provider.SaveRequest{ID: "broken", Kind: "openai", BaseURL: srv.URL + "/nope"}); err == nil {
+		t.Fatal("saved a provider with no models")
+	}
+	// Anthropic still needs a key.
+	if _, err := s.Providers.Save(provider.SaveRequest{ID: "a", Kind: "anthropic"}); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := s.Providers.Test("a"); res.OK {
+		t.Fatal("an Anthropic provider without a key passed the test")
 	}
 }

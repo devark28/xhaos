@@ -1,6 +1,6 @@
 // The side panel's contents. Every panel uses Shell, so they share the
 // heading and scrolling.
-import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
@@ -14,7 +14,7 @@ import { useApp, workspaceOf } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
-  openPanel, saveMemory, deleteMemory, showProviders, saveProviderKey, testProvider, removeProvider, startDictation,
+  openPanel, saveMemory, deleteMemory, showProviders, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
 } from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -123,23 +123,52 @@ function Channels({ channelId }: { channelId?: string }) {
   );
 }
 
+// Presets fill the form; every field stays editable. OpenAI-compatible
+// endpoints (OpenAI, DeepSeek, local servers) share one adapter kind.
+const presets = {
+  anthropic: { id: 'anthropic', kind: 'anthropic', name: 'Anthropic', baseUrl: '', key: 'sk-ant-…' },
+  openai: { id: 'openai', kind: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', key: 'sk-…' },
+  deepseek: { id: 'deepseek', kind: 'openai', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', key: 'sk-…' },
+  local: { id: 'local', kind: 'openai', name: 'Local (Ollama)', baseUrl: 'http://localhost:11434/v1', key: 'none needed' },
+  other: { id: '', kind: 'openai', name: '', baseUrl: '', key: 'if the endpoint needs one' },
+} as const;
+type PresetName = keyof typeof presets;
+const blank = (preset: PresetName): ProviderForm => ({ id: presets[preset].id, kind: presets[preset].kind, name: presets[preset].name, baseUrl: presets[preset].baseUrl, apiKey: '', models: '' });
+
 function Providers({ message, testing }: { message?: string; testing?: string }) {
-  const key = useRef<HTMLInputElement>(null);
   const backend = useApp(s => s.backendVersion !== null);
   const providers = useApp(s => s.providers);
+  const [preset, setPreset] = useState<PresetName>('anthropic');
+  // A preset that is already saved opens it for editing.
+  const formFor = (name: PresetName): ProviderForm => {
+    const saved = providers.find(p => p.id === presets[name].id);
+    return saved ? { id: saved.id, kind: saved.kind, name: saved.name, baseUrl: saved.baseUrl || '', apiKey: '', models: saved.models.join(', ') } : blank(name);
+  };
+  const [form, setForm] = useState<ProviderForm>(() => formFor('anthropic'));
   if (!backend) return <Shell title="Model providers"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
-  const anthropic = providers.find(p => p.id === 'anthropic');
-  const save = () => saveProviderKey(key.current!.value);
+  const editing = providers.find(p => p.id === form.id.trim());
+  const set = (field: keyof ProviderForm) => (event: { target: { value: string } }) => setForm({ ...form, [field]: event.target.value });
+  const choose = (name: PresetName) => { setPreset(name); setForm(formFor(name)); };
+  const edit = (id: string) => {
+    const p = providers.find(x => x.id === id);
+    if (!p) return;
+    setPreset(p.kind === 'anthropic' ? 'anthropic' : 'other');
+    setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', ') });
+  };
+  const save = async () => { if (await saveProvider(form)) setForm({ ...form, apiKey: '' }); };
+  const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
+  const openai = form.kind === 'openai';
   return (
     <Shell title="Model providers">
       <div>
         {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
             <div>
-              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}</span>
+              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}</span>
               <div {...stylex.props(shell.muted, provider.models)}>{p.models.join(', ')}</div>
             </div>
             <div {...stylex.props(provider.actions)}>
+              <Button data-edit-provider={p.id} onClick={() => edit(p.id)}>Edit</Button>
               <Button data-test-provider={p.id} onClick={() => testProvider(p.id)}>{testing === p.id ? 'Testing…' : 'Test'}</Button>
               <Button data-remove-provider={p.id} onClick={() => removeProvider(p.id)}>Remove</Button>
             </div>
@@ -148,14 +177,38 @@ function Providers({ message, testing }: { message?: string; testing?: string })
       </div>
       {/* Not a <form> with a password field: browsers would offer to store the
           key in their password manager (and Chromium's prompt steals focus). */}
-      <div id="provider-form" {...stylex.props(provider.form)}>
-        <label htmlFor="provider-key" {...stylex.props(provider.label)}>Anthropic API key{anthropic?.hasKey ? ' (leave empty to keep the saved key)' : ''}</label>
-        <div {...stylex.props(provider.keyRow)}>
-          <input id="provider-key" ref={key} type="text" name="xhaos-provider-key" autoComplete="off" autoCapitalize="off" spellCheck="false" data-1p-ignore="" data-lpignore="true" data-bwignore="" placeholder="sk-ant-…"
-            onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } }} {...stylex.props(provider.key)} />
-          <Button id="provider-save" onClick={save}>Save</Button>
+      <div id="provider-form" onKeyDown={onEnter} {...stylex.props(provider.form)}>
+        <div {...stylex.props(provider.formHead)}>
+          <span {...stylex.props(provider.label)}>{editing ? `Edit ${editing.name}` : 'Add a provider'}</span>
+          <select id="provider-preset" aria-label="Provider preset" value={preset} onChange={event => choose(event.target.value as PresetName)} {...stylex.props(provider.input)}>
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="local">Local (Ollama)</option>
+            <option value="other">Other OpenAI-compatible</option>
+          </select>
         </div>
-        <P muted>Keys are sent to the Xhaos server, encrypted at rest, and never shown again. Anyone who can open this page can use them.</P>
+        <div {...stylex.props(provider.grid)}>
+          <label htmlFor="provider-id" {...stylex.props(provider.fieldLabel)}>ID</label>
+          <input id="provider-id" value={form.id} onChange={set('id')} placeholder="e.g. groq" autoComplete="off" spellCheck="false" {...stylex.props(provider.input)} />
+          <label htmlFor="provider-name" {...stylex.props(provider.fieldLabel)}>Name</label>
+          <input id="provider-name" value={form.name} onChange={set('name')} placeholder="Shown in the model picker" autoComplete="off" {...stylex.props(provider.input)} />
+          {openai && <>
+            <label htmlFor="provider-url" {...stylex.props(provider.fieldLabel)}>Base URL</label>
+            <input id="provider-url" value={form.baseUrl} onChange={set('baseUrl')} placeholder="https://…/v1 (the part before /chat/completions)" autoComplete="off" spellCheck="false" {...stylex.props(provider.input)} />
+          </>}
+          <label htmlFor="provider-key" {...stylex.props(provider.fieldLabel)}>API key</label>
+          <input id="provider-key" type="text" name="xhaos-provider-key" value={form.apiKey} onChange={set('apiKey')} autoComplete="off" autoCapitalize="off" spellCheck="false" data-1p-ignore="" data-lpignore="true" data-bwignore=""
+            placeholder={editing?.hasKey ? 'Leave empty to keep the saved key' : presets[preset].key} {...stylex.props(provider.input, provider.key)} />
+          <label htmlFor="provider-models" {...stylex.props(provider.fieldLabel)}>Models</label>
+          <input id="provider-models" value={form.models} onChange={set('models')} autoComplete="off" spellCheck="false"
+            placeholder={openai ? 'Comma-separated; empty asks the endpoint for its list' : 'Comma-separated; empty uses the defaults'} {...stylex.props(provider.input)} />
+        </div>
+        <div {...stylex.props(provider.formActions)}>
+          {editing && <Button id="provider-new" onClick={() => { setPreset('other'); setForm(blank('other')); }}>Add another</Button>}
+          <Button id="provider-save" onClick={save}>{editing ? 'Save changes' : 'Add provider'}</Button>
+        </div>
+        <P muted>Keys are sent to the Xhaos server, encrypted at rest, and never shown again. Anyone who can open this page can use them. Local servers (Ollama, llama.cpp, vLLM) need no key: the Xhaos server talks to them, so the URL is as seen from the server.</P>
       </div>
       {message && <p id="provider-message" {...stylex.props(provider.message)}>{message}</p>}
     </Shell>
@@ -323,10 +376,14 @@ const provider = stylex.create({
   models: { fontSize: 10, marginTop: 3 },
   actions: { display: 'flex', gap: 10, alignItems: 'flex-start' },
   form: { marginTop: 12, fontSize: 11 },
-  label: { display: 'block', color: colors.textMuted, marginBottom: 6 },
-  keyRow: { display: 'flex', gap: 10, alignItems: 'center' },
+  label: { color: colors.textMuted },
+  formHead: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 },
+  grid: { display: 'grid', gridTemplateColumns: '70px 1fr', alignItems: 'center', columnGap: 8, rowGap: 6 },
+  fieldLabel: { color: colors.textFaint, fontSize: 10 },
+  input: { minWidth: 0, backgroundColor: colors.sunken, borderWidth: 0, borderRadius: 3, color: colors.text, paddingBlock: 6, paddingInline: 8, fontSize: 11, fontFamily: 'inherit' },
   // Masked without type=password, so password managers leave it alone.
-  key: { flexGrow: 1, minWidth: 0, backgroundColor: colors.sunken, borderWidth: 0, borderRadius: 3, color: colors.text, paddingBlock: 7, paddingInline: 8, fontSize: 11, WebkitTextSecurity: 'disc' },
+  key: { WebkitTextSecurity: 'disc' },
+  formActions: { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 },
   message: { fontSize: 11, color: colors.textSoft, marginTop: 10 },
 });
 

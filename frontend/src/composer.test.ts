@@ -90,6 +90,8 @@ test('picker lists models of providers that have a key', () => {
   assert.deepEqual(choices.map(c => c.id), ['anthropic/claude-opus-5-5', 'anthropic/claude-haiku-5-5']);
   assert.equal(choices[0].label, 'Claude-opus-5.5 · Anthropic');
   assert.deepEqual(pickerChoices([]), []);
+  const local = pickerChoices([{ id: 'local', kind: 'openai', name: 'Local', hasKey: false, models: ['qwen3:8b'] }]);
+  assert.deepEqual(local.map(c => [c.id, c.label]), [['local/qwen3:8b', 'qwen3:8b']]);
 });
 
 test('#N then a space attaches an existing agent; \\#N stays text', () => {

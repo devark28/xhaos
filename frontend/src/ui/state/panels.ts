@@ -62,13 +62,23 @@ export async function showProviders(message = '') {
   try { await refreshProviders(); } catch (error) { message ||= `Could not load providers: ${errorText(error)}`; }
   if (get().panel.kind === 'providers') openPanel('providers', { message });
 }
-export async function saveProviderKey(apiKey: string) {
-  const anthropic: Provider | undefined = get().providers.find(p => p.id === 'anthropic');
-  // Re-saving keeps the provider's other settings; only the key changes.
+export interface ProviderForm { id: string; kind: string; name: string; baseUrl: string; apiKey: string; models: string }
+// saveProvider creates or updates a provider. An empty key keeps the saved
+// one; an empty model list keeps the saved list, else uses the kind's
+// defaults, else asks the endpoint which models it offers.
+export async function saveProvider(form: ProviderForm): Promise<boolean> {
+  const existing: Provider | undefined = get().providers.find(p => p.id === form.id.trim());
+  const models = form.models.split(/[\s,]+/).map(m => m.trim()).filter(Boolean);
   try {
-    await call('provider', 'Save', { id: 'anthropic', kind: 'anthropic', name: anthropic?.name || 'Anthropic', baseUrl: anthropic?.baseUrl || '', models: anthropic?.models || [], apiKey });
-    await refreshProviders(); showProviders('Saved. Use Test to check the key.');
-  } catch (error) { showProviders(`Save failed: ${errorText(error)}`); }
+    await call('provider', 'Save', {
+      // Anthropic's form has no URL field: keep a saved custom endpoint.
+      id: form.id.trim(), kind: form.kind, name: form.name.trim() || existing?.name || form.id.trim(),
+      baseUrl: form.baseUrl.trim() || (form.kind === 'anthropic' ? existing?.baseUrl || '' : ''),
+      models: models.length ? models : existing?.models || [], apiKey: form.apiKey,
+    });
+    await refreshProviders(); showProviders('Saved. Use Test to check it.');
+    return true;
+  } catch (error) { showProviders(`Save failed: ${errorText(error)}`); return false; }
 }
 export async function testProvider(id: string) {
   openPanel('providers', { message: '', testing: id });
