@@ -8,7 +8,7 @@ import { colors, fonts, breakpoints } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { WorkingLine } from './Working.tsx';
 import { DecisionButtons } from './Decisions.tsx';
-import { toast } from './store.ts';
+import { toast } from './state/store.ts';
 import type { Agent, Attachment, Entry as EntryData } from '../types.ts';
 
 const html = (value: string) => ({ __html: value });

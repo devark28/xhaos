@@ -5,7 +5,7 @@ import { installTypingFlow } from '../input-focus.ts';
 import { App } from './App.tsx';
 import { blobUrls } from './Transcript.tsx';
 import { installKeys } from './keys.ts';
-import { start } from './store.ts';
+import { start } from './state/backend.ts';
 
 createRoot(document.getElementById('app')!).render(<App />);
 installKeys();

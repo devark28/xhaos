@@ -1,6 +1,6 @@
 /* Global styles: the page base, plus markup that React does not render
    itself (Markdown and syntax-highlighted HTML strings, the contenteditable
-   input, the sketch pad, the toast). Components style themselves with
+   input, the sketch pad). Components style themselves with
    StyleX; its generated rules are appended to this file by the build. */
 
 /* The base reset sits in the lowest layer, so component styles (StyleX,
@@ -24,15 +24,6 @@
     * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   }
 }
-
-/* ---- toast ---------------------------------------------------------------- */
-#toast {
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 40;
-  max-width: 90%; padding: 10px 16px; border-radius: 5px;
-  background: #dddddd; color: #222222; box-shadow: 0 4px 25px #0007;
-  opacity: 0; pointer-events: none;
-}
-#toast.visible { opacity: 1; }
 
 /* ---- Markdown (markdown.ts output, and the composer's rich input) --------- */
 .markdown-body { overflow-wrap: anywhere; min-width: 0; }

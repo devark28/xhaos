@@ -1,0 +1,142 @@
+// The application state, in one zustand store. Components subscribe to the
+// slices they render (useApp(selector)), so a change re-renders only what
+// reads it. Changes go through update(), an immer recipe: write it as plain
+// mutation, and immer produces the next immutable state. Actions live in the
+// feature modules beside this file (composer, agents, panels, ...).
+import { create } from 'zustand';
+import { immer } from 'zustand/middleware/immer';
+import { enableMapSet } from 'immer';
+import { hasPendingQuestions } from '../../questions.ts';
+import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
+import { loadModelChoice } from '../../models.ts';
+import { hydrateDemoActivity } from '../../demo-activity.ts';
+import type { Agent, Memory, Provider, ToolCatalog, Workspace } from '../../types.ts';
+
+enableMapSet();
+
+export type Layout = 'grid' | 'three' | 'list';
+export type Mode = 'message' | 'draw';
+export type PanelKind = 'questions' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation';
+export interface Panel { kind: PanelKind; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
+export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
+export type SlashCommand = [name: string, description: string, usage: string];
+export type Tools = (ToolCatalog & { error?: undefined }) | { error: string } | null;
+
+export interface State {
+  ready: boolean;
+  backendVersion: string | null; // set when served by the Go backend
+  workspaces: Workspace[];
+  active: string;
+  memories: Memory[];
+  providers: Provider[];
+  tools: Tools; // loaded when the tools panel opens
+
+  layout: Layout;
+  search: string;
+  collapsed: Set<number>;
+  showSamples: boolean;
+
+  mode: Mode;
+  panel: Panel; // what the side panel shows; it is always open
+  selected: Set<number>; // agents attached to the composer
+  composerModelId: string;
+  pendingFiles: File[];
+  menu: SlashCommand[]; // slash command matches
+  sending: boolean;
+  recording: boolean; // dictation is listening
+  btw: Btw | null; // the latest side question
+  toast: { message: string; id: number } | null;
+
+  questionAgentId: number | null;
+  knownQuestionBatches: Set<string>;
+  questionSteps: Map<string, number>;
+
+  commits: number; // bumped by afterCommit so App re-renders and runs the queue
+}
+
+const load = <T,>(key: string, fallback: () => T): T => {
+  try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback(); } catch { return fallback(); }
+};
+
+function initial(): State {
+  const workspaces = hydrateDemoActivity(load('xhaos-v1', initialWorkspaces));
+  return {
+    ready: false,
+    backendVersion: null,
+    workspaces,
+    active: workspaces[0].id,
+    memories: load<Memory[]>('xhaos-memory-v1', () => []),
+    providers: [],
+    tools: null,
+    layout: 'grid',
+    search: '',
+    collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),
+    showSamples: (() => { try { return localStorage.getItem('xhaos-samples') !== 'off'; } catch { return true; } })(),
+    mode: 'message',
+    panel: { kind: 'questions' },
+    selected: new Set(),
+    composerModelId: loadModelChoice(),
+    pendingFiles: [],
+    menu: [],
+    sending: false,
+    recording: false,
+    btw: null,
+    toast: null,
+    questionAgentId: null,
+    knownQuestionBatches: new Set(),
+    questionSteps: new Map(),
+    commits: 0,
+  };
+}
+
+export const useApp = create<State>()(immer(() => initial()));
+
+// get returns the current (frozen) state; read it in actions, not render.
+export const get = () => useApp.getState();
+
+// update applies a recipe that mutates a draft, then the derived bookkeeping.
+export function update(recipe: (draft: State) => void) {
+  useApp.setState(draft => { recipe(draft); normalize(draft); });
+}
+
+// ---- derived state ---------------------------------------------------------
+export const workspaceOf = (s: Pick<State, 'workspaces' | 'active'>): Workspace => s.workspaces.find(w => w.id === s.active) || s.workspaces[0];
+export const workspace = () => workspaceOf(get());
+export const findAgentIn = (s: State, id: number): Agent | undefined => flatten(workspaceOf(s).agents).find(agent => agent.id === id);
+export const findAgent = (id: number) => findAgentIn(get(), id);
+export const pendingQuestionsIn = (s: State): Agent[] => activeAgents(workspaceOf(s).agents).filter(hasPendingQuestions);
+export const pendingQuestions = () => pendingQuestionsIn(get());
+export const questionStepKey = (agent: Agent) => `${agent.id}:${agent.questionBatch?.id}`;
+
+// New questions never take over the screen; the pulsing dot on the
+// Questions tab announces them.
+function normalize(s: State) {
+  if (!s.ready) return;
+  const pending = pendingQuestionsIn(s);
+  const incoming = pending.filter(agent => !s.knownQuestionBatches.has(questionStepKey(agent)));
+  pending.forEach(agent => s.knownQuestionBatches.add(questionStepKey(agent)));
+  if (incoming.length && !pending.some(agent => agent.id === s.questionAgentId)) s.questionAgentId = incoming[incoming.length - 1].id;
+}
+
+// ---- after-render work -----------------------------------------------------
+// afterCommit runs fn once the DOM reflects the current state (focus, scroll):
+// it bumps `commits`, App re-renders, and its layout effect flushes the queue.
+const afterQueue: (() => void)[] = [];
+export function afterCommit(fn: () => void) { afterQueue.push(fn); update(s => { s.commits++; }); }
+export function flushAfterCommit() { afterQueue.splice(0).forEach(fn => fn()); }
+export const focusLater = (selector: string) => afterCommit(() => document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true }));
+
+// ---- toast -----------------------------------------------------------------
+let toastId = 0;
+export function toast(message: string) { update(s => { s.toast = { message, id: ++toastId }; }); }
+export const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+// ---- persistence (prototype mode only) -------------------------------------
+export function save() {
+  const s = get();
+  if (s.backendVersion) return;
+  try { localStorage.setItem('xhaos-v1', JSON.stringify(s.workspaces)); } catch { toast('Browser storage unavailable; changes last for this session.'); }
+}
+export function saveMemories() {
+  try { localStorage.setItem('xhaos-memory-v1', JSON.stringify(get().memories)); } catch { toast('Browser memory storage unavailable.'); }
+}

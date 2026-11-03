@@ -19,8 +19,8 @@ Use `PORT=5174 npm run dev` to choose another port. The dev server binds to loop
 The frontend is TypeScript and React, bundled by esbuild into `frontend/dist/app.js` and `app.css` (gitignored):
 
 - `frontend/src/*.ts` are framework-free logic modules (model, questions, markdown, highlight, backend sync, composer intent) with unit tests; `types.ts` holds the shared view and backend shapes.
-- `ui/store.ts` holds state and actions, and components re-render when it changes. `ui/keys.ts` installs the page-wide keys (Esc closes the topmost menu, panel, or `/btw` answer).
-- `ui/kit.tsx` has the shared building blocks (buttons, status dots, chips, keys); `ui/App.tsx` the ribbon and agent grid; `ui/AgentCard.tsx`, `ui/Transcript.tsx`, `ui/Decisions.tsx`, `ui/Composer.tsx`, `ui/Panels.tsx`, and `ui/QuestionInbox.tsx` the features.
+- `ui/state/` holds the application state in one [zustand](https://zustand.docs.pmnd.rs) store (`store.ts`), with actions split by feature: `composer.ts`, `agents.ts`, `panels.ts`, `questions.ts`, and `backend.ts` (connection and sync). Components subscribe to just the state they render. `ui/keys.ts` installs the page-wide keys (Esc closes the topmost menu or the `/btw` answer).
+- `ui/kit.tsx` has the shared building blocks (buttons, status dots, chips, keys); `ui/App.tsx` the page layout and agent grid; `ui/SidePanel.tsx` the right-hand panel; `ui/AgentCard.tsx`, `ui/Transcript.tsx`, `ui/Decisions.tsx`, `ui/Composer.tsx`, `ui/Panels.tsx`, and `ui/QuestionInbox.tsx` the features.
 - Styling is [StyleX](https://stylexjs.com): each component defines its styles next to its markup, and colors, fonts, and breakpoints come from `ui/theme/tokens.stylex.ts`. The build compiles them to atomic CSS. `ui/global.css` keeps only the page reset and the markup React does not render itself (Markdown and syntax-highlighted HTML, the `<xhaos-input>` field, the sketch pad, the toast).
 
 The composer field is still the native `<xhaos-input>` element. It owns its own content, and React never re-renders it.
@@ -86,7 +86,7 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 - Click an agent header or its chevron to expand/collapse the transcript. Double-click the agent header to attach or detach it as a composer recipient; with the header focused, `Alt+Enter` does the same. The `#ID` is a label, not a separate button. You can select several agents, then send normally; detach with × on a recipient chip or repeat the attach action.
 - `Ctrl/Cmd+K` focuses the composer.
 - Type `/` to open the command menu. Commands include `/new task`, `/search query` (or `/search` to clear), `/mcp`, `/memory`, `/layout 1|2|3`, `/channels`, `/history`, `/terminate`, `/allow`, `/deny`, and `/help`. `/allow`, `/deny`, `/pause`, and `/resume` act on eligible attached agents, or accept one explicit agent ID. Ineligible targets are skipped and reported. Questionnaires require answers, not approval; `/allow` and `/deny` never answer or dismiss them. `/help status` shows the real status dots and attention pulse; it is also linked from help. Older `/approve` and `/decline` aliases remain supported. Arrow keys navigate the menu; Escape dismisses it. Enter submits the composer; Shift+Enter adds a line.
-- The command center occupies roughly the top quarter of the window, above the scrolling agent area. Collapse and layout controls are in the top-right ribbon beside MCP and settings; search is available through `/search`. Neutral surfaces use grayscale; only agent status dots use semantic colors.
+- The page has two columns. On the left, the composer sits above the scrolling agent area, with Expand/Collapse all and the 1/2/3-column layout buttons in a bar above the agents; search is available through `/search`. The logo sits at the top left, beside the Message/Draw tabs. On the right, the side panel is always open at 30% of the width; its tab icons (Questions, Channels, Memories, Tools and MCP, Settings) stay at its top and switch what it shows. On narrow screens it sits below the agents. Panels never replace the composer, so you can keep typing while one is open. Neutral surfaces use grayscale; only agent status dots use semantic colors.
 - Dictation uses the browser speech API when supported, after an explicit microphone action. Review the transcript before sending. Availability, permissions, and provider processing depend on the browser.
 
 Task data persists in browser local storage, not on a server. Clear the `xhaos-v1` local-storage entry to restore seed data; workspace memory notes use `xhaos-memory-v1`. The demo contains no credentials or real integrations. MCP, agent execution, remote connections, Wails integration, and automatic approval classification are not implemented.
@@ -95,7 +95,7 @@ See [the architecture direction](docs/architecture.md) for the frontend/backend 
 
 ## Channels
 
-The Channels ribbon button (or `/channels`) opens a read-only view of agent-created subjects, participants, and messages. Agents create and use channels when instructed by you or when they need to coordinate; the user does not create channels, attach them to the composer, or send channel messages. Direct user-to-agent messaging uses the separate agent `#ID` buttons.
+The Channels icon in the side panel (or `/channels`) opens a read-only view of agent-created subjects, participants, and messages. Agents create and use channels when instructed by you or when they need to coordinate; the user does not create channels, attach them to the composer, or send channel messages. Direct user-to-agent messaging uses the separate agent `#ID` buttons.
 
 No automatic channel creation or delivery runs in this browser prototype. The empty state explains that channels will appear when the backend supplies them. Existing logs from earlier prototype versions remain visible, including legacy user-authored entries. Agent-side channel helpers require a participating creator and writer; actual identity authentication belongs to the backend.
 
@@ -125,7 +125,7 @@ A simulated planning agent asks a three-question batch on first load of this exp
 
 ## Memory and compaction
 
-The Memories icon beside Channels and MCP opens the current workspace's compact memory panel. Add, edit, and delete notes without selecting a scope; all agents in that workspace share them. Enter saves, Shift+Enter adds a line, and Escape cancels editing. Notes are saved in this browser only; backend storage and context retrieval are planned. Compaction summarizes an ongoing session so it can continue with less conversation in active context. Durable memory is selected knowledge reused across sessions, such as preferences, project conventions, and decisions. A summary or memory must not replace full session history or grant permissions.
+The Memories icon in the side panel opens the current workspace's compact memory panel. Add, edit, and delete notes without selecting a scope; all agents in that workspace share them. Enter saves, Shift+Enter adds a line, and Escape cancels editing. Notes are saved in this browser only; backend storage and context retrieval are planned. Compaction summarizes an ongoing session so it can continue with less conversation in active context. Durable memory is selected knowledge reused across sessions, such as preferences, project conventions, and decisions. A summary or memory must not replace full session history or grant permissions.
 
 ## Sketching
 

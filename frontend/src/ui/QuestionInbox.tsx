@@ -3,7 +3,10 @@ import { useState, type KeyboardEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button, Kbd, StatusDot } from './kit.tsx';
-import { S, pendingQuestions, questionStep, setQuestionStep, setAnswer, advanceOrSubmit, bump, afterCommit } from './store.ts';
+import { activeAgents } from '../model.ts';
+import { hasPendingQuestions } from '../questions.ts';
+import { useApp, workspaceOf, afterCommit } from './state/store.ts';
+import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit } from './state/questions.ts';
 import type { Agent, Answer, Question as QuestionData, QuestionOption } from '../types.ts';
 
 const emptyAnswer: Answer = { choices: [], text: '' };
@@ -43,7 +46,7 @@ function Question({ agent, question }: { agent: Agent; question: QuestionData })
     const choices = question.multiple
       ? (answer.choices.includes(id) ? answer.choices.filter(c => c !== id) : [...answer.choices, id])
       : [id];
-    setAnswer(agent, question.id, { ...answer, choices });
+    setAnswer(agent.id, question.id, { ...answer, choices });
   };
   const fit = (el: HTMLTextAreaElement | null) => { if (!el) return; el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; };
   return (
@@ -62,7 +65,7 @@ function Question({ agent, question }: { agent: Agent; question: QuestionData })
       )}
       {(!hasOptions || writing) && (
         <textarea data-answer-text ref={fit} name={`text:${question.id}`} aria-label={`Your answer: ${question.prompt}`} rows={1} placeholder="Your answer…" value={answer.text}
-          onChange={event => { fit(event.target); setAnswer(agent, question.id, { ...answer, text: event.target.value }); }} {...stylex.props(styles.text)} />
+          onChange={event => { fit(event.target); setAnswer(agent.id, question.id, { ...answer, text: event.target.value }); }} {...stylex.props(styles.text)} />
       )}
     </fieldset>
   );
@@ -88,12 +91,13 @@ function Review({ agent }: { agent: Agent }) {
 }
 
 export function QuestionInbox() {
-  const pending = pendingQuestions();
-  const agent = pending.find(a => a.id === S.questionAgentId) || pending[0];
+  const pending = activeAgents(useApp(s => workspaceOf(s).agents)).filter(hasPendingQuestions);
+  const chosenId = useApp(s => s.questionAgentId);
+  const steps = useApp(s => s.questionSteps);
+  const agent = pending.find(a => a.id === chosenId) || pending[0];
   if (!agent?.questionBatch) return <p {...stylex.props(styles.muted)}>No pending questions.</p>;
-  S.questionAgentId = agent.id;
   const batch = agent.questionBatch;
-  const step = questionStep(agent);
+  const step = questionStepIn({ questionSteps: steps }, agent);
   const question = batch.questions[step];
   const others = pending.filter(a => a.id !== agent.id);
   const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
@@ -117,7 +121,7 @@ export function QuestionInbox() {
         <span {...stylex.props(styles.agentTitle)}>{agent.title}</span>
         <span {...stylex.props(styles.progress)}>{question ? `${step + 1} / ${batch.questions.length}` : 'Review'}</span>
         {others.length > 0 && (
-          <Button onClick={() => { S.questionAgentId = others[0].id; bump(); }} sx={styles.next}>{others.length} more waiting →</Button>
+          <Button onClick={() => setQuestionAgent(others[0].id)} sx={styles.next}>{others.length} more waiting →</Button>
         )}
       </div>
       <div role="tablist" aria-label="Questions" {...stylex.props(styles.tabs)}>

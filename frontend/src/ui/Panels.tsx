@@ -1,19 +1,20 @@
-// Panels open inside the composer section and replace the composer until
-// closed (Esc or ×). Every panel uses Shell, so they share heading, close
-// button, scrolling, and Esc handling (in keys.ts).
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+// The side panel's contents. Every panel uses Shell, so they share the
+// heading and scrolling.
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button, Chip, StatusDot } from './kit.tsx';
-import { Icon } from './Icon.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
+import { QuestionInbox } from './QuestionInbox.tsx';
+import { useApp, workspaceOf } from './state/store.ts';
+import { slashCommands } from './state/composer.ts';
+import { restore } from './state/agents.ts';
 import {
-  S, workspace, openPanel, closePanel, focusComposer, saveMemory, deleteMemory, restore, slashCommands,
-  showProviders, saveProviderKey, testProvider, removeProvider, startDictation,
-} from './store.ts';
+  openPanel, saveMemory, deleteMemory, showProviders, saveProviderKey, testProvider, removeProvider, startDictation,
+} from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
 
@@ -21,10 +22,7 @@ function Shell({ title, action, children }: { title: string; action?: ReactNode;
   return <>
     <div data-panel-heading {...stylex.props(shell.heading)}>
       <h2 {...stylex.props(shell.title)}>{title}</h2>
-      <div {...stylex.props(shell.actions)}>
-        {action}
-        <Button variant="icon" id="close-panel" aria-label={`Close ${title}`} onClick={() => { closePanel(); focusComposer(); }}><Icon name="close" size={14} /></Button>
-      </div>
+      <div {...stylex.props(shell.actions)}>{action}</div>
     </div>
     <div data-panel-content {...stylex.props(shell.content)}>{children}</div>
   </>;
@@ -36,8 +34,10 @@ function P({ children, muted = false }: { children: ReactNode; muted?: boolean }
 }
 
 function Memories({ editId }: { editId?: string }) {
-  const visible = S.memories.filter(memory => memory.workspaceId === S.active);
-  const editing = S.memories.find(memory => memory.id === editId);
+  const memories = useApp(s => s.memories);
+  const active = useApp(s => s.active);
+  const visible = memories.filter(memory => memory.workspaceId === active);
+  const editing = memories.find(memory => memory.id === editId);
   const open = Boolean(editing) || editId === 'new';
   const input = useRef<HTMLTextAreaElement>(null);
   const fit = () => {
@@ -87,7 +87,7 @@ function Memories({ editId }: { editId?: string }) {
 }
 
 function Channels({ channelId }: { channelId?: string }) {
-  const w = workspace(), channels = w.channels || [];
+  const w = useApp(s => workspaceOf(s)), channels = w.channels || [];
   const current = channels.find(channel => channel.id === channelId) || channels[0];
   const identity = (id: number | string) => {
     const agent = flatten(w.agents).find(agent => agent.id === Number(id));
@@ -124,13 +124,15 @@ function Channels({ channelId }: { channelId?: string }) {
 
 function Providers({ message, testing }: { message?: string; testing?: string }) {
   const key = useRef<HTMLInputElement>(null);
-  if (!S.backend) return <Shell title="Model providers"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
-  const anthropic = S.providers.find(p => p.id === 'anthropic');
+  const backend = useApp(s => s.backendVersion !== null);
+  const providers = useApp(s => s.providers);
+  if (!backend) return <Shell title="Model providers"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
+  const anthropic = providers.find(p => p.id === 'anthropic');
   const save = () => saveProviderKey(key.current!.value);
   return (
     <Shell title="Model providers">
       <div>
-        {S.providers.length ? S.providers.map(p => (
+        {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
             <div>
               <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}</span>
@@ -160,7 +162,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
 }
 
 function History() {
-  const archived = flatten(workspace().agents).filter(agent => agent.archivedAt);
+  const archived = flatten(useApp(s => workspaceOf(s).agents)).filter(agent => agent.archivedAt);
   return (
     <Shell title="Terminated agents">
       {archived.length ? archived.map(agent => (
@@ -195,11 +197,12 @@ function Help() {
 }
 
 function Settings() {
+  const version = useApp(s => s.backendVersion);
   return (
     <Shell title="Xhaos settings">
       <P>Xhaos is a browser-first agent harness with a headless Go backend.</P>
-      <P>{S.backend ? `Connected to the Go backend ${S.backend.status.version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
-      {S.backend && <Button id="open-providers" onClick={() => showProviders()}>Model providers…</Button>}
+      <P>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
+      {version && <Button id="open-providers" onClick={() => showProviders()}>Model providers…</Button>}
       <P muted>MCP servers and automatic approval classification are planned.</P>
     </Shell>
   );
@@ -207,10 +210,11 @@ function Settings() {
 
 const effectNotes = { read: 'runs at once', write: 'gated: asks under manual review', exec: 'gated like a write' };
 function Tools() {
-  const catalog = S.tools;
+  const catalog = useApp(s => s.tools);
+  const backend = useApp(s => s.backendVersion !== null);
   return (
     <Shell title="Tools and MCP">
-      {!S.backend ? <P>Tools run on the Go backend. Run scripts/server.sh and open its page.</P>
+      {!backend ? <P>Tools run on the Go backend. Run scripts/server.sh and open its page.</P>
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
@@ -240,14 +244,10 @@ const simple = (): Partial<Record<string, [string, ReactNode]>> => ({
 });
 
 export function Panel() {
-  const panel = S.panel;
-  // Focus the close button when a panel opens (memory editing focuses its field).
-  useEffect(() => {
-    if (panel && !(panel.kind === 'memories' && panel.editId)) document.getElementById('close-panel')?.focus({ preventScroll: true });
-  }, [panel?.kind]);
-  if (!panel) return <section id="utility-panel" aria-label="Panel" hidden />;
+  const panel = useApp(s => s.panel);
   let body: ReactNode = null;
-  if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
+  if (panel.kind === 'questions') body = <Shell title="Questions"><div id="question-inbox" {...stylex.props(shell.questions)}><QuestionInbox /></div></Shell>;
+  else if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
   else if (panel.kind === 'channels') body = <Channels channelId={panel.channelId} />;
   else if (panel.kind === 'providers') body = <Providers message={panel.message} testing={panel.testing} />;
   else if (panel.kind === 'history') body = <History />;
@@ -268,6 +268,7 @@ const shell = stylex.create({
   p: { color: colors.textMuted, marginTop: 6, marginBottom: 12, marginInline: 0 },
   muted: { color: '#858585' },
   wide: { width: 'auto', paddingInline: 12, marginBlock: 8 },
+  questions: { height: '100%', display: 'flex', flexDirection: 'column' },
 });
 
 const memory = stylex.create({

@@ -1,5 +1,4 @@
-// The command center below the ribbon: Message / Draw / Questions tabs, the
-// composer form, a /btw answer, and panels that take its place when open.
+// The command center: Message / Draw tabs, the composer form, and a /btw answer.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { bindEditor } from '../editor.ts';
@@ -9,16 +8,17 @@ import { markdown } from '../markdown.ts';
 import { activeAgents } from '../model.ts';
 import { fileSize } from '../attachments.ts';
 import { colors, breakpoints } from './theme/tokens.stylex.ts';
-import { Button, StatusDot } from './kit.tsx';
+import { Button } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Badge } from './AgentCard.tsx';
-import { Panel } from './Panels.tsx';
-import { QuestionInbox } from './QuestionInbox.tsx';
+import { useShallow } from 'zustand/react/shallow';
+import { useApp, get, update, toast, workspaceOf } from './state/store.ts';
 import {
-  S, bump, toast, workspace, pendingQuestions, modelOptions, currentChoice, setModel, updateCommandMenu, chooseCommand,
-  closeCommandMenu, clearComposer, submitCommand, closeBtw, detachRecipient, showMessageComposer, showDraw, showQuestions, dictate,
-  addFiles, removeFile,
-} from './store.ts';
+  modelOptions, currentChoice, setModel, onText, chooseCommand, closeCommandMenu, clearComposer, submitCommand, closeBtw,
+  addFiles, removeFile, registerInput, getDraft,
+} from './state/composer.ts';
+import { detachRecipient } from './state/agents.ts';
+import { showMessageComposer, showDraw, dictate } from './state/panels.ts';
 import type { XhaosInput } from '../rich-input.ts';
 
 // JSX knows <xhaos-input> (defined in rich-input.ts).
@@ -32,19 +32,25 @@ declare module 'react' {
 }
 
 function ModelPicker() {
+  // Re-render when the choices can change: providers, the saved choice, the backend.
+  useApp(useShallow(s => [s.providers, s.composerModelId, s.backendVersion]));
+  const hidden = useApp(s => s.mode !== 'message' || s.selected.size > 0);
+  const backend = useApp(s => s.backendVersion !== null);
   const options = modelOptions(), current = currentChoice();
   return (
-    <select id="model-pick" name="profile" aria-label="Model for new agents" hidden={S.mode !== 'message' || S.selected.size > 0}
+    <select id="model-pick" name="profile" aria-label="Model for new agents" hidden={hidden}
       value={current?.id || ''} onChange={event => setModel(event.target.value)} {...stylex.props(form.model)}>
       {options.length ? options.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>) : <option value="">No model provider</option>}
-      {S.backend && <option value="__providers">Add or edit providers…</option>}
+      {backend && <option value="__providers">Add or edit providers…</option>}
     </select>
   );
 }
 
 function RecipientChips() {
-  const agents = activeAgents(workspace().agents);
-  const chips = [...S.selected].map(id => agents.find(a => a.id === id)).filter(agent => agent !== undefined);
+  const selected = useApp(s => s.selected);
+  // Select stable references; derive arrays outside the selector.
+  const agents = activeAgents(useApp(s => workspaceOf(s).agents));
+  const chips = [...selected].map(id => agents.find(a => a.id === id)).filter(agent => agent !== undefined);
   if (!chips.length) return null;
   return (
     <div id="composer-targets" {...stylex.props(form.targets)}>
@@ -60,10 +66,11 @@ function RecipientChips() {
 }
 
 function PendingFiles() {
-  if (!S.pendingFiles.length) return null;
+  const files = useApp(s => s.pendingFiles);
+  if (!files.length) return null;
   return (
     <div data-pending="command" {...stylex.props(form.files)}>
-      {S.pendingFiles.map((file, index) => (
+      {files.map((file, index) => (
         <span key={`${file.name}-${index}`} {...stylex.props(form.file)}>
           <span title={file.type || 'File'} {...stylex.props(form.ellipsis)}>{file.name} <small {...stylex.props(form.fileSize)}>{fileSize(file.size)}</small></span>
           <Button data-remove={index} aria-label={`Remove ${file.name}`} onClick={() => removeFile(index)} sx={form.chipButton}>×</Button>
@@ -76,11 +83,12 @@ function PendingFiles() {
 // The slash-command menu drops below the composer when there is room, and
 // opens upward otherwise.
 function CommandMenu() {
+  const items = useApp(s => s.menu);
   const menu = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState({ upward: false, maxHeight: 300 });
   useLayoutEffect(() => {
     const el = menu.current;
-    if (!el || !S.menu.length) return;
+    if (!el || !items.length) return;
     const form = el.parentElement!.getBoundingClientRect();
     const below = window.innerHeight - form.bottom - 12, above = form.top - 12;
     const upward = !(below >= Math.min(160, el.scrollHeight) || below >= above);
@@ -96,8 +104,8 @@ function CommandMenu() {
     }
   };
   return (
-    <div id="command-menu" ref={menu} aria-label="Slash commands" hidden={!S.menu.length} {...stylex.props(form.menu, place.upward && form.menuUp, form.menuHeight(place.maxHeight))}>
-      {S.menu.map(([name, description], index) => (
+    <div id="command-menu" ref={menu} aria-label="Slash commands" hidden={!items.length} {...stylex.props(form.menu, place.upward && form.menuUp, form.menuHeight(place.maxHeight))}>
+      {items.map(([name, description], index) => (
         <button key={name} type="button" data-command={name} onClick={() => chooseCommand(name)} onKeyDown={event => onKey(event, index)} {...stylex.props(form.menuItem)}>
           <code {...stylex.props(form.menuName)}>/{name}</code><span {...stylex.props(form.menuText)}>{description}</span>
         </button>
@@ -113,14 +121,14 @@ function onCommandKey(event: KeyboardEvent) {
   const target = event.target as XhaosInput;
   if (event.key === 'Escape') {
     // Each Escape closes one thing; preventDefault keeps keys.ts from closing more.
-    if (S.menu.length) { event.preventDefault(); closeCommandMenu(); lastEscape = 0; return; }
-    if (S.btw) { event.preventDefault(); closeBtw(); lastEscape = 0; return; }
+    if (get().menu.length) { event.preventDefault(); closeCommandMenu(); lastEscape = 0; return; }
+    if (get().btw) { event.preventDefault(); closeBtw(); lastEscape = 0; return; }
     // Esc, Esc: clear the composer text (attachments stay).
-    if (Date.now() - lastEscape < 450) { lastEscape = 0; if (S.draft || target.value) { clearComposer(); toast('Composer cleared.'); } return; }
+    if (Date.now() - lastEscape < 450) { lastEscape = 0; if (getDraft() || target.value) { clearComposer(); toast('Composer cleared.'); } return; }
     lastEscape = Date.now(); return;
   }
   lastEscape = 0;
-  if (event.key === 'ArrowDown' && S.menu.length) { event.preventDefault(); document.querySelector<HTMLElement>('#command-menu button')?.focus(); }
+  if (event.key === 'ArrowDown' && get().menu.length) { event.preventDefault(); document.querySelector<HTMLElement>('#command-menu button')?.focus(); }
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitCommand(target.value); }
 }
 
@@ -129,18 +137,23 @@ function ComposerForm() {
   const holder = useRef<HTMLFormElement>(null);
   const files = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+  const hidden = useApp(s => s.mode !== 'message');
+  const sending = useApp(s => s.sending);
+  const recording = useApp(s => s.recording);
+  const selected = useApp(s => s.selected);
   useLayoutEffect(() => {
-    input.current!.value = S.draft;
-    return bindEditor(input.current!, holder.current!, {
-      addFiles, setText: value => { S.draft = value; }, onText: updateCommandMenu, onKeyDown: onCommandKey, onDragging: setDragging, notify: toast,
+    registerInput(input.current);
+    const unbind = bindEditor(input.current!, holder.current!, {
+      addFiles, setText: () => {}, onText: () => onText(input.current!.value), onKeyDown: onCommandKey, onDragging: setDragging, notify: toast,
     });
+    return () => { unbind(); registerInput(null); };
   }, []);
   return (
-    <form id="command-form" ref={holder} hidden={S.mode !== 'message' || Boolean(S.panel)} inert={S.sending || undefined} aria-busy={S.sending}
+    <form id="command-form" ref={holder} hidden={hidden} inert={sending || undefined} aria-busy={sending}
       onSubmit={event => { event.preventDefault(); submitCommand(input.current!.value); }} {...stylex.props(form.root, dragging && form.dragging)}>
       <RecipientChips />
       <xhaos-input ref={input} id="command" contentEditable="true" role="textbox" aria-multiline="true" aria-label="Agent command"
-        data-placeholder={composerPlaceholder([...S.selected])} spellCheck="true" suppressContentEditableWarning {...stylex.props(form.input)} />
+        data-placeholder={composerPlaceholder([...selected])} spellCheck="true" suppressContentEditableWarning {...stylex.props(form.input)} />
       <PendingFiles />
       <div data-editor="command" {...stylex.props(form.tools)}>
         <Button data-pick title="Attach files" aria-label="Attach files" onClick={() => files.current?.click()} sx={form.pick}>＋</Button>
@@ -148,7 +161,7 @@ function ComposerForm() {
         <ModelPicker />
       </div>
       <div {...stylex.props(form.actions)}>
-        <Button variant="icon" id="dictate" aria-label="Dictate command" onClick={dictate} chosen={S.recording}><Icon name="mic" size={16} /></Button>
+        <Button variant="icon" id="dictate" aria-label="Dictate command" onClick={dictate} chosen={recording}><Icon name="mic" size={16} /></Button>
         <Button variant="send" type="submit" id="send" aria-label="Send command"><Icon name="send" size={15} /></Button>
       </div>
       <CommandMenu />
@@ -158,8 +171,8 @@ function ComposerForm() {
 
 // The latest /btw answer, above the composer. It is not part of any agent.
 function BtwAside() {
-  const btw = S.btw;
-  if (!btw || S.mode !== 'message' || S.panel) return null;
+  const btw = useApp(s => (s.mode === 'message' ? s.btw : null));
+  if (!btw) return null;
   return (
     <aside id="btw" aria-live="polite" aria-label="Side answer" {...stylex.props(aside.root)}>
       <div {...stylex.props(aside.heading)}>
@@ -176,11 +189,11 @@ function BtwAside() {
 
 function DrawingPane() {
   const markup = useMemo(() => ({ __html: drawingView() }), []);
-  const drawing = S.mode === 'draw';
+  const drawing = useApp(s => s.mode === 'draw');
   useEffect(() => {
     if (!drawing) return;
     bindDrawing({
-      onAttach: file => { S.pendingFiles.push(file); S.mode = 'message'; bump(); toast('Sketch attached. Add a message and send when ready.'); },
+      onAttach: file => { update(s => { s.pendingFiles.push(file); s.mode = 'message'; }); toast('Sketch attached. Add a message and send when ready.'); },
       onBack: showMessageComposer,
       notify: toast,
     });
@@ -191,24 +204,17 @@ function DrawingPane() {
 }
 
 export function ComposerArea() {
-  const pending = pendingQuestions();
-  const panelOpen = Boolean(S.panel);
+  const mode = useApp(s => s.mode);
   return (
     <div id="composer-area" {...stylex.props(area.root)}>
       <div {...stylex.props(area.switches)}>
-        <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, S.mode === 'message' && area.switchChosen]}>Message</Button>
-        <Button id="show-drawing" onClick={showDraw} sx={[area.switch, S.mode === 'draw' && area.switchChosen]}>Draw</Button>
-        {pending.length > 0 && (
-          <Button id="show-questions" onClick={() => showQuestions(S.questionAgentId)} sx={[area.switch, area.attention, S.mode === 'questions' && area.attentionChosen]}>
-            <StatusDot status="waiting" /> Questions · {pending.length}
-          </Button>
-        )}
+        <a href="/" aria-label="Xhaos home" title="xhaos" {...stylex.props(area.brand)}>x<span {...stylex.props(area.brandTail)}>h</span></a>
+        <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, mode === 'message' && area.switchChosen]}>Message</Button>
+        <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>
       </div>
-      <Panel />
-      {!panelOpen && <BtwAside />}
+      <BtwAside />
       <ComposerForm />
-      {!panelOpen && S.mode === 'questions' && <section id="question-inbox" {...stylex.props(area.questions)}><QuestionInbox /></section>}
-      {!panelOpen && <DrawingPane />}
+      <DrawingPane />
     </div>
   );
 }
@@ -224,12 +230,11 @@ const area = stylex.create({
     flexGrow: 1,
     minHeight: 0,
   },
-  switches: { display: 'flex', alignItems: 'center', alignSelf: 'stretch', gap: 14, minHeight: 23, flexShrink: 0, paddingInline: 10 },
+  switches: { display: 'flex', alignItems: 'center', alignSelf: 'stretch', gap: 14, minHeight: 23, flexShrink: 0, paddingRight: 10 },
+  brand: { textDecoration: 'none', color: colors.textStrong, fontSize: 22, letterSpacing: -5, fontWeight: 900, lineHeight: 1, paddingRight: 10 },
+  brandTail: { color: colors.textMuted },
   switch: { display: 'flex', alignItems: 'center', gap: 7, color: colors.textFaint, fontSize: 10 },
   switchChosen: { color: colors.text },
-  attention: { color: colors.brand },
-  attentionChosen: { color: colors.brandStrong },
-  questions: { flexGrow: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 0, paddingInline: 11, paddingBottom: 3 },
   drawing: { display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0, gap: 7, overflow: 'hidden' },
 });
 

@@ -1,15 +1,17 @@
 // An agent's card: a header row (ID, role, title, status, menu) and, when
 // open, its transcript and subagents. Subagents render the same way, nested.
-import type { KeyboardEvent, MouseEvent } from 'react';
+import { memo, type KeyboardEvent, type MouseEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { hasPendingQuestions } from '../questions.ts';
 import { colors, fonts, breakpoints } from './theme/tokens.stylex.ts';
 import { Button, StatusDot } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Transcript } from './Transcript.tsx';
-import { DecisionButtons, needsDecision } from './Decisions.tsx';
+import { DecisionButtons, useNeedsDecision } from './Decisions.tsx';
 import { WorkingLabel } from './Working.tsx';
-import { S, toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent, showQuestions } from './store.ts';
+import { useApp } from './state/store.ts';
+import { toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent } from './state/agents.ts';
+import { showQuestions } from './state/panels.ts';
 import type { Agent } from '../types.ts';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
@@ -36,8 +38,7 @@ function onRowKey(event: KeyboardEvent, id: number) {
   if (event.altKey && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); clearClickTimer(id); toggleRecipient(id); }
 }
 
-function HeaderButton({ agent, closed, nested }: { agent: Agent; closed: boolean; nested: boolean }) {
-  const attached = S.selected.has(agent.id);
+function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; closed: boolean; nested: boolean; attached: boolean }) {
   return (
     <button type="button" data-collapse={agent.id} data-agent-row-id={agent.id} aria-keyshortcuts="Alt+Enter" title="Double-click to attach or detach; Alt+Enter when focused" aria-expanded={!closed}
       aria-label={`${closed ? 'Expand' : 'Collapse'} agent ${agent.id}: ${agent.title}${attached ? ', attached to composer' : ''}`}
@@ -51,13 +52,14 @@ function HeaderButton({ agent, closed, nested }: { agent: Agent; closed: boolean
 }
 
 function SubagentChips({ agent }: { agent: Agent }) {
+  const collapsed = useApp(s => s.collapsed);
   const subs = (agent.children || []).filter(child => !child.archivedAt);
   if (!subs.length) return null;
   return (
     <div aria-label="Subagents" {...stylex.props(header.chips)}>
       {subs.map(child => (
-        <button key={child.id} type="button" data-reveal={child.id} data-parent={agent.id} aria-expanded={!S.collapsed.has(child.id)}
-          title={`${S.collapsed.has(child.id) ? 'Expand' : 'Collapse'} subagent #${child.id}: ${child.title}`} onClick={() => revealAgent(child.id)}
+        <button key={child.id} type="button" data-reveal={child.id} data-parent={agent.id} aria-expanded={!collapsed.has(child.id)}
+          title={`${collapsed.has(child.id) ? 'Expand' : 'Collapse'} subagent #${child.id}: ${child.title}`} onClick={() => revealAgent(child.id)}
           {...stylex.props(header.chip)}>
           <Badge agent={child} size={5} />#{child.id}
         </button>
@@ -75,7 +77,8 @@ function Disclosure({ agent, closed }: { agent: Agent; closed: boolean }) {
   );
 }
 
-function AgentMenu({ agent }: { agent: Agent }) {
+function AgentMenu({ agent, attached }: { agent: Agent; attached: boolean }) {
+  const backend = useApp(s => s.backendVersion !== null);
   const close = (event: MouseEvent<HTMLElement>) => { const menu = event.currentTarget.closest('details'); if (menu) menu.open = false; };
   return (
     <details data-agent-menu={agent.id} {...stylex.props(menu.root)}>
@@ -83,8 +86,8 @@ function AgentMenu({ agent }: { agent: Agent }) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
       </summary>
       <div {...stylex.props(menu.items)}>
-        <Button variant="menu" data-menu-target={agent.id} onClick={event => { close(event); toggleRecipient(agent.id); }}>{S.selected.has(agent.id) ? 'Detach from' : 'Attach to'} composer</Button>
-        {S.backend && !agent.sample && agent.status === 'running' && <Button variant="menu" data-stop={agent.id} onClick={event => { close(event); stopAgent(agent.id); }}>Stop</Button>}
+        <Button variant="menu" data-menu-target={agent.id} onClick={event => { close(event); toggleRecipient(agent.id); }}>{attached ? 'Detach from' : 'Attach to'} composer</Button>
+        {backend && !agent.sample && agent.status === 'running' && <Button variant="menu" data-stop={agent.id} onClick={event => { close(event); stopAgent(agent.id); }}>Stop</Button>}
         <Button variant="menu" data-terminate={agent.id} onClick={event => { close(event); terminateAgent(agent.id); }}>Terminate agent</Button>
       </div>
     </details>
@@ -95,23 +98,25 @@ function QuestionSummary({ agent }: { agent: Agent }) {
   if (!hasPendingQuestions(agent)) return null;
   return (
     <Button data-show-questions={agent.id} onClick={() => showQuestions(agent.id)} sx={body.questions}>
-      Questions waiting — answer in composer <Icon name="arrow" size={12} />
+      Questions waiting — answer them <Icon name="arrow" size={12} />
     </Button>
   );
 }
 
 // The header row, shared by cards and subagents.
 function Header({ agent, closed, nested }: { agent: Agent; closed: boolean; nested: boolean }) {
+  const attached = useApp(s => s.selected.has(agent.id));
+  const decision = useNeedsDecision(agent);
   return (
-    <div data-agent-header={agent.id} data-attached={S.selected.has(agent.id) || undefined} {...stylex.props(header.root, nested && header.rootNested, S.selected.has(agent.id) && header.attached)}>
+    <div data-agent-header={agent.id} data-attached={attached || undefined} {...stylex.props(header.root, nested && header.rootNested, attached && header.attached)}>
       {nested && <span aria-hidden="true" {...stylex.props(header.branch)} />}
-      <HeaderButton agent={agent} closed={closed} nested={nested} />
+      <HeaderButton agent={agent} closed={closed} nested={nested} attached={attached} />
       <WorkingLabel agent={agent} />
       <SubagentChips agent={agent} />
       {!['idle', 'paused', 'terminated'].includes(agent.status) && <span {...stylex.props(header.status, nested && header.statusNested)}><Badge agent={agent} /></span>}
       <Disclosure agent={agent} closed={closed} />
-      {nested && needsDecision(agent) && <DecisionButtons agent={agent} />}
-      <AgentMenu agent={agent} />
+      {nested && decision && <DecisionButtons agent={agent} />}
+      <AgentMenu agent={agent} attached={attached} />
     </div>
   );
 }
@@ -128,7 +133,7 @@ function Children({ agent, nested }: { agent: Agent; nested: boolean }) {
 }
 
 function Child({ agent }: { agent: Agent }) {
-  const closed = S.collapsed.has(agent.id);
+  const closed = useApp(s => s.collapsed.has(agent.id));
   return (
     <div {...stylex.props(body.child)}>
       <Header agent={agent} closed={closed} nested />
@@ -141,8 +146,11 @@ function Child({ agent }: { agent: Agent }) {
   );
 }
 
-export function AgentCard({ agent }: { agent: Agent }) {
-  const closed = S.collapsed.has(agent.id);
+// Memoized: an agent object only changes when its own subtree does, so a
+// change elsewhere does not re-render this card.
+export const AgentCard = memo(function AgentCard({ agent }: { agent: Agent }) {
+  const closed = useApp(s => s.collapsed.has(agent.id));
+  const decision = useNeedsDecision(agent);
   return (
     <article data-agent-card={agent.id} {...stylex.props(body.card)}>
       <Header agent={agent} closed={closed} nested={false} />
@@ -151,12 +159,12 @@ export function AgentCard({ agent }: { agent: Agent }) {
           <Transcript agent={agent} />
           <QuestionSummary agent={agent} />
           <Children agent={agent} nested={false} />
-          {needsDecision(agent) && <div data-agent-controls {...stylex.props(body.controls)}><DecisionButtons agent={agent} /></div>}
+          {decision && <div data-agent-controls {...stylex.props(body.controls)}><DecisionButtons agent={agent} /></div>}
         </div>
       )}
     </article>
   );
-}
+});
 
 const header = stylex.create({
   root: { display: 'flex', alignItems: 'center' },

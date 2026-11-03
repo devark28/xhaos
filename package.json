@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@stylexjs/stylex": "0.19.1",
+    "immer": "11.1.21",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "zustand": "5.0.15"
   },
   "devDependencies": {
     "@stylexjs/unplugin": "0.19.1",
