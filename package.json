@@ -5,7 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "check": "node --check frontend/src/app.js && node --check scripts/dev.mjs",
-    "test": "node --test frontend/src/*.test.js"
+    "build": "node scripts/build.mjs",
+    "check": "npm run typecheck && node scripts/build.mjs && node --check scripts/dev.mjs",
+    "test": "node --test frontend/src/*.test.ts",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@stylexjs/stylex": "0.19.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "0.19.1",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
   }
 }

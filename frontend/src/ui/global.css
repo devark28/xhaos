@@ -1,0 +1,91 @@
+/* Global styles: the page base, plus markup that React does not render
+   itself (Markdown and syntax-highlighted HTML strings, the contenteditable
+   input, the sketch pad, the toast). Components style themselves with
+   StyleX; its generated rules are appended to this file by the build. */
+
+/* The base reset sits in the lowest layer, so component styles (StyleX,
+   in later layers) always win over it. */
+@layer reset {
+  :root {
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #dedede;
+    background: #111111;
+    font-synthesis: none;
+    color-scheme: dark;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; font-size: 12px; background: #111111; }
+  button, input, textarea, select { font: inherit; }
+  :focus, :focus-visible { outline: none; box-shadow: none; }
+  svg { flex-shrink: 0; vertical-align: middle; }
+  [hidden] { display: none !important; }
+  h1, h2, h3 { margin: 0; font-weight: 500; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+}
+
+/* ---- toast ---------------------------------------------------------------- */
+#toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 40;
+  max-width: 90%; padding: 10px 16px; border-radius: 5px;
+  background: #dddddd; color: #222222; box-shadow: 0 4px 25px #0007;
+  opacity: 0; pointer-events: none;
+}
+#toast.visible { opacity: 1; }
+
+/* ---- Markdown (markdown.ts output, and the composer's rich input) --------- */
+.markdown-body { overflow-wrap: anywhere; min-width: 0; }
+:is(.markdown-body, xhaos-input) p { margin: 0 0 9px; line-height: 1.7; white-space: normal; }
+:is(.markdown-body, xhaos-input) p:last-child { margin-bottom: 0; }
+:is(.markdown-body, xhaos-input) :is(h1, h2, h3, h4, h5, h6) { font-size: 13px; color: #ddd; margin: 12px 0 7px; font-weight: 600; }
+:is(.markdown-body, xhaos-input) h1 { font-size: 16px; }
+:is(.markdown-body, xhaos-input) h2 { font-size: 14px; }
+:is(.markdown-body, xhaos-input) :is(ul, ol) { padding-left: 22px; margin: 8px 0; }
+:is(.markdown-body, xhaos-input) li { margin: 3px 0; }
+:is(.markdown-body, xhaos-input) a { color: #9cbde0; text-decoration: underline; }
+:is(.markdown-body, xhaos-input) blockquote { margin: 9px 0; padding-left: 12px; color: #aaa; font-style: italic; }
+:is(.markdown-body, xhaos-input) code { font: inherit; color: #c5b4df; }
+:is(.markdown-body, xhaos-input) pre { padding: 8px 0; margin: 8px 0; white-space: pre-wrap; background: none; border: 0; }
+
+/* The caret at the end of a reply that is still streaming. */
+[data-entry="live"] .markdown-body > :last-child::after { content: "▍"; margin-left: 1px; color: #a78bfa; animation: working-caret 1s steps(1) infinite; }
+@keyframes working-caret { 50% { opacity: 0; } }
+
+/* ---- syntax colors (highlight.ts output) ----------------------------------- */
+.syntax-keyword { color: #c4a7e7; }
+.syntax-string { color: #a8c49b; }
+.syntax-number { color: #deb98c; }
+.syntax-function { color: #8eb8dc; }
+.syntax-comment { color: #777; font-style: italic; }
+.syntax-addition { color: #9fc79f; }
+.syntax-deletion { color: #d49e9e; }
+
+/* ---- <xhaos-input> --------------------------------------------------------- */
+xhaos-input {
+  display: block; position: relative; min-width: 0; outline: none; cursor: text;
+  overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; line-height: 1.65; color: #ddd;
+}
+xhaos-input[data-empty="true"]::before {
+  content: attr(data-placeholder); color: #777; pointer-events: none; position: absolute; top: 0; left: 0;
+}
+xhaos-input p { margin: 0; line-height: inherit; }
+xhaos-input :is(strong, b) { font-weight: 700; }
+xhaos-input :is(em, i) { font-style: italic; }
+
+/* ---- sketch pad (drawing.ts markup) ---------------------------------------- */
+.drawing-toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 11px;
+  flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; min-height: 30px; scrollbar-width: thin;
+}
+.drawing-toolbar :is(button, select) { color: #aaa; background: transparent; padding: 5px 7px; border: 0; border-radius: 3px; font-size: 12px; cursor: pointer; }
+.drawing-toolbar button:disabled { opacity: .3; cursor: default; }
+.drawing-toolbar button[aria-pressed="true"] { background: #363636; color: #fff; }
+.drawing-tool-group { display: flex; gap: 2px; }
+.drawing-colors { display: flex; align-items: center; gap: 5px; margin: 0 7px; }
+.drawing-colors button { width: 15px; height: 15px; padding: 0; border-radius: 50%; background: var(--swatch); }
+.drawing-colors button[aria-pressed="true"] { box-shadow: 0 0 0 2px #777; background: var(--swatch); }
+.drawing-toolbar .draw-attach { margin-left: auto; color: #ddd; }
+.draw-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; border-radius: 3px; overscroll-behavior: contain; }
+#draw-surface { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: crosshair; }
+.draw-text-input { position: absolute; max-width: 70%; background: #262626; color: #eee; padding: 3px 5px; border: 0; font-size: 16px; }

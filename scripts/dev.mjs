@@ -1,8 +1,11 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
+import { watch } from './build.mjs';
 const root = resolve('frontend');
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.map': 'application/json' };
+// Rebuild frontend/dist/app.js from the React sources on every change.
+await watch(result => console.log(result.errors.length ? `build failed (${result.errors.length} errors)` : 'rebuilt frontend/dist/app.js'));
 const server = createServer(async (req, res) => {
   try {
     const path = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
