@@ -14,6 +14,7 @@ const services = {
   tool: 'xhaos/app/tool.Service',
   project: 'xhaos/app/project.Service',
   mcp: 'xhaos/app/mcp.Service',
+  channel: 'xhaos/app/channel.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

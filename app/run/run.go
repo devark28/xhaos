@@ -46,15 +46,18 @@ type Runner struct {
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
-	// External, when set, adds tools served outside this process (MCP). Their
-	// calls pass the same gate as the built-in tools.
-	External ExternalTools
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	active   map[key]bool // value: another turn requested while running
-	stops    map[key]context.CancelFunc
+	// Extras add tools beyond the built-in ones (MCP servers, channels and
+	// spawn_agent). Their calls pass the same gate as the built-in tools.
+	Extras []ExternalTools
+	// OnFinal, when set, receives an agent's final answer when a turn ends
+	// with one (channels use it to report a subagent's result to its parent).
+	OnFinal func(a agent.Agent, answer string)
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+	active  map[key]bool // value: another turn requested while running
+	stops   map[key]context.CancelFunc
 }
 
 // New creates a runner whose tools work inside root.
@@ -66,33 +69,43 @@ func New(agents *agent.Store, providers *provider.Store, notify Notifier) *Runne
 	return &Runner{agents: agents, providers: providers, notify: notify, ctx: ctx, cancel: cancel, active: map[key]bool{}, stops: map[key]context.CancelFunc{}}
 }
 
-// ExternalTools is a source of extra tools (the MCP manager).
+// ExternalTools is a source of extra tools (MCP servers, channels). Calls
+// receive the calling agent.
 type ExternalTools interface {
 	Specs(workspaceID string) []llm.Tool
 	Owns(name string) bool
-	Prepare(workspaceID string, c llm.ToolCall) (tool.Call, error)
-	Execute(ctx context.Context, workspaceID string, call tool.Call) (string, error)
+	Prepare(workspaceID string, a agent.Agent, c llm.ToolCall) (tool.Call, error)
+	Execute(ctx context.Context, workspaceID string, a agent.Agent, call tool.Call) (string, error)
 }
 
 // specs lists every tool an agent in the workspace can call.
 func (r *Runner) specs(ws string) []llm.Tool {
 	specs := tool.Specs()
-	if r.External != nil {
-		specs = append(specs, r.External.Specs(ws)...)
+	for _, x := range r.Extras {
+		specs = append(specs, x.Specs(ws)...)
 	}
 	return specs
 }
 
-func (r *Runner) prepare(root, ws string, c llm.ToolCall) (tool.Call, error) {
-	if r.External != nil && r.External.Owns(c.Name) {
-		return r.External.Prepare(ws, c)
+func (r *Runner) extra(name string) ExternalTools {
+	for _, x := range r.Extras {
+		if x.Owns(name) {
+			return x
+		}
+	}
+	return nil
+}
+
+func (r *Runner) prepare(root, ws string, a agent.Agent, c llm.ToolCall) (tool.Call, error) {
+	if x := r.extra(c.Name); x != nil {
+		return x.Prepare(ws, a, c)
 	}
 	return tool.Prepare(root, c)
 }
 
-func (r *Runner) execute(ctx context.Context, root, ws string, call tool.Call) (string, error) {
-	if r.External != nil && r.External.Owns(call.Name) {
-		return r.External.Execute(ctx, ws, call)
+func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+	if x := r.extra(call.Name); x != nil {
+		return x.Execute(ctx, ws, a, call)
 	}
 	return tool.Execute(ctx, root, call)
 }
@@ -187,6 +200,8 @@ func SystemPrompt(a agent.Agent, root string) string {
 		"Paths are relative to the workspace. Depending on your policy (access %s, review %s, commits %s), "+
 		"changes and commands may wait for the user to allow or deny them; a denied call is the user's answer, so do not retry it unchanged. "+
 		"When you need a decision or information only the user has, ask with ask_user instead of guessing. "+
+		"Other agents work in this workspace, some in other projects; you cannot see their files, so coordinate through channels (agents_list, channel_create, channel_send). "+
+		"Messages from other agents arrive marked [channel #N]. Use spawn_agent to hand a self-contained task to a subagent. "+
 		"Read before you edit, keep changes small, and reply to the user in concise Markdown.",
 		a.ID, a.Title, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
 }
@@ -299,7 +314,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			// history; their thinking does not replay on the shorter one.
 			stale := start+i < madeAt
 			switch m.From {
-			case agent.FromOwner:
+			case agent.FromOwner, agent.FromChannel:
 				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Text: m.Body})
 			case agent.FromTool:
 				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Results: m.Results})
@@ -339,6 +354,9 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			fail("The reply hit the output limit and may be cut off. Ask the agent to continue.")
 		default:
 			_ = r.agents.SetStatus(ws, id, agent.StatusComplete)
+			if r.OnFinal != nil && res.Text != "" {
+				r.OnFinal(a, res.Text)
+			}
 		}
 		return
 	}
@@ -391,7 +409,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			waiting = waiting || st.State == agent.ToolPending
 			continue
 		}
-		call, err := r.prepare(root, ws, c)
+		call, err := r.prepare(root, ws, a, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
 		switch {
 		case reply.Stop == "max_tokens":
@@ -433,10 +451,10 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {
 				// Prepare again: files may have changed while the call waited.
-				call, err := r.prepare(root, ws, c)
+				call, err := r.prepare(root, ws, a, c)
 				out := ""
 				if err == nil {
-					out, err = r.execute(ctx, root, ws, call)
+					out, err = r.execute(ctx, root, ws, a, call)
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {
@@ -480,7 +498,7 @@ func Conversation(history []agent.MessageData) []agent.MessageData {
 	}
 	for _, m := range history {
 		switch m.From {
-		case agent.FromOwner:
+		case agent.FromOwner, agent.FromChannel:
 			conv = append(conv, m)
 		case agent.FromTool:
 			at := len(conv)
@@ -557,7 +575,7 @@ func estimate(conv []agent.MessageData, last *agent.MessageData) int64 {
 func cutPoint(conv []agent.MessageData, after int) int {
 	for i := len(conv) - 1; i > after; i-- {
 		switch {
-		case conv[i].From == agent.FromOwner:
+		case conv[i].From == agent.FromOwner || conv[i].From == agent.FromChannel:
 			return i
 		case conv[i].From == agent.FromAgent && conv[i-1].From == agent.FromTool:
 			return i
@@ -583,7 +601,7 @@ func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter 
 	}
 	for _, m := range conv[from:cut] {
 		switch m.From {
-		case agent.FromOwner:
+		case agent.FromOwner, agent.FromChannel:
 			fmt.Fprintf(&b, "\n[user]\n%s\n", clipText(m.Body, 4000))
 		case agent.FromAgent:
 			if m.Body != "" {

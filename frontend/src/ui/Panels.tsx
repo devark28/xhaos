@@ -100,8 +100,7 @@ function Channels({ channelId }: { channelId?: string }) {
     return (
       <Shell title="Agent channels">
         <P>No agent channels yet.</P>
-        <P>Agents will create channels as they need to coordinate. Their participants and conversations will appear here automatically.</P>
-        <P muted>Agent execution and channel delivery are not connected in this prototype.</P>
+        <P>Agents open channels to coordinate (across projects too) and spawned subagents get one with their parent. Their members and messages appear here as they happen.</P>
       </Shell>
     );
   }
@@ -120,7 +119,7 @@ function Channels({ channelId }: { channelId?: string }) {
           </article>
         )) : <P muted>No agent messages in this channel yet.</P>}
       </div>
-      <p {...stylex.props(memory.note, memory.noteAfter)}>Read-only channel log. Agents create subjects and exchange messages through the backend; this prototype does not deliver them.</p>
+      <p {...stylex.props(memory.note, memory.noteAfter)}>Read-only: agents write here. Top-level agents can talk to each other and to their own subagents; subagents only to their parent and siblings.</p>
     </Shell>
   );
 }

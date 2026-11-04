@@ -14,6 +14,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"xhaos/app/agent"
 	"xhaos/app/backend"
 	"xhaos/app/llm"
 	"xhaos/app/mcp"
@@ -110,22 +111,22 @@ func TestToolsForAgents(t *testing.T) {
 	if len(specs) != 2 || specs[0].Name != "mcp__tools__echo" || specs[0].Schema.Properties["text"] == nil {
 		t.Fatalf("specs = %+v", specs)
 	}
-	call, err := m.Prepare(ws, llm.ToolCall{ID: "c", Name: "mcp__tools__echo", Input: json.RawMessage(`{"text":"hi"}`)})
+	call, err := m.Prepare(ws, agent.Agent{}, llm.ToolCall{ID: "c", Name: "mcp__tools__echo", Input: json.RawMessage(`{"text":"hi"}`)})
 	if err != nil || call.Effect != tool.Exec || !strings.Contains(call.Summary, `echo {"text":"hi"}`) {
 		t.Fatalf("prepare (trust ask) = %+v, %v", call, err)
 	}
-	out, err := m.Execute(context.Background(), ws, call)
+	out, err := m.Execute(context.Background(), ws, agent.Agent{}, call)
 	if err != nil || strings.TrimSpace(out) != "echo: hi" {
 		t.Fatalf("execute = %q, %v", out, err)
 	}
-	fail, _ := m.Prepare(ws, llm.ToolCall{ID: "f", Name: "mcp__tools__fail_now", Input: json.RawMessage(`{}`)})
-	if out, err := m.Execute(context.Background(), ws, fail); err == nil || !strings.Contains(out+err.Error(), "it broke") {
+	fail, _ := m.Prepare(ws, agent.Agent{}, llm.ToolCall{ID: "f", Name: "mcp__tools__fail_now", Input: json.RawMessage(`{}`)})
+	if out, err := m.Execute(context.Background(), ws, agent.Agent{}, fail); err == nil || !strings.Contains(out+err.Error(), "it broke") {
 		t.Fatalf("failing tool = %q, %v", out, err)
 	}
-	if _, err := m.Prepare(ws, llm.ToolCall{ID: "x", Name: "mcp__tools__echo", Input: json.RawMessage(`[1]`)}); err == nil {
+	if _, err := m.Prepare(ws, agent.Agent{}, llm.ToolCall{ID: "x", Name: "mcp__tools__echo", Input: json.RawMessage(`[1]`)}); err == nil {
 		t.Fatal("a non-object input was accepted")
 	}
-	if _, err := m.Prepare(ws, llm.ToolCall{ID: "x", Name: "mcp__tools__nope", Input: json.RawMessage(`{}`)}); err == nil {
+	if _, err := m.Prepare(ws, agent.Agent{}, llm.ToolCall{ID: "x", Name: "mcp__tools__nope", Input: json.RawMessage(`{}`)}); err == nil {
 		t.Fatal("an unknown tool was accepted")
 	}
 	// Disabled servers offer no tools; deleted ones are gone.
@@ -158,11 +159,11 @@ func TestLocalServerOverStdioGetsItsEnv(t *testing.T) {
 	if err != nil || got.Status != "connected" || strings.Join(got.EnvKeys, ",") != "XHAOS_MCP_STDIO,XHAOS_TEST_SECRET" {
 		t.Fatalf("saved = %+v, %v", got, err)
 	}
-	call, err := m.Prepare(ws, llm.ToolCall{ID: "c", Name: "mcp__local__echo", Input: json.RawMessage(`{"text":"yo"}`)})
+	call, err := m.Prepare(ws, agent.Agent{}, llm.ToolCall{ID: "c", Name: "mcp__local__echo", Input: json.RawMessage(`{"text":"yo"}`)})
 	if err != nil || call.Effect != tool.Write {
 		t.Fatalf("prepare = %+v, %v", call, err)
 	}
-	out, err := m.Execute(context.Background(), ws, call)
+	out, err := m.Execute(context.Background(), ws, agent.Agent{}, call)
 	if err != nil || out != "echo: yo s3cret" {
 		t.Fatalf("execute = %q, %v", out, err)
 	}

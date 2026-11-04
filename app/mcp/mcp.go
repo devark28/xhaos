@@ -24,6 +24,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"xhaos/app/agent"
 	"xhaos/app/apperr"
 	"xhaos/app/llm"
 	"xhaos/app/secretbox"
@@ -364,7 +365,7 @@ func (m *Manager) Specs(ws string) []llm.Tool {
 
 // Prepare checks an MCP call: the tool must exist now, and its input must be
 // a JSON object. The server's trust sets the call's effect for the gate.
-func (m *Manager) Prepare(ws string, c llm.ToolCall) (tool.Call, error) {
+func (m *Manager) Prepare(ws string, _ agent.Agent, c llm.ToolCall) (tool.Call, error) {
 	call := tool.Call{ID: c.ID, Name: c.Name, Effect: tool.Exec}
 	e, ok := m.tools(ws)[c.Name]
 	if !ok {
@@ -384,7 +385,7 @@ func (m *Manager) Prepare(ws string, c llm.ToolCall) (tool.Call, error) {
 }
 
 // Execute calls the tool. A failed session is reconnected once.
-func (m *Manager) Execute(ctx context.Context, ws string, call tool.Call) (string, error) {
+func (m *Manager) Execute(ctx context.Context, ws string, _ agent.Agent, call tool.Call) (string, error) {
 	e, ok := m.tools(ws)[call.Name]
 	if !ok {
 		return "", fmt.Errorf("MCP tool %s is not available", call.Name)

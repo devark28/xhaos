@@ -681,8 +681,12 @@ func TestMCPCallsPassTheGate(t *testing.T) {
 	h.fake.mu.Lock()
 	tools := h.fake.turns[len(h.fake.turns)-1].Tools
 	h.fake.mu.Unlock()
-	if tools[len(tools)-1].Name != "mcp__srv__echo" {
-		t.Fatalf("last tool = %s", tools[len(tools)-1].Name)
+	offered := false
+	for _, tl := range tools {
+		offered = offered || tl.Name == "mcp__srv__echo"
+	}
+	if !offered {
+		t.Fatalf("the MCP tool was not offered: %+v", tools)
 	}
 
 	// Trust "read": the call runs at once.
@@ -819,5 +823,133 @@ func TestTooLongErrorCompactsAndRetries(t *testing.T) {
 	h.waitStatus(t, a.ID, agent.StatusComplete)
 	if !compacted || h.lastReply(t) != "ok" {
 		t.Fatalf("compacted = %v, reply = %q", compacted, h.lastReply(t))
+	}
+}
+
+// Channels: who may talk to whom, delivery into transcripts, and waking.
+func TestChannelsFollowTheFamilyRule(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	other, _ := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: t.TempDir()})
+	mk := func(key, title string, parent, proj int64) agent.Agent {
+		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: title, ParentID: parent, ProjectID: proj, Provider: "f", Model: "m1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	top1 := mk("1", "top one", 0, 0)
+	top2 := mk("2", "top two", 0, other.ID) // another project
+	sub1 := mk("3", "sub one", top1.ID, 0)
+	sub2 := mk("4", "sub two", top1.ID, 0)
+	subX := mk("5", "sub of two", top2.ID, 0)
+	ch := h.s.Channels
+	if _, err := ch.Create(top1, "plan", []int64{top2.ID, sub1.ID}, ""); err != nil {
+		t.Fatalf("top-level with another project's agent and own subagent: %v", err)
+	}
+	if _, err := ch.Create(sub1, "family", []int64{sub2.ID, top1.ID}, ""); err != nil {
+		t.Fatalf("subagent with sibling and parent: %v", err)
+	}
+	for _, bad := range []struct {
+		from agent.Agent
+		to   int64
+	}{{sub1, top2.ID}, {sub1, subX.ID}, {top1, subX.ID}} {
+		if _, err := ch.Create(bad.from, "x", []int64{bad.to}, ""); err == nil {
+			t.Errorf("#%d could open a channel with #%d", bad.from.ID, bad.to)
+		}
+	}
+
+	// A message reaches the other members' transcripts and wakes them.
+	c, _ := ch.Create(top1, "sync", []int64{top2.ID}, "")
+	if _, err := ch.Send(top1, c.ID, "hello there"); err != nil {
+		t.Fatal(err)
+	}
+	h.waitStatus(t, top2.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	seen := ""
+	for _, turn := range h.fake.turns {
+		if strings.Contains(turn.System, fmt.Sprintf("agent #%d ", top2.ID)) {
+			seen = turn.Messages[len(turn.Messages)-1].Text
+		}
+	}
+	h.fake.mu.Unlock()
+	if !strings.Contains(seen, fmt.Sprintf("message from agent #%d (top one):\nhello there", top1.ID)) {
+		t.Fatalf("top two saw %q", seen)
+	}
+	if _, err := ch.Send(subX, c.ID, "sneaky"); err == nil {
+		t.Fatal("a non-member sent to the channel")
+	}
+	views, _ := ch.Channels(ws)
+	if len(views) != 3 || len(views[2].Messages) != 1 || views[2].Messages[0].Body != "hello there" {
+		t.Fatalf("channels = %+v", views)
+	}
+}
+
+func TestChannelBurstLimit(t *testing.T) {
+	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
+	c, _ := h.s.Channels.Create(a, "chatty", []int64{b.ID}, "")
+	for i := 0; i < 30; i++ {
+		if _, err := h.s.Channels.Send(a, c.ID, fmt.Sprint("msg ", i)); err != nil {
+			t.Fatalf("message %d: %v", i, err)
+		}
+	}
+	if _, err := h.s.Channels.Send(a, c.ID, "one too many"); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("31st message = %v", err)
+	}
+}
+
+// spawn_agent: the parent starts a subagent; the subagent's final answer is
+// posted to their channel and wakes the parent.
+func TestSpawnedSubagentReportsBack(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		switch {
+		case strings.Contains(last.Text, "Final answer:"):
+			return llm.Result{Text: "thanks, got it", StopReason: "end_turn"}, nil
+		case strings.Contains(last.Text, "You are a subagent"):
+			return llm.Result{Text: "child done: 42", StopReason: "end_turn"}, nil
+		case last.Text == "split the work":
+			return llm.Result{Calls: []llm.ToolCall{tc("s", "spawn_agent", map[string]any{"task": "count the files", "title": "Counter"})}, StopReason: "tool_use"}, nil
+		}
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	parent, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "p", WorkspaceID: ws, Prompt: "split the work", Provider: "f", Model: "m1", Policy: &auto})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.fake.mu.Lock()
+		n := 0
+		for _, turn := range h.fake.turns {
+			if strings.Contains(turn.Messages[len(turn.Messages)-1].Text, "Final answer:\nchild done: 42") {
+				n++
+			}
+		}
+		h.fake.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the parent never received the subagent's answer; transcript: %v", transcript(t, h))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	snap, _ := h.s.Agents.Snapshot(ws)
+	var child agent.Agent
+	for _, a := range snap.Agents {
+		if a.ParentID == parent.ID {
+			child = a
+		}
+	}
+	if child.ID == 0 || child.Title != "Counter" || child.Policy != auto || child.ProjectID != parent.ProjectID || child.Model != "m1" {
+		t.Fatalf("child = %+v", child)
+	}
+	if st := h.tools(t, parent.ID)["s"]; st.State != agent.ToolDone || !strings.Contains(st.Output, fmt.Sprintf("Started subagent #%d", child.ID)) {
+		t.Fatalf("spawn call = %+v", st)
 	}
 }

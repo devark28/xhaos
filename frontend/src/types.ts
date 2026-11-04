@@ -3,7 +3,7 @@
 
 // ---- view ------------------------------------------------------------------
 export type Status = 'idle' | 'running' | 'waiting' | 'paused' | 'complete' | 'terminated';
-export type EntryKind = 'user' | 'assistant' | 'tool' | 'diff' | 'approval' | 'system';
+export type EntryKind = 'user' | 'assistant' | 'tool' | 'diff' | 'approval' | 'system' | 'channel';
 export type ToolState = 'pending' | 'allowed' | 'denied' | 'done' | 'failed';
 
 export interface Attachment {
@@ -99,6 +99,17 @@ export interface Channel {
   creatorId: number;
   participants: number[];
   messages: ChannelMessage[];
+}
+
+// A channel as the backend sends it (channel.Service.Channels).
+export interface BackendChannel {
+  id: number;
+  subject: string;
+  kind?: string;
+  creatorId: number;
+  members: number[];
+  createdAt: string;
+  messages: { id: number; channelId: number; senderId: number; body: string; createdAt: string }[];
 }
 
 export interface Workspace {

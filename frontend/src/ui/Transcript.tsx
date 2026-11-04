@@ -47,7 +47,7 @@ export function AttachedFiles({ files = [] }: { files?: Attachment[] }) {
 }
 
 // ---- entries ---------------------------------------------------------------
-const kindNames: Record<string, string> = { user: 'you', assistant: 'agent', tool: 'tool', diff: 'edit', approval: 'approval', system: 'system' };
+const kindNames: Record<string, string> = { user: 'you', assistant: 'agent', tool: 'tool', diff: 'edit', approval: 'approval', system: 'system', channel: 'channel' };
 
 function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
   const kind = kindNames[entry.kind] ? entry.kind : 'assistant';
@@ -73,6 +73,16 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
         <pre {...stylex.props(styles.pre)}><code dangerouslySetInnerHTML={html(code)} /></pre>
         {entry.output && <p {...stylex.props(styles.requestContext)}>{entry.output}</p>}
         {entry.callId && <div {...stylex.props(styles.requestActions)}><DecisionButtons agent={agent} callId={entry.callId} /></div>}
+      </div>
+    );
+  }
+  if (kind === 'channel') {
+    // "[channel #N "subject"] message from agent #X (title):" then the body.
+    const [head, ...rest] = entry.text.split('\n');
+    return (
+      <div data-entry="channel" aria-label="Message from another agent" {...stylex.props(styles.entry, styles.channel)}>
+        <span {...stylex.props(styles.kind)}>channel</span><span {...stylex.props(styles.channelHead)}>{head.replace(/^\[channel /, '#').replace(/\] message from /, ' · from ').replace(/:$/, '')}</span>
+        <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(rest.join('\n')))} />
       </div>
     );
   }
@@ -146,6 +156,8 @@ const styles = stylex.create({
   user: { backgroundColor: '#2a2a2a', borderRadius: 3, paddingBlock: 9, paddingInline: 11, marginTop: 8, marginBottom: 12, color: '#e0e0e0' },
   system: { paddingBlock: 6, fontSize: 10, color: '#808080' },
   live: { opacity: 0.85 },
+  channel: { borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.lineStrong, paddingLeft: 10 },
+  channelHead: { fontSize: 10, color: colors.textMuted },
   kind: { display: 'inline-block', fontSize: 9, color: '#808080', marginRight: 9 },
   tool: { marginBlock: 12 },
   summary: { cursor: 'pointer', paddingBlock: 2, fontFamily: 'inherit', fontSize: 10, lineHeight: 1.7, color: colors.textMuted },

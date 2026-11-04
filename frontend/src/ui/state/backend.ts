@@ -1,12 +1,12 @@
 // The Go backend connection and startup. The connection object lives here,
 // not in the store: it holds the Wails runtime, which must not be frozen.
 import { connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
-import { viewFromSnapshot, applyEvent, applyDelta } from '../../backend-view.ts';
+import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
 import { update, get, workspaceOf, toast, errorText, save } from './store.ts';
 import { refreshProjects } from './projects.ts';
-import type { Agent, BackendEvent, Snapshot, Workspace } from '../../types.ts';
+import type { Agent, BackendChannel, BackendEvent, Snapshot, Workspace } from '../../types.ts';
 
 let backend: Backend | null = null;
 // call is the backend RPC; it throws when the page runs without the backend.
@@ -47,6 +47,14 @@ export function applySamples() {
   });
 }
 
+// refreshChannels loads the workspace's channels (live events keep them current).
+export async function refreshChannels() {
+  try {
+    const list = await call<BackendChannel[]>('channel', 'Channels', get().active);
+    update(s => { workspaceOf(s).channels = channelsFromBackend(list); });
+  } catch { /* the Channels tab shows none */ }
+}
+
 export async function refreshProviders() {
   const providers = await call('provider', 'Providers');
   update(s => { s.providers = providers; });
@@ -66,7 +74,7 @@ function startPrototype() {
 async function startBackend(connection: Backend) {
   backend = connection;
   prototypeWorkspaces = structuredClone(get().workspaces);
-  const onSnapshot = (snapshot: Snapshot) => update(s => {
+  const onSnapshot = (snapshot: Snapshot) => { update(s => {
     const view = viewFromSnapshot(snapshot);
     if (s.showSamples) view.agents.push(...structuredClone(sampleAgents()));
     s.workspaces = [view]; s.active = view.id; s.questionAgentId = null;
@@ -74,8 +82,9 @@ async function startBackend(connection: Backend) {
     for (const id of [...s.selected]) if (!flatten(view.agents).some(agent => agent.id === id)) s.selected.delete(id);
     s.backendVersion = connection.status.version;
     s.ready = true;
-  });
+  }); void refreshChannels(); };
   const onEvent = (event: BackendEvent) => update(s => {
+    if (applyChannelEvent(workspaceOf(s), event)) return;
     const change = applyEvent(workspaceOf(s), event);
     if (change?.created) s.collapsed.add(change.agentId);
   });
@@ -93,6 +102,7 @@ async function startBackend(connection: Backend) {
     pending.push(event?.data ?? event);
   });
   await sync.start();
+  await refreshChannels();
   const resync = () => { if (document.visibilityState === 'visible') sync.catchUp(); };
   document.addEventListener('visibilitychange', resync);
   addEventListener('online', resync);

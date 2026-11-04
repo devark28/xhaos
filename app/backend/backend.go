@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"xhaos/app/btw"
+	"xhaos/app/channel"
 	"xhaos/app/llm/openai"
 	"xhaos/app/mcp"
 	"xhaos/app/project"
@@ -49,6 +50,7 @@ type Services struct {
 	Tools      *tool.Service
 	Projects   *project.Service
 	MCP        *mcp.Service
+	Channels   *channel.Service
 	mcp        *mcp.Manager
 }
 
@@ -99,6 +101,9 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := channel.Migrate(db); err != nil { // its tables refer to agents
+		return nil, fmt.Errorf("migrate channel: %w", err)
+	}
 	// Root, when given, is registered as a project. Nothing is registered
 	// implicitly: a server started from a home folder or an empty VPS must
 	// not turn that folder into a project.
@@ -111,9 +116,12 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 			return nil, fmt.Errorf("project %s: %w", root, err)
 		}
 	}
-	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify)
+	store := agent.NewStore(db, opts.Publish)
+	runner := run.New(store, providers, opts.Notify)
 	tools := mcp.NewManager(db, box, opts.Version)
-	runner.External = tools
+	channels := channel.NewService(db, agents, store, opts.Publish)
+	runner.Extras = []run.ExternalTools{tools, channels.Tools()}
+	runner.OnFinal = channels.OnFinal
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
 		return p.Path, err
@@ -122,6 +130,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 	if !opts.DisableRuns {
 		agents.Wake = runner.Kick
 		agents.Halt = runner.Stop
+		channels.Wake = runner.Kick
 		runner.Resume()
 	}
 	return &Services{
@@ -135,6 +144,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		Tools:      tool.NewService(),
 		Projects:   project.NewService(db),
 		MCP:        mcp.NewService(tools),
+		Channels:   channels,
 		mcp:        tools,
 	}, nil
 }
@@ -148,3 +158,6 @@ func (s *Services) Close() error {
 
 // MCPManager is the live MCP connections (for tests and the runner).
 func (s *Services) MCPManager() *mcp.Manager { return s.mcp }
+
+// DB is the shared database handle (for measurements and tests).
+func (s *Services) DB() *sql.DB { return s.db }

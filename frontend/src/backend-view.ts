@@ -1,7 +1,7 @@
 // Turns backend state (snapshot + events) into the card tree the UI renders.
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
-import type { Agent, BackendAgent, BackendEvent, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
+import type { Agent, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
 
@@ -89,6 +89,10 @@ function entry(event: BackendEvent): Entry | null {
   if (event.kind === 'agent.message' && event.data?.from === 'compaction') {
     const n = event.data.covers || 0;
     return { kind: 'tool', text: `Context compacted · ${n} earlier message${n === 1 ? '' : 's'} summarized for the model (all kept here)`, command: '', output: event.data.body || '', seq: event.seq };
+  }
+  if (event.kind === 'agent.message' && event.data?.from === 'channel') {
+    // Another agent's message through a channel; the body names the channel and sender.
+    return { kind: 'channel', text: event.data.body || '', seq: event.seq };
   }
   if (event.kind === 'agent.message') {
     const from = event.data?.from;
@@ -189,3 +193,31 @@ const usable = (p: Provider) => p.hasKey || p.kind === 'openai';
 // pickerChoices lists "provider/model" options from configured providers.
 export const pickerChoices = (providers: Provider[]): ModelChoice[] => providers.filter(usable).flatMap(p =>
   p.models.map(model => ({ id: `${p.id}/${model}`, provider: p.id, model, label: providers.length > 1 ? `${modelLabel(p.kind, model)} · ${p.name}` : modelLabel(p.kind, model) })));
+
+// ---- channels -------------------------------------------------------------------
+
+const toMessage = (c: { members: number[] }, m: BackendChannel['messages'][number]): ChannelMessage => ({
+  id: String(m.id), timestamp: m.createdAt, writer: m.senderId, readers: c.members.filter(id => id !== m.senderId), text: m.body,
+});
+
+// channelsFromBackend maps channel.Service.Channels into the view's channels.
+export const channelsFromBackend = (list: BackendChannel[]): Channel[] => list.map(c => ({
+  id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)),
+}));
+
+// applyChannelEvent applies channel.created / channel.message; true if it did.
+export function applyChannelEvent(view: Workspace, event: BackendEvent): boolean {
+  view.channels ||= [];
+  if (event.kind === 'channel.created') {
+    const c = event.data as BackendChannel;
+    if (!view.channels.some(x => x.id === String(c.id))) view.channels.push({ id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: [] });
+    return true;
+  }
+  if (event.kind === 'channel.message') {
+    const m = event.data as BackendChannel['messages'][number];
+    const c = view.channels.find(x => x.id === String(m.channelId));
+    if (c && !c.messages.some(x => x.id === String(m.id))) c.messages.push(toMessage({ members: c.participants }, m));
+    return Boolean(c);
+  }
+  return false;
+}

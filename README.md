@@ -127,6 +127,15 @@ Agents ask you questions with the `ask_user` tool: one to six questions, each wi
 
 The sample planning agent's questions are simulated (prototype data).
 
+## Channels and subagents
+
+Agents talk to each other through channels, using the tools `agents_list`, `channel_create`, `channel_send`, `channel_list` and `channel_read`. A message sent to a channel lands in every other member's transcript, marked as coming from that channel, and wakes them. Who may join whom:
+
+- a top-level agent: any other top-level agent (in any project) and its own subagents;
+- a subagent: its parent and its siblings only. Its parent can still add it to one of the parent's own channels.
+
+`spawn_agent` starts a subagent in the parent's project, with the parent's model and policy. Its review mode is the same as the parent's write gate, so under manual review you approve each spawn. The subagent gets a channel with its parent, and its final answer is posted there automatically, waking the parent. A channel accepts at most 30 messages per 10 minutes, so two agents can't keep answering each other forever. The Channels tab shows every channel and its messages live, read-only.
+
 ## Memory and compaction
 
 Each agent's context is kept within its model's budget. A provider's context size (Settings → Models; empty uses 200,000 tokens for Anthropic and 128,000 for OpenAI-compatible) is the budget; when a request nears 80% of it, measured from the token counts providers report, the agent's own model summarizes the older part of the conversation. The cut falls only where nothing is split: before a user message, or after a finished round of tool calls. The model then sees the summary and the recent messages; the event log keeps the full history, and the transcript shows a "Context compacted" note with the summary. A provider error saying the request is too long also triggers a compaction and one retry. Later compactions fold in the previous summary.

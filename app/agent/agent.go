@@ -49,6 +49,9 @@ const (
 	// FromCompaction is a summary of the conversation's earlier part; the model
 	// sees it instead of those messages (the log keeps them).
 	FromCompaction = "compaction"
+	// FromChannel is a message another agent sent through a channel; the
+	// model sees it as input, like the user's.
+	FromChannel = "channel"
 )
 
 // Tool call states, recorded as agent.tool events (the latest one per call wins).
@@ -98,6 +101,9 @@ type MessageData struct {
 	InputTokens int64 `json:"inputTokens,omitempty"`
 	// Covers is how many conversation messages a compaction summarizes.
 	Covers int `json:"covers,omitempty"`
+	// Channel and Sender identify a channel message (FromChannel).
+	Channel int64 `json:"channel,omitempty"`
+	Sender  int64 `json:"sender,omitempty"`
 }
 
 // ToolData is the payload of an agent.tool event: one state of one call.
