@@ -1119,3 +1119,30 @@ func TestSpawnLimitsAndPausedRecipients(t *testing.T) {
 }
 
 const maxChildrenForTest = 8
+
+// /btw also sees channels and memories, and skips compaction summaries.
+func TestBtwDigestIncludesChannelsAndMemories(t *testing.T) {
+	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "answer", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Memories.Save(memory.SaveRequest{WorkspaceID: ws, Content: "Release on Fridays"})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
+	c, _ := h.s.Channels.Create(a, "api shape", []int64{b.ID}, "")
+	h.s.Channels.Send(a, c.ID, "use REST")
+	h.waitStatus(t, b.ID, agent.StatusComplete)
+	agent.NewStore(h.s.DB(), nil).Append(ws, b.ID, agent.MessageData{From: agent.FromCompaction, Body: "SECRET SUMMARY", Covers: 2})
+	if _, err := h.s.Btw.Ask(btw.AskRequest{WorkspaceID: ws, Question: "q", Provider: "f", Model: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.fake.mu.Lock()
+	text := h.fake.turns[len(h.fake.turns)-1].Messages[0].Text
+	h.fake.mu.Unlock()
+	for _, want := range []string{fmt.Sprintf("from agent #%d via channel #%d: [channel", a.ID, c.ID), "## Channels", `Channel #1 "api shape"`, "use REST", "## Memories", "- #1 Release on Fridays"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("digest lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "SECRET SUMMARY") {
+		t.Error("the digest shows a compaction summary")
+	}
+}

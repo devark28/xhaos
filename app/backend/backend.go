@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"xhaos/app/attachment"
 	"xhaos/app/btw"
 	"xhaos/app/channel"
@@ -135,6 +136,10 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	memories := memory.NewService(db, opts.Publish)
 	runner.Memories = memories.Index
 	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memories.Tools()}
+	side := btw.NewService(agents, providers)
+	side.Context = func(ws string) string {
+		return strings.TrimSpace(channels.Digest(ws) + "\n\n## Memories\n" + memories.Index(ws))
+	}
 	catalog := tool.NewService()
 	catalog.More = func() []tool.Info { return append(channels.Tools().Catalog(), memories.Tools().Catalog()...) }
 	runner.OnFinal = channels.OnFinal
@@ -156,7 +161,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Agents:     agents,
 		Events:     eventlog.NewService(db),
 		Providers:  provider.NewService(providers),
-		Btw:        btw.NewService(agents, providers),
+		Btw:        side,
 		Tools:      catalog,
 		Projects:   project.NewService(db),
 		MCP:        mcp.NewService(tools),

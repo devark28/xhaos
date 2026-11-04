@@ -1,7 +1,8 @@
-// Package btw answers the owner's side questions about the workspace ("what
-// is #12 doing?") from a read-only digest of every agent. Nothing is written:
+// Package btw answers the user's side questions about the workspace ("what
+// is #12 doing?") from a read-only digest of every agent, plus the
+// workspace's channels and memories. Nothing is written:
 // no agent sees the question or the answer, and no transcript changes. Only
-// the owner's composer reaches it; agents have no tool for it and talk to
+// the user's composer reaches it; agents have no tool for it and talk to
 // each other through channels.
 package btw
 
@@ -38,16 +39,19 @@ type Answer struct {
 type Service struct {
 	agents    *agent.Service
 	providers *provider.Store
+	// Context, when set, adds workspace sections to the digest (channels,
+	// memories), each already rendered as text.
+	Context func(workspaceID string) string
 }
 
 func NewService(agents *agent.Service, providers *provider.Store) *Service {
 	return &Service{agents: agents, providers: providers}
 }
 
-const system = `You answer the owner's side questions about the agents in their Xhaos workspace.
-You see a read-only digest of each agent: title, status, model, waiting tool calls, and its most recent transcript items (cut short).
-Answer briefly and concretely, citing agents as #ID. If the digest does not show something, say so instead of guessing.
-You cannot act on agents or message them; the owner does that from the composer.`
+const system = `You answer the user's side questions about the agents in their Xhaos workspace.
+You see a read-only digest of each agent (title, project, status, model, waiting tool calls, and its most recent transcript items, cut short), then the workspace's channels between agents and its shared memories.
+Answer briefly and concretely, citing agents as #ID and channels as channel #ID. If the digest does not show something, say so instead of guessing.
+You cannot act on agents or message them; the user does that from the composer.`
 
 func (s *Service) Ask(req AskRequest) (Answer, error) {
 	q := strings.TrimSpace(req.Question)
@@ -71,7 +75,13 @@ func (s *Service) Ask(req AskRequest) (Answer, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	turn := llm.Turn{Model: req.Model, System: system, Messages: []llm.Message{{Role: "user", Text: Digest(snap) + "\n\nQuestion: " + q}}}
+	digest := Digest(snap)
+	if s.Context != nil {
+		if extra := s.Context(req.WorkspaceID); extra != "" {
+			digest += "\n\n" + extra
+		}
+	}
+	turn := llm.Turn{Model: req.Model, System: system, Messages: []llm.Message{{Role: "user", Text: digest + "\n\nQuestion: " + q}}}
 	res, err := adapter.Stream(ctx, creds, turn, func(string) {})
 	if err != nil {
 		return Answer{}, err
@@ -91,12 +101,22 @@ func Digest(snap agent.Snapshot) string {
 		switch e.Kind {
 		case agent.EventMessage:
 			var m agent.MessageData
-			if json.Unmarshal(e.Data, &m) != nil || m.From == agent.FromTool || (m.Body == "" && len(m.Calls) == 0) {
-				continue
+			if json.Unmarshal(e.Data, &m) != nil || m.From == agent.FromTool || m.From == agent.FromCompaction || (m.Body == "" && len(m.Calls) == 0) {
+				continue // compaction summaries are for the model; the real messages are here
 			}
-			line = m.From + ": " + m.Body
+			from := m.From
+			switch from {
+			case agent.FromOwner:
+				from = "user"
+			case agent.FromChannel:
+				from = fmt.Sprintf("from agent #%d via channel #%d", m.Sender, m.Channel)
+			}
+			line = from + ": " + m.Body
 			if m.Body == "" {
-				line = m.From + ": (tool calls only)"
+				line = from + ": (tool calls only)"
+			}
+			for _, f := range m.Attachments {
+				line += fmt.Sprintf(" [attached %s]", f.Name)
 			}
 		case agent.EventTool:
 			var d agent.ToolData
@@ -125,13 +145,16 @@ func Digest(snap agent.Snapshot) string {
 		if a.ParentID != 0 {
 			fmt.Fprintf(&b, "Subagent of #%d. ", a.ParentID)
 		}
+		if a.ProjectID != 0 {
+			fmt.Fprintf(&b, "Project %d. ", a.ProjectID)
+		}
 		if a.Role != "" {
 			fmt.Fprintf(&b, "Role: %s. ", a.Role)
 		}
 		fmt.Fprintf(&b, "Status: %s. Model: %s. Created %s.\n", a.Status, orNone(a.Model), a.CreatedAt.Format(time.RFC3339))
 		for _, d := range waiting[a.ID] {
 			if d.State == agent.ToolPending {
-				fmt.Fprintf(&b, "Waiting for the owner's approval: %s %s\n", d.Name, cut(d.Summary))
+				fmt.Fprintf(&b, "Waiting for the user's approval: %s %s\n", d.Name, cut(d.Summary))
 			}
 		}
 		if a.Status == agent.StatusTerminated {

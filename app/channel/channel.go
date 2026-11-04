@@ -400,6 +400,32 @@ func (s *Service) Channels(workspaceID string) ([]View, error) {
 	return out, nil
 }
 
+// Digest renders the workspace's channels for /btw: subject, members, and
+// the last few messages of each (cut short).
+func (s *Service) Digest(workspaceID string) string {
+	views, err := s.Channels(workspaceID)
+	if err != nil || len(views) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Channels\n")
+	for _, v := range views {
+		fmt.Fprintf(&b, "Channel #%d %q, members %s, %d messages\n", v.ID, v.Subject, ids(v.Members), len(v.Messages))
+		msgs := v.Messages
+		if len(msgs) > 4 {
+			msgs = msgs[len(msgs)-4:]
+		}
+		for _, m := range msgs {
+			body := strings.Join(strings.Fields(m.Body), " ")
+			if r := []rune(body); len(r) > 300 {
+				body = string(r[:300]) + "…"
+			}
+			fmt.Fprintf(&b, "- #%d: %s\n", m.SenderID, body)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // spawnChannel finds the channel between a spawned subagent and its parent.
 func (s *Service) spawnChannel(child agent.Agent) (int64, bool) {
 	var id int64
