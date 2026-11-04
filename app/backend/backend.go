@@ -135,6 +135,8 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	memories := memory.NewService(db, opts.Publish)
 	runner.Memories = memories.Index
 	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memories.Tools()}
+	catalog := tool.NewService()
+	catalog.More = func() []tool.Info { return append(channels.Tools().Catalog(), memories.Tools().Catalog()...) }
 	runner.OnFinal = channels.OnFinal
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
@@ -155,7 +157,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Events:     eventlog.NewService(db),
 		Providers:  provider.NewService(providers),
 		Btw:        btw.NewService(agents, providers),
-		Tools:      tool.NewService(),
+		Tools:      catalog,
 		Projects:   project.NewService(db),
 		MCP:        mcp.NewService(tools),
 		Channels:   channels,

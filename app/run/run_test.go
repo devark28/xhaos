@@ -1059,3 +1059,63 @@ func TestMemoriesReachEveryAgent(t *testing.T) {
 		t.Fatalf("after import = %+v", list)
 	}
 }
+
+func TestSpawnLimitsAndPausedRecipients(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		if strings.Contains(turn.Messages[len(turn.Messages)-1].Text, "You are a subagent") { // children wait on an approval
+			return llm.Result{Calls: []llm.ToolCall{tc("b", "bash", map[string]any{"command": "make"})}, StopReason: "tool_use"}, nil
+		}
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	mk := func(key string, parent int64) agent.Agent {
+		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: key, ParentID: parent, Provider: "f", Model: "m1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	top := mk("top", 0)
+	mid := mk("mid", top.ID)
+	tools := h.s.Channels.Tools()
+	spawn := func(a agent.Agent) error {
+		_, err := tools.Execute(context.Background(), ws, a, tool.Call{Name: "spawn_agent", Args: json.RawMessage(`{"task":"x"}`)})
+		return err
+	}
+	if err := spawn(mid); err != nil { // a level-2 subagent may start one
+		t.Fatalf("level-2 spawn = %v", err)
+	}
+	leaf := mk("leaf", mid.ID)
+	if err := spawn(leaf); err == nil || !strings.Contains(err.Error(), "levels") {
+		t.Fatalf("level-3 spawn = %v", err)
+	}
+	for i := 1; i < maxChildrenForTest; i++ { // mid is already one unfinished child
+		if err := spawn(top); err != nil {
+			t.Fatalf("spawn %d: %v", i, err)
+		}
+	}
+	if err := spawn(top); err == nil || !strings.Contains(err.Error(), "unfinished") {
+		t.Fatalf("9th spawn = %v", err)
+	}
+	// A paused member receives the message but is not woken.
+	other := mk("other", 0)
+	agent.NewStore(h.s.DB(), nil).SetStatus(ws, other.ID, agent.StatusPaused)
+	c, _ := h.s.Channels.Create(top, "hi", []int64{other.ID}, "")
+	h.s.Channels.Send(top, c.ID, "are you there")
+	time.Sleep(200 * time.Millisecond)
+	snap, _ := h.s.Agents.Snapshot(ws)
+	for _, a := range snap.Agents {
+		if a.ID == other.ID && a.Status != agent.StatusPaused {
+			t.Fatalf("paused agent woke: %s", a.Status)
+		}
+	}
+	h.fake.mu.Lock()
+	defer h.fake.mu.Unlock()
+	for _, turn := range h.fake.turns {
+		if strings.Contains(turn.System, fmt.Sprintf("agent #%d ", other.ID)) {
+			t.Fatal("the paused agent ran a turn")
+		}
+	}
+}
+
+const maxChildrenForTest = 8

@@ -279,6 +279,7 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
   const version = useApp(s => s.backendVersion);
   const providers = useApp(s => s.providers.length);
   const servers = useApp(s => s.mcpServers.length);
+  const catalogCount = useApp(s => (s.tools && 'tools' in s.tools ? s.tools.tools.length : 0));
   const [open, setOpen] = useState<Set<SectionId>>(() => new Set(focus ? [focus] : []));
   // Opening a section from elsewhere (/providers, /tools, a provider action)
   // expands it and brings it into view.
@@ -298,7 +299,7 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
         <Section id="models" title="Models" summary={providers ? `${providers} provider${providers > 1 ? 's' : ''}` : 'none set up'} open={open.has('models')} onToggle={() => toggle('models')}>
           <Providers message={message} testing={testing} />
         </Section>
-        <Section id="tools" title="Tools and MCP" summary={`built-in tools${servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}`} open={open.has('tools')} onToggle={() => toggle('tools')}>
+        <Section id="tools" title="Tools and MCP" summary={`${catalogCount ? `${catalogCount} tools` : 'tools'}${servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}`} open={open.has('tools')} onToggle={() => toggle('tools')}>
           <Tools />
         </Section>
       </> : null}
@@ -307,7 +308,14 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
   );
 }
 
-const effectNotes = {
+// Tool groups in the Tools section, by catalog source.
+const toolGroups: [string, string, string][] = [
+  ['built-in', 'Files and commands', "Part of Xhaos itself, no MCP server needed. Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first."],
+  ['channels', 'Agents and channels', 'Talking to other agents changes no files, so it runs at once; starting a subagent is gated like a write. Top-level agents reach each other across projects; subagents only their parent and siblings.'],
+  ['memory', 'Memories', "Every agent sees the workspace's memories in its prompt; saving one is gated like a write."],
+];
+const effectNotes: Record<string, string> = {
+  ask: 'waits for your answers in Questions',
   read: 'runs at once',
   write: 'asks under manual review; runs under auto',
   exec: 'read-only commands run at once; git add, commit and switch run under auto; anything else always asks',
@@ -321,17 +329,22 @@ function Tools() {
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
-          <h3 {...stylex.props(tools.subheading, tools.first)}>Built-in</h3>
-          <P>Part of Xhaos itself, no MCP server needed. Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first.</P>
-          <div {...stylex.props(tools.list)}>
-            {catalog.tools.map(t => (
-              <div key={t.name} data-tool={t.name} {...stylex.props(tools.row)}>
-                <code {...stylex.props(tools.name)}>{t.name}</code>
-                <span data-effect={t.effect} {...stylex.props(tools.effect, t.effect === 'read' ? tools.read : tools.gated)}>{t.effect} · {effectNotes[t.effect]}</span>
-                <p {...stylex.props(tools.description)}>{t.description}</p>
+          {toolGroups.map(([source, title, note], i) => {
+            const list = catalog.tools.filter(t => t.source === source);
+            return list.length ? <div key={source} data-tool-group={source}>
+              <h3 {...stylex.props(tools.subheading, i === 0 && tools.first)}>{title}</h3>
+              <P>{note}</P>
+              <div {...stylex.props(tools.list)}>
+                {list.map(t => (
+                  <div key={t.name} data-tool={t.name} {...stylex.props(tools.row)}>
+                    <code {...stylex.props(tools.name)}>{t.name}</code>
+                    <span data-effect={t.effect} {...stylex.props(tools.effect, t.effect === 'read' ? tools.read : tools.gated)}>{t.effect} · {effectNotes[t.effect] || ''}</span>
+                    <p {...stylex.props(tools.description)}>{t.description}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div> : null;
+          })}
           <h3 {...stylex.props(tools.subheading)}>MCP servers</h3>
           <McpServers />
         </>}

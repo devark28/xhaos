@@ -2,7 +2,8 @@
 // members; a message sent to it is delivered into every other member's
 // transcript and wakes them. Who may join whom:
 //   - a top-level agent: other top-level agents (any project) and its own subagents;
-//   - a subagent: its parent and its siblings (other subagents of the same parent).
+//   - a subagent: its parent, its siblings (other subagents of the same
+//     parent), and its own subagents.
 //
 // So a subagent never reaches outside its family on its own; its parent can
 // still bring it into one of the parent's channels.
@@ -39,6 +40,11 @@ const (
 	// agents cannot answer each other forever at the user's expense.
 	burstLimit  = 30
 	burstWindow = 10 * time.Minute
+
+	// spawn_agent limits: how deep subagents nest (a top-level agent is
+	// level 1) and how many unfinished subagents one agent may have.
+	maxDepth    = 3
+	maxChildren = 8
 )
 
 type Channel struct {
@@ -112,8 +118,11 @@ func mayInclude(creator, member agent.Agent) bool {
 	if member.Status == agent.StatusTerminated {
 		return false
 	}
+	if member.ParentID == creator.ID { // its own subagents
+		return true
+	}
 	if creator.ParentID == 0 {
-		return member.ParentID == 0 || member.ParentID == creator.ID
+		return member.ParentID == 0
 	}
 	return member.ID == creator.ParentID || member.ParentID == creator.ParentID
 }
@@ -236,7 +245,7 @@ func ruleText(a agent.Agent) string {
 	if a.ParentID == 0 {
 		return "a top-level agent can include other top-level agents and its own subagents"
 	}
-	return "a subagent can include only its parent and its sibling subagents"
+	return "a subagent can include only its parent, its sibling subagents, and its own subagents"
 }
 
 // Send posts a message and delivers it to every other member's transcript.
@@ -292,7 +301,11 @@ func (s *Service) Send(sender agent.Agent, channelID int64, body string) (Messag
 			return Message{}, err
 		}
 		events = append(events, ev)
-		woken = append(woken, m)
+		// A paused agent was stopped by the user: it gets the message but
+		// stays paused until the user resumes it.
+		if status != agent.StatusPaused {
+			woken = append(woken, m)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Message{}, err
@@ -425,6 +438,15 @@ var effects = map[string]string{
 }
 
 func (t *Tools) Owns(name string) bool { _, ok := effects[name]; return ok }
+
+// Catalog describes these tools for the Tools panel.
+func (t *Tools) Catalog() []tool.Info {
+	var out []tool.Info
+	for _, spec := range t.Specs("") {
+		out = append(out, tool.Info{Name: spec.Name, Description: spec.Description, Effect: effects[spec.Name], Source: "channels"})
+	}
+	return out
+}
 
 func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
@@ -563,6 +585,30 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 
 // spawn creates a subagent of a and a channel between them, then starts it.
 func (s *Service) spawn(parent agent.Agent, task, title string) (string, error) {
+	snap, err := s.agents.Snapshot(parent.WorkspaceID)
+	if err != nil {
+		return "", err
+	}
+	byID := map[int64]agent.Agent{}
+	for _, a := range snap.Agents {
+		byID[a.ID] = a
+	}
+	depth := 1
+	for p := parent; p.ParentID != 0; p = byID[p.ParentID] {
+		depth++
+	}
+	if depth >= maxDepth {
+		return "", fmt.Errorf("subagents nest at most %d levels; do this task yourself or report back to your parent", maxDepth)
+	}
+	open := 0
+	for _, a := range snap.Agents {
+		if a.ParentID == parent.ID && a.Status != agent.StatusComplete && a.Status != agent.StatusTerminated {
+			open++
+		}
+	}
+	if open >= maxChildren {
+		return "", fmt.Errorf("you already have %d unfinished subagents; wait for their answers before starting more", open)
+	}
 	title = strings.TrimSpace(title)
 	if title == "" {
 		title = agent.TitleFrom(task)

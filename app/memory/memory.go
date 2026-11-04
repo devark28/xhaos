@@ -260,6 +260,15 @@ var effects = map[string]string{
 
 func (t *Tools) Owns(name string) bool { _, ok := effects[name]; return ok }
 
+// Catalog describes these tools for the Tools panel.
+func (t *Tools) Catalog() []tool.Info {
+	var out []tool.Info
+	for _, spec := range t.Specs("") {
+		out = append(out, tool.Info{Name: spec.Name, Description: spec.Description, Effect: effects[spec.Name], Source: "memory"})
+	}
+	return out
+}
+
 func (t *Tools) Specs(string) []llm.Tool {
 	integer := map[string]any{"type": "integer"}
 	return []llm.Tool{

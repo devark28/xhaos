@@ -34,7 +34,7 @@ scripts/server.sh                                   # flags: -root DIR (optional
 CGO_ENABLED=1 go test -tags server,purego,libsqlite3 ./...
 ```
 
-Open http://localhost:5180 (override with `WAILS_SERVER_PORT`). The server serves `frontend/` from disk, so frontend edits need only a reload. When connected, the page shows a toast, sets `<html data-backend="…">`, and exposes `window.xhaos` (for example `await xhaos.call('agent', 'Snapshot', 'default')`). Cards show the backend's agents and transcripts, and creating agents and sending messages go to the server. The prototype's sample agents are mixed in, renumbered from #9000 and marked `· sample`; actions on them stay in the browser. Use `/samples off` or `/samples on` to hide or show them.
+Open http://localhost:5180 (override with `WAILS_SERVER_PORT`). The server serves `frontend/` from disk, so frontend edits need only a reload. When connected, the page shows a toast, sets `<html data-backend="…">`, and exposes `window.xhaos` (for example `await xhaos.call('agent', 'Snapshot', 'default')`). Cards show the backend's agents and transcripts, and creating agents and sending messages go to the server. The prototype's sample agents are hidden by default; `/samples on` mixes them in (renumbered from #9000 and marked `· sample`, with actions on them staying in the browser) and `/samples off` hides them again.
 
 Models come from providers you add in the Models section of Settings (or `/providers`). Two kinds are supported: Anthropic (an API key) and OpenAI-compatible, one adapter for any endpoint that speaks Chat Completions with streaming: OpenAI, DeepSeek, and local servers such as Ollama, llama.cpp, or vLLM. Presets fill in each one's base URL; add as many OpenAI-compatible providers as you like, each with its own ID. Their key is optional (local servers take none), and leaving the model list empty asks the endpoint which models it offers. Test lists the models to check the key or endpoint. Keys are encrypted at rest and never sent back to the page. The server makes the model calls, so a local endpoint's URL is as seen from the server.
 
@@ -132,9 +132,9 @@ The sample planning agent's questions are simulated (prototype data).
 Agents talk to each other through channels, using the tools `agents_list`, `channel_create`, `channel_send`, `channel_list` and `channel_read`. A message sent to a channel lands in every other member's transcript, marked as coming from that channel, and wakes them. Who may join whom:
 
 - a top-level agent: any other top-level agent (in any project) and its own subagents;
-- a subagent: its parent and its siblings only. Its parent can still add it to one of the parent's own channels.
+- a subagent: its parent, its siblings, and its own subagents. Its parent can still add it to one of the parent's own channels.
 
-`spawn_agent` starts a subagent in the parent's project, with the parent's model and policy. Its review mode is the same as the parent's write gate, so under manual review you approve each spawn. The subagent gets a channel with its parent, and its final answer is posted there automatically, waking the parent. A channel accepts at most 30 messages per 10 minutes, so two agents can't keep answering each other forever. The Channels tab shows every channel and its messages live, read-only.
+`spawn_agent` starts a subagent in the parent's project, with the parent's model and policy. Its review mode is the same as the parent's write gate, so under manual review you approve each spawn. The subagent gets a channel with its parent, and its final answer is posted there automatically, waking the parent. A channel accepts at most 30 messages per 10 minutes, so two agents can't keep answering each other forever. Subagents nest at most three levels deep, and an agent can have at most eight unfinished subagents at once. An agent you paused still receives channel messages but stays paused until you resume it. Settings → Tools lists these tools, and the memory tools, next to the built-in ones. The Channels tab shows every channel and its messages live, read-only.
 
 ## Memory and compaction
 

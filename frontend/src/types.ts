@@ -222,8 +222,8 @@ export interface FileEntry {
 export interface ToolInfo {
   name: string;
   description: string;
-  effect: 'read' | 'write' | 'exec';
-  source: string;
+  effect: 'read' | 'write' | 'exec' | 'ask';
+  source: string; // built-in, channels, or memory
 }
 export interface McpTool {
   name: string;

@@ -81,7 +81,7 @@ function initial(): State {
     layout: 'grid',
     search: '',
     collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),
-    showSamples: (() => { try { return localStorage.getItem('xhaos-samples') !== 'off'; } catch { return true; } })(),
+    showSamples: (() => { try { return localStorage.getItem('xhaos-samples') === 'on'; } catch { return false; } })(), // backend page only; off unless turned on
     mode: 'message',
     panel: { kind: 'questions' },
     selected: new Set(),
