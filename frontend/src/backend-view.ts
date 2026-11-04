@@ -1,7 +1,7 @@
 // Turns backend state (snapshot + events) into the card tree the UI renders.
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
-import type { Agent, BackendAgent, BackendEvent, Delta, Entry, ModelChoice, Provider, Snapshot, Status, ToolData, Workspace } from './types.ts';
+import type { Agent, BackendAgent, BackendEvent, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
 
@@ -58,6 +58,33 @@ function mcpEntry(data: ToolData, seq: number): Entry {
   return { kind: 'tool', callId: data.callId, state: data.state, text: `Call ${what}${note ? ` · ${note}` : ''}`, command: data.preview || '', output: data.state === 'denied' ? '' : data.output || '', seq };
 }
 
+// ask_user: the questions themselves are answered in the Questions panel;
+// the transcript notes them and, once answered, shows the answers.
+function askEntry(data: ToolData, seq: number): Entry {
+  const note = data.state === 'pending' ? 'waiting for your answers' : data.state === 'denied' ? 'dismissed' : 'answered';
+  let questions = '';
+  try { questions = (JSON.parse(data.preview || '{}').questions || []).map((q: { prompt: string }) => `- ${q.prompt}`).join('\n'); } catch { /* shown without */ }
+  return { kind: 'tool', ask: true, callId: data.callId, state: data.state, text: `Asked you: ${data.summary} · ${note}`, command: '', output: data.state === 'done' ? data.output || '' : questions, seq };
+}
+
+// questionBatch turns a waiting ask_user call into the agent's question batch
+// (the Questions panel's input); any other state clears it.
+function trackQuestions(agent: Agent, data: ToolData) {
+  if (data.state !== 'pending') {
+    if (agent.questionBatch?.id === data.callId) delete agent.questionBatch;
+    return;
+  }
+  try {
+    const parsed = JSON.parse(data.preview || '{}') as { title?: string; questions: { id: string; prompt: string; options?: QuestionOption[]; multiple?: boolean; required?: boolean }[] };
+    agent.questionBatch = {
+      id: data.callId,
+      status: 'pending',
+      title: parsed.title || data.summary,
+      questions: parsed.questions.map(q => ({ id: q.id, title: q.prompt.split(/\s+/).slice(0, 4).join(' '), prompt: q.prompt, options: q.options || [], multiple: q.multiple, required: q.required })),
+    };
+  } catch { /* malformed: no batch */ }
+}
+
 function entry(event: BackendEvent): Entry | null {
   if (event.kind === 'agent.message') {
     const from = event.data?.from;
@@ -67,7 +94,7 @@ function entry(event: BackendEvent): Entry | null {
     const kind = from === 'owner' ? 'user' : from === 'system' ? 'system' : 'assistant';
     return { kind, text, seq: event.seq };
   }
-  if (event.kind === 'agent.tool') return toolEntry(event.data || {}, event.seq);
+  if (event.kind === 'agent.tool') return event.data?.name === 'ask_user' ? askEntry(event.data, event.seq) : toolEntry(event.data || {}, event.seq);
   return null; // kinds this view doesn't render yet are kept in the log only
 }
 
@@ -82,7 +109,8 @@ function addEntry(agent: Agent, item: Entry) {
 }
 
 // pendingCalls lists the IDs of an agent's tool calls waiting for the owner.
-export const pendingCalls = (agent: Agent): string[] => (agent.activity || []).filter(item => item.callId && item.state === 'pending').map(item => item.callId as string);
+// Questions (ask_user) are answered, not allowed, so they are left out.
+export const pendingCalls = (agent: Agent): string[] => (agent.activity || []).filter(item => item.callId && item.state === 'pending' && !item.ask).map(item => item.callId as string);
 
 type Index = Map<number, Agent>;
 function index(view: Workspace): Index {
@@ -108,6 +136,7 @@ export function viewFromSnapshot(snapshot: Snapshot): Workspace {
     const item = entry(event);
     const agent = item && byId.get(event.agentId);
     if (agent) addEntry(agent, item);
+    if (agent && event.data?.name === 'ask_user') trackQuestions(agent, event.data);
   }
   return view;
 }
@@ -136,6 +165,10 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
   if (!agent) return null;
   addEntry(agent, item);
   if (item.kind === 'assistant') delete agent.live; // the saved reply replaces the streamed draft
+  if (event.kind === 'agent.tool' && event.data?.name === 'ask_user') {
+    trackQuestions(agent, event.data);
+    return { tree: true, agentId: agent.id };
+  }
   return { agentId: agent.id };
 }
 

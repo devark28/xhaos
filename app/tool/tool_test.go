@@ -189,3 +189,29 @@ func TestWritesIntoGitAreRefused(t *testing.T) {
 		t.Fatalf(".gitignore refused: %v", err)
 	}
 }
+
+func TestAskUserInput(t *testing.T) {
+	root := t.TempDir()
+	bad := []any{
+		map[string]any{},
+		map[string]any{"questions": []any{}},
+		map[string]any{"questions": []any{map[string]any{"prompt": " "}}},
+		map[string]any{"questions": []any{map[string]any{"prompt": "x", "options": []any{map[string]any{"label": "a"}, map[string]any{"label": "a"}}}}},
+	}
+	for _, in := range bad {
+		if _, err := Prepare(root, call("ask_user", in)); err == nil {
+			t.Errorf("ask_user %v accepted", in)
+		}
+	}
+	c, err := Prepare(root, call("ask_user", map[string]any{"questions": []any{map[string]any{"prompt": "Name?"}}}))
+	if err != nil || c.Effect != Ask || c.Summary != "Name?" {
+		t.Fatalf("prepare = %+v, %v", c, err)
+	}
+	qs, _ := ParseQuestions(c.Preview)
+	if out, err := FormatAnswers(qs, map[string]Answer{"q1": {Text: "Ada"}}); err != nil || out != "Q: Name?\nA: Ada" {
+		t.Fatalf("format = %q, %v", out, err)
+	}
+	if _, err := FormatAnswers(qs, map[string]Answer{"q1": {Choices: []string{"o9"}}}); err == nil {
+		t.Fatal("an unknown option was accepted")
+	}
+}

@@ -78,3 +78,21 @@ test('MCP calls show as "Call <server> · <tool>" with JSON input', async () => 
   assert.equal(item.language, 'json');
   assert.deepEqual(pendingCalls(view.agents[0]), ['m']);
 });
+
+test('a waiting ask_user call becomes the agent\'s question batch, and clears once answered', async () => {
+  const { viewFromSnapshot, applyEvent, pendingCalls } = await import('./backend-view.ts');
+  const { hasPendingQuestions } = await import('./questions.ts');
+  const preview = JSON.stringify({ title: 'Before I start', questions: [{ id: 'q1', prompt: 'Which database should we use?', options: [{ id: 'o1', label: 'SQLite' }], required: true }] });
+  const ask = { callId: 'q', name: 'ask_user', effect: 'ask', summary: 'Before I start', preview, state: 'pending' };
+  const view = viewFromSnapshot({ seq: 1, workspace: { id: 'w', name: 'W' }, agents: [{ id: 1, title: 'a', status: 'attention' }], transcript: [{ seq: 1, agentId: 1, kind: 'agent.tool', data: ask }] });
+  const agent = view.agents[0];
+  assert.ok(hasPendingQuestions(agent));
+  assert.equal(agent.questionBatch.id, 'q');
+  assert.equal(agent.questionBatch.questions[0].options[0].id, 'o1');
+  assert.deepEqual(pendingCalls(agent), []); // answered, not allowed
+  assert.match(agent.activity.at(-1).text, /Asked you: Before I start · waiting for your answers/);
+  applyEvent(view, { workspaceId: 'w', seq: 2, agentId: 1, kind: 'agent.tool', data: { ...ask, state: 'done', output: 'Q: Which database should we use?\nA: SQLite' } });
+  assert.ok(!hasPendingQuestions(agent));
+  assert.match(agent.activity.at(-1).text, /answered$/);
+  assert.match(agent.activity.at(-1).output, /A: SQLite/);
+});

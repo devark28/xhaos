@@ -6,7 +6,7 @@ import { Button, Kbd, StatusDot } from './kit.tsx';
 import { activeAgents } from '../model.ts';
 import { hasPendingQuestions } from '../questions.ts';
 import { useApp, workspaceOf, afterCommit } from './state/store.ts';
-import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit } from './state/questions.ts';
+import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit, dismissQuestions } from './state/questions.ts';
 import type { Agent, Answer, Question as QuestionData, QuestionOption } from '../types.ts';
 
 const emptyAnswer: Answer = { choices: [], text: '' };
@@ -93,6 +93,7 @@ function Review({ agent }: { agent: Agent }) {
 export function QuestionInbox() {
   const pending = activeAgents(useApp(s => workspaceOf(s).agents)).filter(hasPendingQuestions);
   const chosenId = useApp(s => s.questionAgentId);
+  const backend = useApp(s => s.backendVersion !== null);
   const steps = useApp(s => s.questionSteps);
   const agent = pending.find(a => a.id === chosenId) || pending[0];
   if (!agent?.questionBatch) return <p {...stylex.props(styles.muted)}>No pending questions.</p>;
@@ -120,6 +121,7 @@ export function QuestionInbox() {
         <span {...stylex.props(styles.agentId)}>#{agent.id}</span>
         <span {...stylex.props(styles.agentTitle)}>{agent.title}</span>
         <span {...stylex.props(styles.progress)}>{question ? `${step + 1} / ${batch.questions.length}` : 'Review'}</span>
+        {backend && !agent.sample && <Button data-dismiss-questions={agent.id} title="Tell the agent you won't answer" onClick={() => dismissQuestions(agent)} sx={styles.next}>Dismiss</Button>}
         {others.length > 0 && (
           <Button onClick={() => setQuestionAgent(others[0].id)} sx={styles.next}>{others.length} more waiting →</Button>
         )}

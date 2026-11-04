@@ -26,6 +26,7 @@ export interface Entry {
   seq?: number;
   attachments?: Attachment[];
   questionBatchId?: string;
+  ask?: boolean; // an ask_user call (answered, not allowed)
 }
 
 export interface QuestionOption {

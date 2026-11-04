@@ -1,11 +1,12 @@
 // The side panel's contents. Every panel uses Shell, so they share the
 // heading and scrolling.
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button, Chip, StatusDot } from './kit.tsx';
+import { Icon } from './Icon.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
 import { QuestionInbox } from './QuestionInbox.tsx';
@@ -15,7 +16,7 @@ import { useApp, workspaceOf } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
-  openPanel, showTools, saveMemory, deleteMemory, showProviders, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
+  openPanel, showTools, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
 } from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -143,8 +144,8 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   // is the one way to load a saved provider into it.
   const [preset, setPreset] = useState<PresetName | ''>('');
   const [form, setForm] = useState<ProviderForm>(() => blank('other'));
-  if (!backend) return <Shell title="Models"><P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P></Shell>;
   const [editingId, setEditingId] = useState('');
+  if (!backend) return <P>Providers are configured on the Go backend. Run scripts/server.sh and open its page.</P>;
   const editing = providers.find(p => p.id === editingId);
   const clash = !editing && providers.some(p => p.id === form.id.trim());
   const set = (field: keyof ProviderForm) => (event: { target: { value: string } }) => setForm({ ...form, [field]: event.target.value });
@@ -160,7 +161,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
   const openai = form.kind === 'openai';
   return (
-    <Shell title="Models" action={<BackToSettings />}>
+    <>
       <P muted>Providers give agents their models. Each new agent uses the model picked next to the composer.</P>
       <div>
         {providers.length ? providers.map(p => (
@@ -217,7 +218,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
         <P muted>Keys are sent to the Xhaos server, encrypted at rest, and never shown again. Anyone who can open this page can use them. Local servers (Ollama, llama.cpp, vLLM) need no key: the Xhaos server talks to them, so the URL is as seen from the server.</P>
       </div>
       {message && <p id="provider-message" {...stylex.props(provider.message)}>{message}</p>}
-    </Shell>
+    </>
   );
 }
 
@@ -256,29 +257,53 @@ function Help() {
   );
 }
 
-function Settings() {
+// Settings holds the configuration you rarely reach for, as sections that
+// expand in place (no sub-pages). /providers and /tools open their section.
+type SectionId = 'models' | 'tools';
+function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
+  return (
+    <section data-settings-section={id} {...stylex.props(settings.section)}>
+      <button type="button" id={id === 'models' ? 'open-providers' : 'integrations'} aria-expanded={open} onClick={onToggle} {...stylex.props(settings.head)}>
+        <span {...stylex.props(settings.chevron, open && settings.chevronOpen)}><Icon name="arrow" size={12} /></span>
+        <span {...stylex.props(settings.title)}>{title}</span>
+        <span {...stylex.props(settings.summary)}>{summary}</span>
+      </button>
+      {open && <div {...stylex.props(settings.body)}>{children}</div>}
+    </section>
+  );
+}
+
+function Settings({ focus, message, testing }: { focus?: SectionId; message?: string; testing?: string }) {
   const version = useApp(s => s.backendVersion);
   const providers = useApp(s => s.providers.length);
   const servers = useApp(s => s.mcpServers.length);
+  const [open, setOpen] = useState<Set<SectionId>>(() => new Set(focus ? [focus] : []));
+  // Opening a section from elsewhere (/providers, /tools, a provider action)
+  // expands it and brings it into view.
+  useEffect(() => {
+    if (!focus) return;
+    setOpen(o => (o.has(focus) ? o : new Set([...o, focus])));
+    requestAnimationFrame(() => document.querySelector(`[data-settings-section="${focus}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }, [focus]);
+  const toggle = (id: SectionId) => {
+    const next = new Set(open);
+    if (next.has(id)) next.delete(id); else { next.add(id); if (id === 'tools') showTools(false); }
+    setOpen(next);
+  };
   return (
     <Shell title="Settings">
-      {version && <>
-        <button type="button" id="open-providers" onClick={() => showProviders()} {...stylex.props(settings.link)}>
-          <span {...stylex.props(settings.linkTitle)}>Models</span>
-          <span {...stylex.props(settings.linkText)}>Model providers and API keys: Anthropic and OpenAI-compatible endpoints{providers ? ` · ${providers} set up` : ''}</span>
-        </button>
-        <button type="button" id="integrations" onClick={() => showTools()} {...stylex.props(settings.link)}>
-          <span {...stylex.props(settings.linkTitle)}>Tools and MCP</span>
-          <span {...stylex.props(settings.linkText)}>The built-in tools agents call, and MCP servers with their trust{servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}</span>
-        </button>
-      </>}
+      {version ? <>
+        <Section id="models" title="Models" summary={providers ? `${providers} provider${providers > 1 ? 's' : ''}` : 'none set up'} open={open.has('models')} onToggle={() => toggle('models')}>
+          <Providers message={message} testing={testing} />
+        </Section>
+        <Section id="tools" title="Tools and MCP" summary={`built-in tools${servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}`} open={open.has('tools')} onToggle={() => toggle('tools')}>
+          <Tools />
+        </Section>
+      </> : null}
       <P muted>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
     </Shell>
   );
 }
-
-// Back to Settings, from a page opened there.
-const BackToSettings = () => <Button id="back-to-settings" onClick={() => openPanel('settings')}>← Settings</Button>;
 
 const effectNotes = {
   read: 'runs at once',
@@ -289,7 +314,7 @@ function Tools() {
   const catalog = useApp(s => s.tools);
   const backend = useApp(s => s.backendVersion !== null);
   return (
-    <Shell title="Tools and MCP" action={<BackToSettings />}>
+    <>
       {!backend ? <P>Tools run on the Go backend. Run scripts/server.sh and open its page.</P>
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
@@ -308,7 +333,7 @@ function Tools() {
           <h3 {...stylex.props(tools.subheading)}>MCP servers</h3>
           <McpServers />
         </>}
-    </Shell>
+    </>
   );
 }
 
@@ -327,37 +352,37 @@ export function Panel() {
   else if (panel.kind === 'files') body = <Shell title="Files"><Files /></Shell>;
   else if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
   else if (panel.kind === 'channels') body = <Channels channelId={panel.channelId} />;
-  else if (panel.kind === 'providers') body = <Providers message={panel.message} testing={panel.testing} />;
+  else if (panel.kind === 'providers') body = <Settings focus="models" message={panel.message} testing={panel.testing} />;
   else if (panel.kind === 'history') body = <History />;
   else if (panel.kind === 'status') body = <Status />;
   else if (panel.kind === 'help') body = <Help />;
   else if (panel.kind === 'settings') body = <Settings />;
-  else if (panel.kind === 'tools') body = <Tools />;
+  else if (panel.kind === 'tools') body = <Settings focus="tools" />;
   else { const entry = simple()[panel.kind]; if (entry) body = <Shell title={entry[0]}>{entry[1]}</Shell>; }
   return <section id="utility-panel" aria-label="Panel" {...stylex.props(shell.root)}>{body}</section>;
 }
 
 const settings = stylex.create({
-  link: {
+  section: { borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint },
+  head: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
+    alignItems: 'center',
+    gap: 8,
     width: '100%',
-    textAlign: 'left',
-    marginBottom: 6,
-    paddingBlock: 8,
-    paddingInline: 10,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: colors.lineFaint,
-    borderRadius: 4,
-    backgroundColor: { default: colors.sunken, ':hover': colors.attached },
+    paddingBlock: 9,
+    paddingInline: 2,
+    borderWidth: 0,
+    backgroundColor: { default: 'transparent', ':hover': colors.hover },
     color: 'inherit',
     fontFamily: 'inherit',
+    textAlign: 'left',
     cursor: 'pointer',
   },
-  linkTitle: { fontSize: 12, color: colors.text },
-  linkText: { fontSize: 10, color: colors.textFaint },
+  chevron: { display: 'inline-flex', color: colors.textFaint },
+  chevronOpen: { transform: 'rotate(90deg)' },
+  title: { fontSize: 12, color: colors.text },
+  summary: { marginLeft: 'auto', fontSize: 10, color: colors.textFaint },
+  body: { paddingBottom: 12, paddingLeft: 20 },
 });
 
 const shell = stylex.create({

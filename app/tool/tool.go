@@ -72,16 +72,18 @@ func Specs() []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}}, Required: []string{"path"}}},
 		{Name: "search", Description: "Search file contents inside the workspace with a Go regular expression. Returns path:line: text for each match (at most 200). Skips .git and node_modules. path narrows the search to a directory or file.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"pattern": str, "path": str}, Required: []string{"pattern"}}},
-		{Name: "write_file", Description: "Create or overwrite a file inside the workspace with content. Parent directories are created. The owner may review it first.",
+		{Name: "write_file", Description: "Create or overwrite a file inside the workspace with content. Parent directories are created. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "content": str}, Required: []string{"path", "content"}}},
-		{Name: "edit_file", Description: "Replace old_string with new_string in a file inside the workspace. old_string must occur exactly once; include enough surrounding lines to make it unique. The owner may review it first.",
+		{Name: "edit_file", Description: "Replace old_string with new_string in a file inside the workspace. old_string must occur exactly once; include enough surrounding lines to make it unique. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "old_string": str, "new_string": str}, Required: []string{"path", "old_string", "new_string"}}},
-		{Name: "bash", Description: "Run a shell command with bash in the workspace root (2 minute timeout). Returns combined stdout and stderr and the exit code. The owner may review it first.",
+		{Name: "bash", Description: "Run a shell command with bash in the workspace root (2 minute timeout). Returns combined stdout and stderr and the exit code. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"command": str}, Required: []string{"command"}}},
+		{Name: "ask_user", Description: "Ask the user (the person running this workspace) one or more questions and wait for the answers. Use it when you need a decision or information only they have; offer options when the likely answers are known (they can always write their own). Your turn pauses until they answer; the answers come back as this tool's result.",
+			Schema: llm.ToolSchema{Properties: askSpec, Required: []string{"questions"}}},
 	}
 }
 
-var effects = map[string]string{"list_dir": Read, "read_file": Read, "search": Read, "write_file": Write, "edit_file": Write, "bash": Exec}
+var effects = map[string]string{"list_dir": Read, "read_file": Read, "search": Read, "write_file": Write, "edit_file": Write, "bash": Exec, "ask_user": Ask}
 
 // commitRE spots commands that commit or push; policy treats them separately.
 var commitRE = regexp.MustCompile(`\bgit\b[^\n;&|]*\b(commit|push)\b`)
@@ -92,6 +94,9 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 	call := Call{ID: c.ID, Name: c.Name, Effect: effects[c.Name]}
 	if call.Effect == "" {
 		return call, fmt.Errorf("unknown tool %q", c.Name)
+	}
+	if c.Name == "ask_user" {
+		return prepareAsk(call, c.Input)
 	}
 	dec := json.NewDecoder(bytes.NewReader(c.Input))
 	dec.DisallowUnknownFields()

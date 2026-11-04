@@ -26,6 +26,7 @@ import (
 	"xhaos/app/project"
 	"xhaos/app/provider"
 	"xhaos/app/run"
+	"xhaos/app/tool"
 	"xhaos/app/workspace"
 )
 
@@ -324,7 +325,7 @@ func TestToolsWaitForTheOwnerUnderManualReview(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "c.txt")); err == nil {
 		t.Fatal("denied command ran")
 	}
-	if got := h.lastReply(t); !strings.Contains(got, "false:     1\thello") || !strings.Contains(got, "false:Wrote b.txt") || !strings.Contains(got, "true:Denied: the owner denied it.") {
+	if got := h.lastReply(t); !strings.Contains(got, "false:     1\thello") || !strings.Contains(got, "false:Wrote b.txt") || !strings.Contains(got, "true:Denied: the user denied it.") {
 		t.Fatalf("model saw = %q", got)
 	}
 	h.fake.mu.Lock()
@@ -690,5 +691,57 @@ func TestMCPCallsPassTheGate(t *testing.T) {
 	h.waitStatus(t, b.ID, agent.StatusComplete)
 	if st := h.tools(t, b.ID)["m"]; st.State != agent.ToolDone || st.By != "" {
 		t.Fatalf("read-trust call = %+v", st)
+	}
+}
+
+// ask_user needs no permission: the call waits for the user's answers, which
+// become its result for the model.
+func TestAskUserWaitsForAnswers(t *testing.T) {
+	ask := tc("q", "ask_user", map[string]any{"title": "Before I start", "questions": []any{
+		map[string]any{"prompt": "Which database?", "options": []any{map[string]any{"label": "SQLite"}, map[string]any{"label": "Postgres", "description": "needs a server"}}},
+		map[string]any{"prompt": "Anything else?", "required": false},
+	}})
+	h := setup(t, toolModel([]llm.ToolCall{ask}))
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "allowed"}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	st := h.tools(t, a.ID)["q"]
+	if st.State != agent.ToolPending || st.Effect != tool.Ask || st.Summary != "Before I start" || !strings.Contains(st.Preview, `"id":"o2","label":"Postgres"`) {
+		t.Fatalf("waiting call = %+v", st)
+	}
+	answer := func(key string, answers map[string]tool.Answer) error {
+		_, err := h.s.Agents.Answer(agent.AnswerRequest{IdempotencyKey: key, WorkspaceID: ws, AgentID: a.ID, CallID: "q", Answers: answers})
+		return err
+	}
+	// Allow makes no sense for questions; a required question must be answered.
+	if _, err := h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "q", Allow: true}); err == nil {
+		t.Fatal("Allow on a question was accepted")
+	}
+	if err := answer("x", map[string]tool.Answer{"q2": {Text: "no"}}); err == nil {
+		t.Fatal("a missing required answer was accepted")
+	}
+	if err := answer("y", map[string]tool.Answer{"q1": {Choices: []string{"o1", "o2"}}}); err == nil {
+		t.Fatal("two choices on a single-choice question were accepted")
+	}
+	if err := answer("ok", map[string]tool.Answer{"q1": {Choices: []string{"o2"}, Text: "we have one"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	got := h.lastReply(t)
+	if !strings.Contains(got, "false:Q: Which database?\nA: Postgres\n   we have one\nQ: Anything else?\nA: (skipped)") {
+		t.Fatalf("model saw %q", got)
+	}
+}
+
+func TestDismissedQuestionsTellTheModel(t *testing.T) {
+	h := setup(t, toolModel([]llm.ToolCall{tc("q", "ask_user", map[string]any{"questions": []any{map[string]any{"prompt": "Proceed?"}}})}))
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "q", Allow: false})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	if got := h.lastReply(t); !strings.Contains(got, "true:Denied: the user dismissed the questions.") {
+		t.Fatalf("model saw %q", got)
 	}
 }

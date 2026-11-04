@@ -18,6 +18,7 @@ import (
 	"xhaos/app/policy"
 	"xhaos/app/project"
 	"xhaos/app/sqlitedb"
+	"xhaos/app/tool"
 	"xhaos/app/workspace"
 )
 
@@ -376,11 +377,72 @@ func (s *Service) Decide(req DecideRequest) (eventlog.Event, error) {
 		if call.State != ToolPending {
 			return fmt.Errorf("%w: tool call %q is already %s", apperr.Conflict, req.CallID, call.State)
 		}
-		call.State, call.By, call.Reason = ToolDenied, FromOwner, "the owner denied it"
+		call.State, call.By, call.Reason = ToolDenied, FromOwner, "the user denied it"
+		if call.Name == "ask_user" {
+			if req.Allow {
+				return fmt.Errorf("%w: answer the questions instead", apperr.Conflict)
+			}
+			call.Reason = "the user dismissed the questions"
+		}
 		if req.Allow {
 			call.State, call.Reason = ToolAllowed, ""
 		}
 		call.Output = ""
+		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
+		return err
+	})
+	if err != nil {
+		return eventlog.Event{}, err
+	}
+	if !replayed {
+		s.publish(out)
+		s.wake(req.WorkspaceID, req.AgentID)
+	}
+	return out, nil
+}
+
+// AnswerRequest answers a waiting ask_user call: option IDs and/or text per
+// question ID.
+type AnswerRequest struct {
+	IdempotencyKey string                 `json:"idempotencyKey"`
+	WorkspaceID    string                 `json:"workspaceId"`
+	AgentID        int64                  `json:"agentId"`
+	CallID         string                 `json:"callId"`
+	Answers        map[string]tool.Answer `json:"answers"`
+}
+
+// Answer records the user's answers to an ask_user call; they become the
+// call's result for the model, and the agent continues.
+func (s *Service) Answer(req AnswerRequest) (eventlog.Event, error) {
+	var out eventlog.Event
+	replayed, err := idempotency.Run(s.db, "agent.Answer", req.IdempotencyKey, req, &out, func(tx *sql.Tx) error {
+		a, err := get(tx, req.WorkspaceID, req.AgentID)
+		if err != nil {
+			return err
+		}
+		if a.Status == StatusTerminated {
+			return fmt.Errorf("%w: agent #%d is terminated", apperr.Conflict, a.ID)
+		}
+		calls, err := toolStates(tx, req.WorkspaceID, req.AgentID)
+		if err != nil {
+			return err
+		}
+		call, ok := calls[req.CallID]
+		if !ok || call.Name != "ask_user" {
+			return fmt.Errorf("%w: question %q of agent #%d", apperr.NotFound, req.CallID, a.ID)
+		}
+		if call.State != ToolPending {
+			return fmt.Errorf("%w: these questions are already %s", apperr.Conflict, call.State)
+		}
+		qs, err := tool.ParseQuestions(call.Preview)
+		if err != nil {
+			return err
+		}
+		text, err := tool.FormatAnswers(qs, req.Answers)
+		if err != nil {
+			return fmt.Errorf("%w: %v", apperr.Invalid, err)
+		}
+		call.State, call.By, call.Reason, call.Output = ToolDone, FromOwner, "", text
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})

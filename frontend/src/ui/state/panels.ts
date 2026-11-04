@@ -52,8 +52,9 @@ export async function showFiles() {
 }
 
 // ---- tools and providers ---------------------------------------------------
-export async function showTools() {
-  openPanel('tools');
+// showTools opens Settings at Tools and MCP (open = false only loads them).
+export async function showTools(open = true) {
+  if (open) openPanel('tools');
   if (!connected()) return;
   try { const tools = await call('tool', 'Catalog'); update(s => { s.tools = tools; }); }
   catch (error) { update(s => { s.tools = { error: errorText(error) }; }); }

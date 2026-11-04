@@ -184,8 +184,9 @@ func SystemPrompt(a agent.Agent, root string) string {
 	return fmt.Sprintf("You are agent #%d in Xhaos, an agent workspace, working on: %s\n"+
 		"The workspace is the directory %s. Use the tools to read, search, and change files there and to run commands. "+
 		"Paths are relative to the workspace. Depending on your policy (access %s, review %s, commits %s), "+
-		"changes and commands may wait for the owner to allow or deny them; a denied call is the owner's answer, so do not retry it unchanged. "+
-		"Read before you edit, keep changes small, and reply to the owner in concise Markdown.",
+		"changes and commands may wait for the user to allow or deny them; a denied call is the user's answer, so do not retry it unchanged. "+
+		"When you need a decision or information only the user has, ask with ask_user instead of guessing. "+
+		"Read before you edit, keep changes small, and reply to the user in concise Markdown.",
 		a.ID, a.Title, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
 }
 
@@ -362,6 +363,10 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			d.State, d.Output = agent.ToolFailed, "Not run: the reply hit the output limit, so this call may be incomplete. Make it again, in smaller pieces if it is large."
 		case err != nil:
 			d.State, d.Output = agent.ToolFailed, err.Error()
+		case call.Effect == tool.Ask:
+			// Asking needs no permission; the call waits for the answers.
+			d.State, d.Reason = agent.ToolPending, "waiting for your answers"
+			waiting = true
 		default:
 			verdict, reason := a.Policy.Gate(call.Effect, call.Commit)
 			d.Reason = reason
