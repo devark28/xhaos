@@ -45,12 +45,15 @@ type Runner struct {
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	active      map[key]bool // value: another turn requested while running
-	stops       map[key]context.CancelFunc
+	// External, when set, adds tools served outside this process (MCP). Their
+	// calls pass the same gate as the built-in tools.
+	External ExternalTools
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	active   map[key]bool // value: another turn requested while running
+	stops    map[key]context.CancelFunc
 }
 
 // New creates a runner whose tools work inside root.
@@ -60,6 +63,37 @@ func New(agents *agent.Store, providers *provider.Store, notify Notifier) *Runne
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{agents: agents, providers: providers, notify: notify, ctx: ctx, cancel: cancel, active: map[key]bool{}, stops: map[key]context.CancelFunc{}}
+}
+
+// ExternalTools is a source of extra tools (the MCP manager).
+type ExternalTools interface {
+	Specs(workspaceID string) []llm.Tool
+	Owns(name string) bool
+	Prepare(workspaceID string, c llm.ToolCall) (tool.Call, error)
+	Execute(ctx context.Context, workspaceID string, call tool.Call) (string, error)
+}
+
+// specs lists every tool an agent in the workspace can call.
+func (r *Runner) specs(ws string) []llm.Tool {
+	specs := tool.Specs()
+	if r.External != nil {
+		specs = append(specs, r.External.Specs(ws)...)
+	}
+	return specs
+}
+
+func (r *Runner) prepare(root, ws string, c llm.ToolCall) (tool.Call, error) {
+	if r.External != nil && r.External.Owns(c.Name) {
+		return r.External.Prepare(ws, c)
+	}
+	return tool.Prepare(root, c)
+}
+
+func (r *Runner) execute(ctx context.Context, root, ws string, call tool.Call) (string, error) {
+	if r.External != nil && r.External.Owns(call.Name) {
+		return r.External.Execute(ctx, ws, call)
+	}
+	return tool.Execute(ctx, root, call)
 }
 
 // rootFor is the folder an agent's tools work in.
@@ -228,7 +262,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			fail(fmt.Sprintf("Cannot use the agent's project: %v.", err))
 			return
 		}
-		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, root), Tools: tool.Specs()}
+		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, root), Tools: r.specs(ws)}
 		prefix := Prefix(turn)
 		for _, m := range conv {
 			switch m.From {
@@ -320,7 +354,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			waiting = waiting || st.State == agent.ToolPending
 			continue
 		}
-		call, err := tool.Prepare(root, c)
+		call, err := r.prepare(root, ws, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
 		switch {
 		case reply.Stop == "max_tokens":
@@ -358,10 +392,10 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {
 				// Prepare again: files may have changed while the call waited.
-				call, err := tool.Prepare(root, c)
+				call, err := r.prepare(root, ws, c)
 				out := ""
 				if err == nil {
-					out, err = tool.Execute(ctx, root, call)
+					out, err = r.execute(ctx, root, ws, call)
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {

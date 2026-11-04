@@ -10,7 +10,7 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
-import type { Agent, FileEntry, Memory, Project, Provider, ToolCatalog, Workspace } from '../../types.ts';
+import type { Agent, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace } from '../../types.ts';
 
 enableMapSet();
 
@@ -30,6 +30,7 @@ export interface State {
   memories: Memory[];
   providers: Provider[];
   tools: Tools; // loaded when the tools panel opens
+  mcpServers: McpServer[];
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -72,6 +73,7 @@ function initial(): State {
     memories: load<Memory[]>('xhaos-memory-v1', () => []),
     providers: [],
     tools: null,
+    mcpServers: [],
     projects: [],
     attachedProject: null,
     files: {},

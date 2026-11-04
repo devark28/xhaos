@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
 	"xhaos/app/llm/openai"
+	"xhaos/app/mcp"
 	"xhaos/app/policy"
 	"xhaos/app/project"
 	"xhaos/app/provider"
@@ -643,4 +645,50 @@ func TestOpenAICompatibleAgentUsesTools(t *testing.T) {
 		t.Fatalf("requests = %d, first = %v", len(requests), requests[0])
 	}
 	_ = a
+}
+
+// An agent's MCP calls go through the same gate as the built-in tools: a
+// server's trust decides whether they wait for the owner.
+func TestMCPCallsPassTheGate(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "t", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "echo"}, func(_ context.Context, _ *sdk.CallToolRequest, in struct {
+		Text string `json:"text"`
+	}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "echo: " + in.Text}}}, nil, nil
+	})
+	srv := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	t.Cleanup(srv.Close)
+	h := setup(t, toolModel([]llm.ToolCall{tc("m", "mcp__srv__echo", map[string]any{"text": "hi"})}))
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	if got, err := h.s.MCP.Save(mcp.SaveRequest{WorkspaceID: ws, ID: "srv", Transport: "http", URL: srv.URL, Trust: mcp.TrustAsk, Enabled: true}); err != nil || got.Status != "connected" {
+		t.Fatalf("mcp save = %+v, %v", got, err)
+	}
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+
+	// Trust "ask": the call waits, even under auto review.
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	if st := h.tools(t, a.ID)["m"]; st.State != agent.ToolPending || !strings.Contains(st.Summary, "echo") {
+		t.Fatalf("call = %+v", st)
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "m", Allow: true})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	if reply := h.lastReply(t); !strings.Contains(reply, "false:echo: hi") {
+		t.Fatalf("model saw %q", reply)
+	}
+	// The turn offered the MCP tool beside the built-ins.
+	h.fake.mu.Lock()
+	tools := h.fake.turns[len(h.fake.turns)-1].Tools
+	h.fake.mu.Unlock()
+	if tools[len(tools)-1].Name != "mcp__srv__echo" {
+		t.Fatalf("last tool = %s", tools[len(tools)-1].Name)
+	}
+
+	// Trust "read": the call runs at once.
+	h.s.MCP.Save(mcp.SaveRequest{WorkspaceID: ws, ID: "srv", Transport: "http", URL: srv.URL, Trust: mcp.TrustRead, Enabled: true})
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
+	h.waitStatus(t, b.ID, agent.StatusComplete)
+	if st := h.tools(t, b.ID)["m"]; st.State != agent.ToolDone || st.By != "" {
+		t.Fatalf("read-trust call = %+v", st)
+	}
 }

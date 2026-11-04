@@ -45,7 +45,9 @@ type Call struct {
 	Summary string `json:"summary"`           // path or command, for the owner
 	Preview string `json:"preview,omitempty"` // diff of a write, shown before approval
 	Commit  bool   `json:"commit,omitempty"`  // a git commit or push
-	input   input
+	// Args is the raw input of a call handled outside this package (MCP).
+	Args  json.RawMessage `json:"-"`
+	input input
 }
 
 type input struct {
@@ -426,6 +428,9 @@ func bash(ctx context.Context, root, command string) (string, error) {
 	}
 	return text, nil
 }
+
+// Clip limits tool output to what the model is sent.
+func Clip(s string) string { return clip(s) }
 
 func clip(s string) string {
 	if len(s) <= maxOutput {

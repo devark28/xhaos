@@ -10,11 +10,12 @@ import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
 import { QuestionInbox } from './QuestionInbox.tsx';
 import { Files } from './Files.tsx';
+import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
-  openPanel, saveMemory, deleteMemory, showProviders, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
+  openPanel, showTools, saveMemory, deleteMemory, showProviders, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
 } from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -159,7 +160,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
   const openai = form.kind === 'openai';
   return (
-    <Shell title="Models">
+    <Shell title="Models" action={<BackToSettings />}>
       <P muted>Providers give agents their models. Each new agent uses the model picked next to the composer.</P>
       <div>
         {providers.length ? providers.map(p => (
@@ -257,15 +258,27 @@ function Help() {
 
 function Settings() {
   const version = useApp(s => s.backendVersion);
+  const providers = useApp(s => s.providers.length);
+  const servers = useApp(s => s.mcpServers.length);
   return (
-    <Shell title="Xhaos settings">
-      <P>Xhaos is a browser-first agent harness with a headless Go backend.</P>
-      <P>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
-      {version && <Button id="open-providers" onClick={() => showProviders()}>Model providers…</Button>}
-      <P muted>MCP servers and automatic approval classification are planned.</P>
+    <Shell title="Settings">
+      {version && <>
+        <button type="button" id="open-providers" onClick={() => showProviders()} {...stylex.props(settings.link)}>
+          <span {...stylex.props(settings.linkTitle)}>Models</span>
+          <span {...stylex.props(settings.linkText)}>Model providers and API keys: Anthropic and OpenAI-compatible endpoints{providers ? ` · ${providers} set up` : ''}</span>
+        </button>
+        <button type="button" id="integrations" onClick={() => showTools()} {...stylex.props(settings.link)}>
+          <span {...stylex.props(settings.linkTitle)}>Tools and MCP</span>
+          <span {...stylex.props(settings.linkText)}>The built-in tools agents call, and MCP servers with their trust{servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}</span>
+        </button>
+      </>}
+      <P muted>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
     </Shell>
   );
 }
+
+// Back to Settings, from a page opened there.
+const BackToSettings = () => <Button id="back-to-settings" onClick={() => openPanel('settings')}>← Settings</Button>;
 
 const effectNotes = {
   read: 'runs at once',
@@ -276,7 +289,7 @@ function Tools() {
   const catalog = useApp(s => s.tools);
   const backend = useApp(s => s.backendVersion !== null);
   return (
-    <Shell title="Tools">
+    <Shell title="Tools and MCP" action={<BackToSettings />}>
       {!backend ? <P>Tools run on the Go backend. Run scripts/server.sh and open its page.</P>
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
@@ -293,7 +306,7 @@ function Tools() {
             ))}
           </div>
           <h3 {...stylex.props(tools.subheading)}>MCP servers</h3>
-          <P muted>None yet. MCP servers (local commands and remote URLs) are next; their tools will be listed here and pass the same policy gate as the built-in ones.</P>
+          <McpServers />
         </>}
     </Shell>
   );
@@ -323,6 +336,29 @@ export function Panel() {
   else { const entry = simple()[panel.kind]; if (entry) body = <Shell title={entry[0]}>{entry[1]}</Shell>; }
   return <section id="utility-panel" aria-label="Panel" {...stylex.props(shell.root)}>{body}</section>;
 }
+
+const settings = stylex.create({
+  link: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    width: '100%',
+    textAlign: 'left',
+    marginBottom: 6,
+    paddingBlock: 8,
+    paddingInline: 10,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: colors.lineFaint,
+    borderRadius: 4,
+    backgroundColor: { default: colors.sunken, ':hover': colors.attached },
+    color: 'inherit',
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+  },
+  linkTitle: { fontSize: 12, color: colors.text },
+  linkText: { fontSize: 10, color: colors.textFaint },
+});
 
 const shell = stylex.create({
   root: { flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', margin: 0 },

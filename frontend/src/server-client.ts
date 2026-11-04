@@ -13,6 +13,7 @@ const services = {
   btw: 'xhaos/app/btw.Service',
   tool: 'xhaos/app/tool.Service',
   project: 'xhaos/app/project.Service',
+  mcp: 'xhaos/app/mcp.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

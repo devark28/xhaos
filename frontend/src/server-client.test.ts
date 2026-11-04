@@ -67,3 +67,14 @@ test('tool events become one entry per call and track pending calls', async () =
   applyEvent(view, { seq: 5, agentId: 1, kind: 'agent.message', data: { from: 'tool', results: [] } });
   assert.equal(agent.activity.length, 1);
 });
+
+test('MCP calls show as "Call <server> · <tool>" with JSON input', async () => {
+  const { viewFromSnapshot, pendingCalls } = await import('./backend-view.ts');
+  const call = { callId: 'm', name: 'mcp__fake__echo', effect: 'exec', summary: 'Fake · echo {"text":"hi"}', preview: '{\n  "text": "hi"\n}', state: 'pending', reason: 'only read-only commands and local git changes run without you' };
+  const view = viewFromSnapshot({ seq: 1, workspace: { id: 'w', name: 'W' }, agents: [{ id: 1, title: 'a', status: 'attention' }], transcript: [{ seq: 1, agentId: 1, kind: 'agent.tool', data: call }] });
+  const item = view.agents[0].activity.at(-1);
+  assert.equal(item.kind, 'approval');
+  assert.equal(item.text, 'Call Fake · echo?');
+  assert.equal(item.language, 'json');
+  assert.deepEqual(pendingCalls(view.agents[0]), ['m']);
+});

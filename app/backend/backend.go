@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"xhaos/app/btw"
 	"xhaos/app/llm/openai"
+	"xhaos/app/mcp"
 	"xhaos/app/project"
 	"xhaos/app/tool"
 
@@ -32,6 +33,8 @@ type Options struct {
 	Root     string             // a folder to register as a project at startup (optional)
 	// DisableRuns stops owner messages from starting model turns (storage tests).
 	DisableRuns bool
+	// Version names this server to MCP servers it connects to.
+	Version string
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -45,6 +48,8 @@ type Services struct {
 	Btw        *btw.Service
 	Tools      *tool.Service
 	Projects   *project.Service
+	MCP        *mcp.Service
+	mcp        *mcp.Manager
 }
 
 // Open opens the database at path (the API key encryption key is kept beside
@@ -71,6 +76,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		{"eventlog", eventlog.Migrate},
 		{"idempotency", idempotency.Migrate},
 		{"project", project.Migrate},
+		{"mcp", mcp.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -106,10 +112,13 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		}
 	}
 	runner := run.New(agent.NewStore(db, opts.Publish), providers, opts.Notify)
+	tools := mcp.NewManager(db, box, opts.Version)
+	runner.External = tools
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
 		return p.Path, err
 	}
+	tools.Start() // connect enabled MCP servers in the background
 	if !opts.DisableRuns {
 		agents.Wake = runner.Kick
 		agents.Halt = runner.Stop
@@ -125,11 +134,17 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		Btw:        btw.NewService(agents, providers),
 		Tools:      tool.NewService(),
 		Projects:   project.NewService(db),
+		MCP:        mcp.NewService(tools),
+		mcp:        tools,
 	}, nil
 }
 
 // Close stops running turns, then closes the database.
 func (s *Services) Close() error {
 	s.runner.Close()
+	s.mcp.Close()
 	return s.db.Close()
 }
+
+// MCPManager is the live MCP connections (for tests and the runner).
+func (s *Services) MCPManager() *mcp.Manager { return s.mcp }

@@ -59,6 +59,7 @@ func main() {
 	var wailsApp *application.App
 	services, err := backend.Open(*dbPath, backend.Options{
 		Root:    *root,
+		Version: version,
 		Publish: func(e eventlog.Event) { wailsApp.Event.Emit(EventName, e) },
 		Notify:  func(d run.Delta) { wailsApp.Event.Emit(DeltaEventName, d) },
 	})
@@ -86,6 +87,7 @@ func main() {
 			application.NewService(services.Btw),
 			application.NewService(services.Tools),
 			application.NewService(services.Projects),
+			application.NewService(services.MCP),
 		},
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{

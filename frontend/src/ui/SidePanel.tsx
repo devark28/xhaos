@@ -16,9 +16,8 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
   { kind: 'files', id: 'files', icon: 'folder', label: 'Files' },
   { kind: 'channels', id: 'channels', icon: 'chat', label: 'Channels' },
   { kind: 'memories', id: 'memories', icon: 'memory', label: 'Memories' },
-  { kind: 'providers', id: 'providers', icon: 'chip', label: 'Models' },
-  { kind: 'tools', id: 'integrations', icon: 'plug', label: 'Tools (built-in and MCP)' },
-  { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings' },
+  // Configuration you rarely reach for (models, tools and MCP) lives under Settings.
+  { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings', also: ['providers', 'tools'] },
 ];
 
 export function SidePanel() {

@@ -210,6 +210,30 @@ export interface ToolInfo {
   effect: 'read' | 'write' | 'exec';
   source: string;
 }
+export interface McpTool {
+  name: string;
+  agentName: string;
+  description: string;
+  readOnly: boolean; // the server's own (untrusted) hint
+}
+export type McpTrust = 'ask' | 'auto' | 'read';
+export interface McpServer {
+  id: string;
+  workspaceId: string;
+  name: string;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  url?: string;
+  envKeys?: string[];
+  headerKeys?: string[];
+  trust: McpTrust;
+  enabled: boolean;
+  status: 'connected' | 'connecting' | 'error' | 'disabled';
+  error?: string;
+  tools: McpTool[];
+}
+
 export interface ToolCatalog {
   tools: ToolInfo[];
 }

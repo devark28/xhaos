@@ -29,6 +29,7 @@ const stateNotes: Record<string, string> = { pending: 'waiting for you', allowed
 // toolEntry renders one tool call's latest state. Pending calls show as an
 // approval with the command or diff; the rest as a collapsible tool entry.
 function toolEntry(data: ToolData, seq: number): Entry {
+  if (data.name.startsWith('mcp__')) return mcpEntry(data, seq);
   const write = data.effect === 'write';
   const verb = toolVerbs[data.name] || data.name;
   if (data.state === 'pending') {
@@ -45,6 +46,16 @@ function toolEntry(data: ToolData, seq: number): Entry {
     output: write && data.preview && data.state !== 'failed' ? data.preview : output,
     seq,
   };
+}
+
+// MCP calls: "Call <server> · <tool>", with their input as JSON.
+function mcpEntry(data: ToolData, seq: number): Entry {
+  const what = data.summary.replace(/ \{[\s\S]*$/, ''); // "<server> · <tool>"
+  if (data.state === 'pending') {
+    return { kind: 'approval', callId: data.callId, state: data.state, text: `Call ${what}?`, command: data.preview || '', language: 'json', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
+  }
+  const note = data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : stateNotes[data.state] || data.state;
+  return { kind: 'tool', callId: data.callId, state: data.state, text: `Call ${what}${note ? ` · ${note}` : ''}`, command: data.preview || '', output: data.state === 'denied' ? '' : data.output || '', seq };
 }
 
 function entry(event: BackendEvent): Entry | null {

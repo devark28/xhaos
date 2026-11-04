@@ -4,16 +4,18 @@ import { update, get, focusLater, toast, errorText, saveMemories, pendingQuestio
 import { call, connected, refreshProviders } from './backend.ts';
 import { focusComposer, setDraft } from './composer.ts';
 import { refreshProjects } from './projects.ts';
-import type { Provider } from '../../types.ts';
+import type { McpServer, McpTrust, Provider } from '../../types.ts';
 
 export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { update(s => { s.panel = { kind, ...args }; }); }
 export function showMessageComposer() { update(s => { s.mode = 'message'; }); focusComposer(); }
 export function showDraw() { update(s => { s.mode = 'draw'; }); }
 // selectPanel shows a tab's panel in the side panel (which is always open).
+// Settings also refreshes the MCP server count it shows.
 export function selectPanel(kind: PanelKind) {
   if (kind === 'questions') showQuestions(get().questionAgentId);
   else if (kind === 'tools') showTools();
   else if (kind === 'files') showFiles();
+  else if (kind === 'settings') { openPanel('settings'); if (connected()) refreshMcp(); }
   else if (kind === 'providers') showProviders();
   else openPanel(kind);
 }
@@ -55,6 +57,55 @@ export async function showTools() {
   if (!connected()) return;
   try { const tools = await call('tool', 'Catalog'); update(s => { s.tools = tools; }); }
   catch (error) { update(s => { s.tools = { error: errorText(error) }; }); }
+  await refreshMcp();
+}
+
+// ---- MCP servers ---------------------------------------------------------------
+export async function refreshMcp() {
+  try { const servers = await call<McpServer[]>('mcp', 'Servers', get().active); update(s => { s.mcpServers = servers; }); }
+  catch (error) { toast(`Could not load MCP servers: ${errorText(error)}`); }
+}
+export interface McpForm {
+  id: string; name: string; transport: 'stdio' | 'http'; command: string; url: string;
+  env: string; headers: string; trust: McpTrust; enabled: boolean;
+}
+// Lines "KEY=value" (env) or "Name: value" (headers). Empty text keeps the
+// saved values (null); they are never sent back to the page.
+const pairs = (text: string, sep: RegExp): Record<string, string> | null => {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  return Object.fromEntries(lines.map(l => { const m = l.match(sep); return m ? [l.slice(0, m.index).trim(), l.slice(m.index! + m[0].length).trim()] : [l, '']; }));
+};
+// A command line split into words, honoring quotes.
+export const words = (line: string): string[] => (line.match(/"[^"]*"|'[^']*'|\S+/g) || []).map(w => w.replace(/^(["'])(.*)\1$/, '$2'));
+export async function saveMcp(form: McpForm): Promise<McpServer | null> {
+  const [command, ...args] = words(form.command);
+  try {
+    const server = await call<McpServer>('mcp', 'Save', {
+      workspaceId: get().active, id: form.id.trim(), name: form.name.trim(), transport: form.transport,
+      command: command || '', args, url: form.url.trim(), env: pairs(form.env, /=/), headers: pairs(form.headers, /:\s*/),
+      trust: form.trust, enabled: form.enabled,
+    });
+    await refreshMcp();
+    toast(server.status === 'connected' ? `Connected to ${server.name}: ${server.tools.length} tools.` : `Saved ${server.name}; it did not connect: ${server.error || server.status}`);
+    return server;
+  } catch (error) { toast(`Could not save MCP server: ${errorText(error)}`); return null; }
+}
+// updateMcp changes trust or enabled without touching the saved secrets.
+export async function updateMcp(server: McpServer, change: Partial<Pick<McpServer, 'trust' | 'enabled'>>) {
+  const next = { ...server, ...change };
+  try {
+    await call('mcp', 'Save', { workspaceId: server.workspaceId, id: server.id, name: server.name, transport: server.transport, command: server.command || '', args: server.args || [], url: server.url || '', env: null, headers: null, trust: next.trust, enabled: next.enabled });
+    await refreshMcp();
+  } catch (error) { toast(`Could not update ${server.name}: ${errorText(error)}`); }
+}
+export async function reconnectMcp(server: McpServer) {
+  try { await call('mcp', 'Reconnect', { workspaceId: server.workspaceId, id: server.id }); await refreshMcp(); }
+  catch (error) { toast(errorText(error)); }
+}
+export async function deleteMcp(server: McpServer) {
+  try { await call('mcp', 'Delete', { workspaceId: server.workspaceId, id: server.id }); await refreshMcp(); toast(`Removed ${server.name}.`); }
+  catch (error) { toast(errorText(error)); }
 }
 export async function showProviders(message = '') {
   openPanel('providers', { message, loading: connected() });
