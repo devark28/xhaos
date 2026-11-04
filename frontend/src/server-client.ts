@@ -14,7 +14,7 @@ const services = {
   tool: 'xhaos/app/tool.Service',
   project: 'xhaos/app/project.Service',
   mcp: 'xhaos/app/mcp.Service',
-  channel: 'xhaos/app/channel.Service',
+  channel: 'xhaos/app/channel.Owner',
   attachment: 'xhaos/app/attachment.Service',
   memory: 'xhaos/app/memory.Service',
 } as const;

@@ -135,13 +135,13 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)
 	runner.Memories = memories.Index
-	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memories.Tools()}
+	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memory.NewTools(memories)}
 	side := btw.NewService(agents, providers)
 	side.Context = func(ws string) string {
 		return strings.TrimSpace(channels.Digest(ws) + "\n\n## Memories\n" + memories.Index(ws))
 	}
 	catalog := tool.NewService()
-	catalog.More = func() []tool.Info { return append(channels.Tools().Catalog(), memories.Tools().Catalog()...) }
+	catalog.More = func() []tool.Info { return append(channels.Tools().Catalog(), memory.NewTools(memories).Catalog()...) }
 	runner.OnFinal = channels.OnFinal
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)

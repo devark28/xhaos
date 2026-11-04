@@ -400,6 +400,16 @@ func (s *Service) Channels(workspaceID string) ([]View, error) {
 	return out, nil
 }
 
+// Owner is the client-facing view of channels: read-only. Creating channels
+// and sending messages take the acting agent, so only agent tools reach
+// them; binding Service itself would let a client post as any agent.
+type Owner struct{ s *Service }
+
+func (s *Service) Owner() *Owner { return &Owner{s: s} }
+
+// Channels lists the workspace's channels with their messages.
+func (o *Owner) Channels(workspaceID string) ([]View, error) { return o.s.Channels(workspaceID) }
+
 // Digest renders the workspace's channels for /btw: subject, members, and
 // the last few messages of each (cut short).
 func (s *Service) Digest(workspaceID string) string {

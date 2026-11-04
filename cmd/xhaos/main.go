@@ -77,21 +77,8 @@ func main() {
 		LogLevel:    level,
 		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})),
 		// WAILS_SERVER_HOST / WAILS_SERVER_PORT override these.
-		Server: application.ServerOptions{Host: "localhost", Port: 5180},
-		Services: []application.Service{
-			application.NewService(health.New(version)),
-			application.NewService(services.Workspaces),
-			application.NewService(services.Agents),
-			application.NewService(services.Events),
-			application.NewService(services.Providers),
-			application.NewService(services.Btw),
-			application.NewService(services.Tools),
-			application.NewService(services.Projects),
-			application.NewService(services.MCP),
-			application.NewService(services.Channels),
-			application.NewService(services.Files),
-			application.NewService(services.Memories),
-		},
+		Server:     application.ServerOptions{Host: "localhost", Port: 5180},
+		Services:   bindings(services),
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{
 			Handler: noCache(application.AssetFileServerFS(os.DirFS(*frontend))),
@@ -119,4 +106,25 @@ func noCache(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bindings is every service the page can call: each exported method of these
+// is reachable from the browser. Agent-side operations (posting to channels,
+// spawning, saving memories as an agent) take the acting agent, so they stay
+// off this list; channels are bound through their read-only Owner view.
+func bindings(s *backend.Services) []application.Service {
+	return []application.Service{
+		application.NewService(health.New(version)),
+		application.NewService(s.Workspaces),
+		application.NewService(s.Agents),
+		application.NewService(s.Events),
+		application.NewService(s.Providers),
+		application.NewService(s.Btw),
+		application.NewService(s.Tools),
+		application.NewService(s.Projects),
+		application.NewService(s.MCP),
+		application.NewService(s.Channels.Owner()),
+		application.NewService(s.Files),
+		application.NewService(s.Memories),
+	}
 }

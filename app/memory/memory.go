@@ -250,7 +250,9 @@ func (s *Service) Index(workspaceID string) string {
 
 type Tools struct{ s *Service }
 
-func (s *Service) Tools() *Tools { return &Tools{s: s} }
+// NewTools is the agent-side toolset (a function, not a method, so binding
+// Service to the page does not expose it).
+func NewTools(s *Service) *Tools { return &Tools{s: s} }
 
 var effects = map[string]string{
 	"memory_list": tool.Read, "memory_read": tool.Read,
