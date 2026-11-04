@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"xhaos/app/attachment"
 
 	"xhaos/app/agent"
 	"xhaos/app/llm"
@@ -46,6 +47,8 @@ type Runner struct {
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
+	// Files reads attachments sent with owner messages.
+	Files *attachment.Store
 	// Extras add tools beyond the built-in ones (MCP servers, channels and
 	// spawn_agent). Their calls pass the same gate as the built-in tools.
 	Extras []ExternalTools
@@ -315,7 +318,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			stale := start+i < madeAt
 			switch m.From {
 			case agent.FromOwner, agent.FromChannel:
-				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Text: m.Body})
+				turn.Messages = append(turn.Messages, r.userMessage(ws, m))
 			case agent.FromTool:
 				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Results: m.Results})
 			default:
@@ -559,6 +562,9 @@ func estimate(conv []agent.MessageData, last *agent.MessageData) int64 {
 	}
 	for _, m := range conv[from:] {
 		chars += len(m.Body)
+		for _, f := range m.Attachments {
+			chars += attachmentChars(f)
+		}
 		for _, r := range m.Results {
 			chars += len(r.Content)
 		}
@@ -603,6 +609,9 @@ func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter 
 		switch m.From {
 		case agent.FromOwner, agent.FromChannel:
 			fmt.Fprintf(&b, "\n[user]\n%s\n", clipText(m.Body, 4000))
+			for _, f := range m.Attachments {
+				fmt.Fprintf(&b, "(attached %s, %s)\n", f.Name, f.Type)
+			}
 		case agent.FromAgent:
 			if m.Body != "" {
 				fmt.Fprintf(&b, "\n[agent]\n%s\n", clipText(m.Body, 4000))
@@ -648,4 +657,52 @@ func tooLong(err error) bool {
 		}
 	}
 	return false
+}
+
+// maxInlineText is how much of a text attachment goes into the message.
+const maxInlineText = 100_000
+
+// userMessage builds a user message: text attachments are inlined after the
+// body, images and PDFs go as files, anything else becomes a note.
+func (r *Runner) userMessage(ws string, m agent.MessageData) llm.Message {
+	msg := llm.Message{Role: "user", Text: m.Body}
+	if len(m.Attachments) == 0 {
+		return msg
+	}
+	var b strings.Builder
+	b.WriteString(m.Body)
+	for _, ref := range m.Attachments {
+		if r.Files == nil {
+			fmt.Fprintf(&b, "\n\n(Attached %s could not be read: attachments are not available.)", ref.Name)
+			continue
+		}
+		f, err := r.Files.Load(ws, ref.ID)
+		if err != nil {
+			fmt.Fprintf(&b, "\n\n(Attached %s could not be read: %v)", ref.Name, err)
+			continue
+		}
+		switch attachment.Kind(f) {
+		case "image", "pdf":
+			fmt.Fprintf(&b, "\n\n(Attached %s follows.)", f.Name)
+			msg.Files = append(msg.Files, llm.File{Name: f.Name, Type: f.Type, Data: f.Data})
+		case "text":
+			fmt.Fprintf(&b, "\n\nAttached file %s:\n````\n%s\n````", f.Name, clipText(string(f.Data), maxInlineText))
+		default:
+			fmt.Fprintf(&b, "\n\n(Attached %s, %s, %d bytes: a binary file the model cannot read.)", f.Name, f.Type, f.Size)
+		}
+	}
+	msg.Text = b.String()
+	return msg
+}
+
+// attachmentChars estimates an attachment's size in characters (four per
+// token): images and PDF pages cost about 1,600 tokens.
+func attachmentChars(f attachment.Ref) int {
+	switch {
+	case strings.HasPrefix(f.Type, "image/"):
+		return 1600 * 4
+	case f.Type == "application/pdf":
+		return int(f.Size/50_000+1) * 2400 * 4
+	}
+	return int(min(f.Size, maxInlineText))
 }

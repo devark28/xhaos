@@ -11,6 +11,7 @@ export interface Attachment {
   name: string;
   size: number;
   type: string;
+  server?: boolean; // stored by the backend (else in this browser's IndexedDB)
 }
 
 // One transcript item. Tool entries carry the call they show (callId) and

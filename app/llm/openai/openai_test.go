@@ -140,3 +140,14 @@ func TestModelsAndErrors(t *testing.T) {
 		t.Fatalf("stream error = %v", err)
 	}
 }
+
+func TestImagesBecomeContentParts(t *testing.T) {
+	out := messages(llm.Turn{Messages: []llm.Message{{Role: "user", Text: "look", Files: []llm.File{
+		{Name: "a.png", Type: "image/png", Data: []byte("PNG")}, {Name: "b.pdf", Type: "application/pdf", Data: []byte("%PDF")},
+	}}}})
+	raw, _ := json.Marshal(out)
+	s := string(raw)
+	if !strings.Contains(s, `"image_url":{"url":"data:image/png;base64,UE5H"}`) || !strings.Contains(s, `could not be sent`) || !strings.Contains(s, `"text":"look`) {
+		t.Fatalf("messages = %s", s)
+	}
+}

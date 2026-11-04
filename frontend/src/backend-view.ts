@@ -1,7 +1,7 @@
 // Turns backend state (snapshot + events) into the card tree the UI renders.
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
-import type { Agent, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
+import type { Agent, Attachment, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
 
@@ -100,7 +100,8 @@ function entry(event: BackendEvent): Entry | null {
     const text = event.data?.body ?? '';
     if (from === 'agent' && !text) return null; // a reply that only called tools
     const kind = from === 'owner' ? 'user' : from === 'system' ? 'system' : 'assistant';
-    return { kind, text, seq: event.seq };
+    const files = (event.data?.attachments || []).map((f: Attachment) => ({ ...f, server: true }));
+    return files.length ? { kind, text, seq: event.seq, attachments: files } : { kind, text, seq: event.seq };
   }
   if (event.kind === 'agent.tool') return event.data?.name === 'ask_user' ? askEntry(event.data, event.seq) : toolEntry(event.data || {}, event.seq);
   return null; // kinds this view doesn't render yet are kept in the log only

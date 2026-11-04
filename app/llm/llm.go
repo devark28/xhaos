@@ -31,6 +31,15 @@ type Message struct {
 	// those blocks to the system prompt and tools they were made under; the
 	// harness sets this, deterministically, when those have changed since.
 	StripThinking bool
+	// Files are images and PDFs sent with a user message, after its Text.
+	Files []File
+}
+
+// File is an image or PDF the model reads natively.
+type File struct {
+	Name string
+	Type string // image/png, image/jpeg, image/gif, image/webp, application/pdf
+	Data []byte
 }
 
 // Tool is a function the model may call. Schema is a JSON Schema object.

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,7 +95,7 @@ func apiError(status string, body []byte) error {
 
 type message struct {
 	Role       string     `json:"role"`
-	Content    *string    `json:"content"`
+	Content    any        `json:"content"` // *string, or []part for a user message with images
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -138,7 +139,9 @@ func messages(turn llm.Turn) []message {
 				}
 				out = append(out, message{Role: "tool", ToolCallID: r.CallID, Content: text(content)})
 			}
-			if m.Text != "" {
+			if len(m.Files) > 0 {
+				out = append(out, message{Role: "user", Content: userParts(m)})
+			} else if m.Text != "" {
 				out = append(out, message{Role: "user", Content: text(m.Text)})
 			}
 		case "assistant":
@@ -151,13 +154,32 @@ func messages(turn llm.Turn) []message {
 				tc.Function.Name, tc.Function.Arguments = c.Name, string(c.Input)
 				msg.ToolCalls = append(msg.ToolCalls, tc)
 			}
-			if msg.Content == nil && len(msg.ToolCalls) == 0 {
+			if m.Text == "" && len(msg.ToolCalls) == 0 {
 				continue // an empty reply (e.g. only reasoning) adds nothing
 			}
 			out = append(out, msg)
 		}
 	}
 	return out
+}
+
+// userParts sends text and images as content parts. Chat Completions has no
+// portable way to send a PDF, so a PDF becomes a note.
+func userParts(m llm.Message) []map[string]any {
+	parts := []map[string]any{}
+	note := ""
+	for _, f := range m.Files {
+		if f.Type == "application/pdf" {
+			note += fmt.Sprintf("\n\n(Attached PDF %q could not be sent: this provider takes images and text only.)", f.Name)
+			continue
+		}
+		url := "data:" + f.Type + ";base64," + base64.StdEncoding.EncodeToString(f.Data)
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
+	}
+	if t := m.Text + note; t != "" {
+		parts = append([]map[string]any{{"type": "text", "text": t}}, parts...)
+	}
+	return parts
 }
 
 func tools(specs []llm.Tool) []tool {

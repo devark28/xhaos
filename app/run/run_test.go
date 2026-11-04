@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"xhaos/app/attachment"
 
 	"xhaos/app/agent"
 	"xhaos/app/backend"
@@ -951,5 +952,51 @@ func TestSpawnedSubagentReportsBack(t *testing.T) {
 	}
 	if st := h.tools(t, parent.ID)["s"]; st.State != agent.ToolDone || !strings.Contains(st.Output, fmt.Sprintf("Started subagent #%d", child.ID)) {
 		t.Fatalf("spawn call = %+v", st)
+	}
+}
+
+// Attachments: text is inlined after the message, images go as files, and
+// the bytes live on disk, not in the event log.
+func TestAttachmentsReachTheModel(t *testing.T) {
+	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "seen", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	notes, err := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "notes.md", Data: []byte("# Plan\nship it")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pic, _ := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "shot.png", Type: "image/png", Data: []byte("\x89PNG fake")})
+	blob, _ := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "x.bin", Data: []byte{0, 1, 2}})
+	if notes.Type != "text/markdown" {
+		t.Errorf("type from extension = %q", notes.Type)
+	}
+	a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "review these", Provider: "f", Model: "m1", Attachments: []string{notes.ID, pic.ID, blob.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	first := h.fake.turns[0].Messages[0]
+	h.fake.mu.Unlock()
+	if !strings.HasPrefix(first.Text, "review these") || !strings.Contains(first.Text, "Attached file notes.md:\n````\n# Plan\nship it\n````") ||
+		!strings.Contains(first.Text, "(Attached shot.png follows.)") || !strings.Contains(first.Text, "x.bin, application/octet-stream, 3 bytes") {
+		t.Fatalf("text = %q", first.Text)
+	}
+	if len(first.Files) != 1 || first.Files[0].Type != "image/png" || string(first.Files[0].Data) != "\x89PNG fake" {
+		t.Fatalf("files = %+v", first.Files)
+	}
+	for _, raw := range transcript(t, h) {
+		if strings.Contains(raw, "ship it") {
+			t.Fatalf("attachment bytes in the log: %s", raw)
+		}
+	}
+	if _, err := h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "x", Attachments: []string{"nope"}}); err == nil {
+		t.Fatal("an unknown attachment was accepted")
+	}
+	got, err := h.s.Files.Read(ws, pic.ID)
+	if err != nil || string(got.Data) != "\x89PNG fake" {
+		t.Fatalf("read = %v %v", got, err)
+	}
+	if _, err := h.s.Files.Read("other", pic.ID); err == nil {
+		t.Fatal("read across workspaces")
 	}
 }

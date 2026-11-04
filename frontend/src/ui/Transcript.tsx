@@ -1,22 +1,23 @@
 // An agent's transcript: messages, tool calls, approvals, and live output.
 import { useLayoutEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { readFile, fileSize } from '../attachments.ts';
+import { readFile, fileSize, downloadFile } from '../attachments.ts';
+import { call } from './state/backend.ts';
 import { markdown } from '../markdown.ts';
 import { highlight, highlightDiff, languageFor } from '../highlight.ts';
 import { colors, fonts, breakpoints } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { WorkingLine } from './Working.tsx';
 import { DecisionButtons } from './Decisions.tsx';
-import { toast } from './state/store.ts';
+import { toast, get } from './state/store.ts';
 import type { Agent, Attachment, Entry as EntryData } from '../types.ts';
 
 const html = (value: string) => ({ __html: value });
 
 // ---- attachments -----------------------------------------------------------
 export const blobUrls = new Map<string, string>();
-async function loadAttachment(id: string) {
-  const file = await readFile(id);
+async function loadAttachment(id: string, server?: boolean) {
+  const file = server ? await downloadFile(call, get().active, id) : await readFile(id);
   if (!blobUrls.has(id)) blobUrls.set(id, URL.createObjectURL(file.blob));
   return { ...file, url: blobUrls.get(id)! };
 }
@@ -25,13 +26,13 @@ function FileItem({ file }: { file: Attachment }) {
   const [image, setImage] = useState<{ url: string; name: string } | null>(null);
   const download = async () => {
     try {
-      const loaded = await loadAttachment(file.id);
+      const loaded = await loadAttachment(file.id, file.server);
       const link = document.createElement('a'); link.href = loaded.url; link.download = loaded.name; link.click();
     } catch (error) { toast((error as Error).message); }
   };
   const toggleImage = async () => {
     if (image) { setImage(null); return; }
-    try { setImage(await loadAttachment(file.id)); } catch (error) { toast((error as Error).message); }
+    try { setImage(await loadAttachment(file.id, file.server)); } catch (error) { toast((error as Error).message); }
   };
   return (
     <div {...stylex.props(styles.file)}>

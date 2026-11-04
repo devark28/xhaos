@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"xhaos/app/attachment"
 
 	"xhaos/app/apperr"
 	"xhaos/app/eventlog"
@@ -104,6 +105,8 @@ type MessageData struct {
 	// Channel and Sender identify a channel message (FromChannel).
 	Channel int64 `json:"channel,omitempty"`
 	Sender  int64 `json:"sender,omitempty"`
+	// Attachments are files sent with an owner message.
+	Attachments []attachment.Ref `json:"attachments,omitempty"`
 }
 
 // ToolData is the payload of an agent.tool event: one state of one call.
@@ -145,7 +148,8 @@ type CreateRequest struct {
 	Role           string         `json:"role,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
-	Policy         *policy.Policy `json:"policy,omitempty"` // nil: parent's policy, else policy.Default
+	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else policy.Default
+	Attachments    []string       `json:"attachments,omitempty"` // uploaded attachment IDs, sent with Prompt
 }
 
 type DecideRequest struct {
@@ -161,6 +165,8 @@ type MessageRequest struct {
 	WorkspaceID    string  `json:"workspaceId"`
 	AgentIDs       []int64 `json:"agentIds"`
 	Body           string  `json:"body"`
+	// Attachments are uploaded attachment IDs sent with Body.
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 const schema = `
@@ -192,6 +198,8 @@ type Service struct {
 	// Halt, when set, cancels the agent's running turn and reports whether
 	// one was running. Stop and Terminate use it.
 	Halt func(workspaceID string, agentID int64) bool
+	// Files resolves attachment IDs sent with tasks and messages.
+	Files *attachment.Store
 }
 
 // ControlRequest names one agent for Stop or Terminate.
@@ -344,7 +352,11 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 		}
 		events = append(events, ev)
 		if strings.TrimSpace(req.Prompt) != "" {
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt}, at)
+			files, err := s.refs(tx, req.WorkspaceID, req.Attachments)
+			if err != nil {
+				return err
+			}
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt, Attachments: files}, at)
 			if err != nil {
 				return err
 			}
@@ -615,7 +627,11 @@ func (s *Service) Message(req MessageRequest) ([]eventlog.Event, error) {
 			if a.Status == StatusTerminated {
 				return fmt.Errorf("%w: agent #%d is terminated", apperr.Conflict, id)
 			}
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body}, at)
+			files, err := s.refs(tx, req.WorkspaceID, req.Attachments)
+			if err != nil {
+				return err
+			}
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body, Attachments: files}, at)
 			if err != nil {
 				return err
 			}
@@ -633,6 +649,17 @@ func (s *Service) Message(req MessageRequest) ([]eventlog.Event, error) {
 		}
 	}
 	return out, nil
+}
+
+// refs resolves attachment IDs (none: nil).
+func (s *Service) refs(q sqlitedb.Querier, ws string, ids []string) ([]attachment.Ref, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if s.Files == nil {
+		return nil, fmt.Errorf("%w: attachments are not available", apperr.Invalid)
+	}
+	return s.Files.Refs(q, ws, ids)
 }
 
 func (s *Service) emit(events []eventlog.Event) {

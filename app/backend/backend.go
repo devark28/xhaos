@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"xhaos/app/attachment"
 	"xhaos/app/btw"
 	"xhaos/app/channel"
 	"xhaos/app/llm/openai"
@@ -51,6 +52,7 @@ type Services struct {
 	Projects   *project.Service
 	MCP        *mcp.Service
 	Channels   *channel.Service
+	Files      *attachment.Service
 	mcp        *mcp.Manager
 }
 
@@ -61,7 +63,7 @@ func Open(path string, opts Options) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := assemble(db, filepath.Join(filepath.Dir(path), "secret.key"), opts)
+	s, err := assemble(db, filepath.Dir(path), opts)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -69,7 +71,7 @@ func Open(path string, opts Options) (*Services, error) {
 	return s, nil
 }
 
-func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
+func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	steps := []struct {
 		name    string
 		migrate func(*sql.DB) error
@@ -79,13 +81,14 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		{"idempotency", idempotency.Migrate},
 		{"project", project.Migrate},
 		{"mcp", mcp.Migrate},
+		{"attachment", attachment.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
 			return nil, fmt.Errorf("migrate %s: %w", step.name, err)
 		}
 	}
-	box, err := secretbox.Open(keyPath)
+	box, err := secretbox.Open(filepath.Join(dataDir, "secret.key"))
 	if err != nil {
 		return nil, err
 	}
@@ -116,8 +119,14 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 			return nil, fmt.Errorf("project %s: %w", root, err)
 		}
 	}
+	files, err := attachment.NewStore(db, filepath.Join(dataDir, "attachments"))
+	if err != nil {
+		return nil, err
+	}
+	agents.Files = files
 	store := agent.NewStore(db, opts.Publish)
 	runner := run.New(store, providers, opts.Notify)
+	runner.Files = files
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	runner.Extras = []run.ExternalTools{tools, channels.Tools()}
@@ -145,6 +154,7 @@ func assemble(db *sql.DB, keyPath string, opts Options) (*Services, error) {
 		Projects:   project.NewService(db),
 		MCP:        mcp.NewService(tools),
 		Channels:   channels,
+		Files:      attachment.NewService(files),
 		mcp:        tools,
 	}, nil
 }

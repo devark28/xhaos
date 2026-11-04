@@ -90,11 +90,13 @@ export function focusNewAgent() {
   focusComposer();
 }
 
+// serverIds lists the IDs of attachments stored on the backend.
+const serverIds = (files: Attachment[]) => files.filter(f => f.server).map(f => f.id);
+
 export async function newAgent(prompt: string, attachments: Attachment[] = [], parentId = 0): Promise<boolean> {
   const choice = currentChoice();
   if (connected() && !isSample(parentId)) {
     if (!choice) { toast('Add a model provider first.'); showProviders(); return false; }
-    if (attachments.length) { toast('Attachments are not sent to the backend yet; remove them to create the agent.'); return false; }
     try {
       // Subagents work in their parent's project; an attached project must match it.
       const attached = get().attachedProject;
@@ -104,7 +106,7 @@ export async function newAgent(prompt: string, attachments: Attachment[] = [], p
         return false;
       }
       const projectId = parentId ? 0 : attached || 0;
-      const agent = await call<Agent>('agent', 'Create', { idempotencyKey: idempotencyKey(), workspaceId: get().active, parentId, projectId, prompt, provider: choice.provider, model: choice.model });
+      const agent = await call<Agent>('agent', 'Create', { idempotencyKey: idempotencyKey(), workspaceId: get().active, parentId, projectId, prompt, provider: choice.provider, model: choice.model, attachments: serverIds(attachments) });
       clearComposer();
       toast(`Agent #${agent.id} created${parentId ? ` under #${parentId}` : ''}.`);
       return true;
@@ -139,8 +141,7 @@ export async function sendMessage(agentIds: number[], text: string, attachments:
     return;
   }
   if (real.length) {
-    if (attachments.length) { toast('Attachments are not sent to the backend yet; remove them to send.'); return; }
-    try { await call('agent', 'Message', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentIds: real, body: text }); }
+    try { await call('agent', 'Message', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentIds: real, body: text, attachments: serverIds(attachments) }); }
     catch (error) { toast(`Could not send: ${errorText(error)}`); return; }
     agentIds = agentIds.filter(id => !real.includes(id));
     if (!agentIds.length) { clearComposer(); toast(`Sent to ${real.map(id => '#' + id).join(', ')}.`); return; }

@@ -89,6 +89,7 @@ func main() {
 			application.NewService(services.Projects),
 			application.NewService(services.MCP),
 			application.NewService(services.Channels),
+			application.NewService(services.Files),
 		},
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{

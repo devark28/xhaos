@@ -5,7 +5,7 @@ import { resolveSubmit, takeMention } from '../../composer-target.ts';
 import { pickerChoices } from '../../backend-view.ts';
 import { modelChoices, saveModelChoice } from '../../models.ts';
 import { activeAgents } from '../../model.ts';
-import { storeFiles } from '../../attachments.ts';
+import { storeFiles, uploadFiles } from '../../attachments.ts';
 import { applyAgentCommand } from '../../agent-actions.ts';
 import { update, get, workspaceOf, findAgent, focusLater, toast, errorText, save, type Btw, type SlashCommand } from './store.ts';
 import { call, connected, isSample, applySamples } from './backend.ts';
@@ -98,7 +98,9 @@ export async function submitCommand(value: string) {
   }
   update(s => { s.sending = true; });
   try {
-    const attachments = await storeFiles(files);
+    // With a backend, files go to the server so agents can read them; the
+    // prototype keeps them in this browser.
+    const attachments = connected() ? await uploadFiles(call, get().active, files) : await storeFiles(files);
     update(s => { s.pendingFiles.splice(0, files.length); });
     await dispatchCommand(value || 'Review attached files', attachments);
   } catch (error) { toast(`Attachment save failed: ${errorText(error)}`); }

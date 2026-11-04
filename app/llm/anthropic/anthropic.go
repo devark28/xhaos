@@ -3,6 +3,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -112,6 +113,14 @@ func params(in []llm.Message) ([]sdk.MessageParam, error) {
 			}
 			if m.Text != "" {
 				blocks = append(blocks, sdk.NewTextBlock(m.Text))
+			}
+			for _, f := range m.Files {
+				data := base64.StdEncoding.EncodeToString(f.Data)
+				if f.Type == "application/pdf" {
+					blocks = append(blocks, sdk.NewDocumentBlock(sdk.Base64PDFSourceParam{Data: data}))
+				} else {
+					blocks = append(blocks, sdk.NewImageBlockBase64(f.Type, data))
+				}
 			}
 			if len(blocks) == 0 {
 				continue

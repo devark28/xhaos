@@ -151,3 +151,17 @@ func TestReplayedToolUseOmitsEmptyToolsetName(t *testing.T) {
 		t.Fatalf("replayed tool_use = %s", body)
 	}
 }
+
+func TestFilesBecomeImageAndDocumentBlocks(t *testing.T) {
+	ps, err := params([]llm.Message{{Role: "user", Text: "look", Files: []llm.File{
+		{Name: "a.png", Type: "image/png", Data: []byte("PNG")}, {Name: "b.pdf", Type: "application/pdf", Data: []byte("%PDF")},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(ps)
+	s := string(raw)
+	if !strings.Contains(s, `"media_type":"image/png"`) || !strings.Contains(s, `"data":"UE5H"`) || !strings.Contains(s, `"type":"document"`) || !strings.Contains(s, `"data":"JVBERg=="`) {
+		t.Fatalf("params = %s", s)
+	}
+}
