@@ -6,9 +6,10 @@ import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
 import { update, get, workspaceOf, toast, errorText, save } from './store.ts';
 import { refreshProjects } from './projects.ts';
-import type { Agent, BackendChannel, BackendEvent, Snapshot, Workspace } from '../../types.ts';
+import type { Agent, BackendChannel, BackendEvent, Memory, Snapshot, Workspace } from '../../types.ts';
 
 let backend: Backend | null = null;
+let synced = false; // a snapshot after the first one (a resync) reloads memories
 // call is the backend RPC; it throws when the page runs without the backend.
 export function call<T = any>(service: Parameters<Backend['call']>[0], method: string, ...args: unknown[]): Promise<T> {
   if (!backend) return Promise.reject(new Error('Not connected to the Xhaos backend.'));
@@ -55,6 +56,38 @@ export async function refreshChannels() {
   } catch { /* the Channels tab shows none */ }
 }
 
+// ---- memories ----------------------------------------------------------------
+interface BackendMemory { id: number; workspaceId: string; content: string; source: string; createdAt: string; updatedAt: string }
+const toMemory = (m: BackendMemory): Memory => ({ id: String(m.id), workspaceId: m.workspaceId, content: m.content, source: m.source, createdAt: m.createdAt, updatedAt: m.updatedAt });
+
+// refreshMemories loads the workspace's memories from the server. Notes an
+// older version kept in this browser are imported once, then dropped here,
+// so the server is their only copy.
+export async function refreshMemories() {
+  const ws = get().active;
+  try {
+    const local = get().memories.filter(m => m.workspaceId === ws && !/^agent /.test(m.source || '')).map(m => m.content);
+    const list = await call<BackendMemory[]>('memory', local.length ? 'Import' : 'Memories', ...(local.length ? [ws, local] : [ws]));
+    update(s => { s.memories = list.map(toMemory); });
+    if (local.length) { try { localStorage.removeItem('xhaos-memory-v1'); } catch { /* nothing to drop */ } toast(`Moved ${local.length} memor${local.length === 1 ? 'y' : 'ies'} from this browser to the server.`); }
+  } catch (error) { toast(`Could not load memories: ${errorText(error)}`); }
+}
+
+// applyMemoryEvent applies memory.saved / memory.deleted; true if it did.
+function applyMemoryEvent(s: { memories: Memory[] }, event: BackendEvent): boolean {
+  if (event.kind === 'memory.saved') {
+    const m = toMemory(event.data as BackendMemory);
+    const at = s.memories.findIndex(x => x.id === m.id);
+    if (at >= 0) s.memories[at] = m; else s.memories.unshift(m);
+    return true;
+  }
+  if (event.kind === 'memory.deleted') {
+    s.memories = s.memories.filter(x => x.id !== String(event.data?.id));
+    return true;
+  }
+  return false;
+}
+
 export async function refreshProviders() {
   const providers = await call('provider', 'Providers');
   update(s => { s.providers = providers; });
@@ -82,9 +115,9 @@ async function startBackend(connection: Backend) {
     for (const id of [...s.selected]) if (!flatten(view.agents).some(agent => agent.id === id)) s.selected.delete(id);
     s.backendVersion = connection.status.version;
     s.ready = true;
-  }); void refreshChannels(); };
+  }); void refreshChannels(); if (synced) void refreshMemories(); synced = true; };
   const onEvent = (event: BackendEvent) => update(s => {
-    if (applyChannelEvent(workspaceOf(s), event)) return;
+    if (applyChannelEvent(workspaceOf(s), event) || applyMemoryEvent(s, event)) return;
     const change = applyEvent(workspaceOf(s), event);
     if (change?.created) s.collapsed.add(change.agentId);
   });
@@ -103,6 +136,7 @@ async function startBackend(connection: Backend) {
   });
   await sync.start();
   await refreshChannels();
+  await refreshMemories();
   const resync = () => { if (document.visibilityState === 'visible') sync.catchUp(); };
   document.addEventListener('visibilitychange', resync);
   addEventListener('online', resync);

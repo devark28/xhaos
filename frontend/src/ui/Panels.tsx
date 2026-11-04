@@ -60,11 +60,11 @@ function Memories({ editId }: { editId?: string }) {
   const add = !open && <Button id="add-memory" onClick={() => openPanel('memories', { editId: 'new' })}>＋ Add memory</Button>;
   return (
     <Shell title="Workspace memories" action={add}>
-      <p {...stylex.props(memory.note)}>Shared across agents in this workspace. Session summaries stay with their conversation.</p>
+      <p {...stylex.props(memory.note)}>Every agent in this workspace sees these in its prompt (first line as an index; full text on request). Agents can add them too, with your approval under manual review.</p>
       <div {...stylex.props(memory.list)}>
         {visible.length ? visible.map(item => (
           <article key={item.id} {...stylex.props(memory.row)}>
-            <div {...stylex.props(memory.content)}><div className="markdown-body" dangerouslySetInnerHTML={html(markdown(item.content))} /></div>
+            <div {...stylex.props(memory.content)}><div className="markdown-body" dangerouslySetInnerHTML={html(markdown(item.content))} />{/^agent /.test(item.source || '') && <small data-memory-source {...stylex.props(shell.muted)}>from {item.source}</small>}</div>
             <div {...stylex.props(memory.actions)}>
               <Button data-edit-memory={item.id} onClick={() => openPanel('memories', { editId: item.id })} sx={memory.small}>Edit</Button>
               <Button data-delete-memory={item.id} onClick={() => deleteMemory(item.id)} sx={memory.small}>Delete</Button>

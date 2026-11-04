@@ -148,5 +148,6 @@ export function save() {
   try { localStorage.setItem('xhaos-v1', JSON.stringify(s.workspaces)); } catch { toast('Browser storage unavailable; changes last for this session.'); }
 }
 export function saveMemories() {
+  if (get().backendVersion) return; // the server keeps them
   try { localStorage.setItem('xhaos-memory-v1', JSON.stringify(get().memories)); } catch { toast('Browser memory storage unavailable.'); }
 }

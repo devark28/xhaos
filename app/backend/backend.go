@@ -12,6 +12,7 @@ import (
 	"xhaos/app/channel"
 	"xhaos/app/llm/openai"
 	"xhaos/app/mcp"
+	"xhaos/app/memory"
 	"xhaos/app/project"
 	"xhaos/app/tool"
 
@@ -53,6 +54,7 @@ type Services struct {
 	MCP        *mcp.Service
 	Channels   *channel.Service
 	Files      *attachment.Service
+	Memories   *memory.Service
 	mcp        *mcp.Manager
 }
 
@@ -82,6 +84,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"project", project.Migrate},
 		{"mcp", mcp.Migrate},
 		{"attachment", attachment.Migrate},
+		{"memory", memory.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -129,7 +132,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	runner.Files = files
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
-	runner.Extras = []run.ExternalTools{tools, channels.Tools()}
+	memories := memory.NewService(db, opts.Publish)
+	runner.Memories = memories.Index
+	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memories.Tools()}
 	runner.OnFinal = channels.OnFinal
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
@@ -155,6 +160,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		MCP:        mcp.NewService(tools),
 		Channels:   channels,
 		Files:      attachment.NewService(files),
+		Memories:   memories,
 		mcp:        tools,
 	}, nil
 }

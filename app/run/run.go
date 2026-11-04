@@ -47,6 +47,9 @@ type Runner struct {
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
+	// Memories, when set, returns the workspace's memory index for the system
+	// prompt (rebuilt every turn, so it survives compaction).
+	Memories func(workspaceID string) string
 	// Files reads attachments sent with owner messages.
 	Files *attachment.Store
 	// Extras add tools beyond the built-in ones (MCP servers, channels and
@@ -304,7 +307,11 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			fail(fmt.Sprintf("Cannot use the agent's project: %v.", err))
 			return
 		}
-		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, root), Tools: r.specs(ws)}
+		system := SystemPrompt(a, root)
+		if r.Memories != nil {
+			system += "\n\n" + r.Memories(ws)
+		}
+		turn := llm.Turn{Model: a.Model, System: system, Tools: r.specs(ws)}
 		prefix := Prefix(turn)
 		start, madeAt := 0, 0
 		if last != nil {

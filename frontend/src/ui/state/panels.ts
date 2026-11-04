@@ -31,7 +31,13 @@ export function setLayout(layout: Layout) { update(s => { s.layout = layout; });
 export function clearSearch() { update(s => { s.search = ''; }); }
 
 // ---- memories --------------------------------------------------------------
-export function saveMemory(editId: string | null, content: string) {
+export async function saveMemory(editId: string | null, content: string) {
+  if (connected()) {
+    try { await call('memory', 'Save', { workspaceId: get().active, id: editId ? Number(editId) : 0, content }); }
+    catch (error) { toast(`Could not save the memory: ${errorText(error)}`); return; }
+    openPanel('memories'); toast('Memory saved. Every agent in the workspace sees it from its next turn.');
+    return;
+  }
   update(s => {
     const editing = s.memories.find(memory => memory.id === editId);
     if (editing) Object.assign(editing, { content, workspaceId: s.active, updatedAt: new Date().toISOString() });
@@ -39,7 +45,12 @@ export function saveMemory(editId: string | null, content: string) {
   });
   saveMemories(); openPanel('memories'); toast('Workspace memory saved in this browser.');
 }
-export function deleteMemory(id: string) {
+export async function deleteMemory(id: string) {
+  if (connected()) {
+    try { await call('memory', 'Delete', get().active, Number(id)); }
+    catch (error) { toast(`Could not delete the memory: ${errorText(error)}`); }
+    openPanel('memories'); return;
+  }
   update(s => { s.memories = s.memories.filter(memory => memory.id !== id); });
   saveMemories(); openPanel('memories');
 }

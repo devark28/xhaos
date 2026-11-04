@@ -16,6 +16,7 @@ const services = {
   mcp: 'xhaos/app/mcp.Service',
   channel: 'xhaos/app/channel.Service',
   attachment: 'xhaos/app/attachment.Service',
+  memory: 'xhaos/app/memory.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

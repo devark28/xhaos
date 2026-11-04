@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 	"xhaos/app/attachment"
+	"xhaos/app/memory"
 
 	"xhaos/app/agent"
 	"xhaos/app/backend"
@@ -998,5 +999,63 @@ func TestAttachmentsReachTheModel(t *testing.T) {
 	}
 	if _, err := h.s.Files.Read("other", pic.ID); err == nil {
 		t.Fatal("read across workspaces")
+	}
+}
+
+// Memories: the user's and agents' notes reach every agent's system prompt
+// as an index; memory_read gives the full text; memory_save is gated.
+func TestMemoriesReachEveryAgent(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		switch {
+		case last.Text == "remember":
+			return llm.Result{Calls: []llm.ToolCall{tc("s", "memory_save", map[string]any{"content": "Use tabs in Go files\nbecause gofmt."})}, StopReason: "tool_use"}, nil
+		case last.Text == "recall":
+			return llm.Result{Calls: []llm.ToolCall{tc("r", "memory_read", map[string]any{"id": 1})}, StopReason: "tool_use"}, nil
+		}
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	if _, err := h.s.Memories.Save(memory.SaveRequest{WorkspaceID: ws, Content: "The user prefers short replies.\nDetails: no preamble."}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "recall", Provider: "f", Model: "m1"})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	system := h.fake.turns[0].System
+	h.fake.mu.Unlock()
+	if !strings.Contains(system, "- #1 The user prefers short replies. …") || strings.Contains(system, "no preamble") {
+		t.Fatalf("system prompt index:\n%s", system)
+	}
+	if out := h.tools(t, a.ID)["r"].Output; !strings.Contains(out, "Details: no preamble.") || !strings.Contains(out, "from user") {
+		t.Fatalf("memory_read = %q", out)
+	}
+	// memory_save waits under manual review, then reaches another agent.
+	h.mu.Lock()
+	h.events = nil
+	h.mu.Unlock()
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "remember"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	if st := h.tools(t, a.ID)["s"]; st.State != agent.ToolPending {
+		t.Fatalf("memory_save = %+v", st)
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "s", Allow: true})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Prompt: "hi", Provider: "f", Model: "m1"})
+	h.waitStatus(t, b.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	system = h.fake.turns[len(h.fake.turns)-1].System
+	h.fake.mu.Unlock()
+	if !strings.Contains(system, "- #2 Use tabs in Go files …") {
+		t.Fatalf("the new agent's index:\n%s", system)
+	}
+	list, _ := h.s.Memories.Memories(ws)
+	if len(list) != 2 || list[0].Source != fmt.Sprintf("agent #%d", a.ID) {
+		t.Fatalf("memories = %+v", list)
+	}
+	// Import skips what is already saved.
+	list, _ = h.s.Memories.Import(ws, []string{"brand new", "The user prefers short replies.\nDetails: no preamble."})
+	if len(list) != 3 {
+		t.Fatalf("after import = %+v", list)
 	}
 }
