@@ -115,7 +115,7 @@ export async function showProviders(message = '') {
   try { await refreshProviders(); } catch (error) { message ||= `Could not load providers: ${errorText(error)}`; }
   if (get().panel.kind === 'providers') openPanel('providers', { message });
 }
-export interface ProviderForm { id: string; kind: string; name: string; baseUrl: string; apiKey: string; models: string }
+export interface ProviderForm { id: string; kind: string; name: string; baseUrl: string; apiKey: string; models: string; context: string }
 // saveProvider creates or updates a provider. An empty key keeps the saved
 // one; an empty model list keeps the saved list, else uses the kind's
 // defaults, else asks the endpoint which models it offers.
@@ -128,6 +128,7 @@ export async function saveProvider(form: ProviderForm): Promise<boolean> {
       id: form.id.trim(), kind: form.kind, name: form.name.trim() || existing?.name || form.id.trim(),
       baseUrl: form.baseUrl.trim() || (form.kind === 'anthropic' ? existing?.baseUrl || '' : ''),
       models: models.length ? models : existing?.models || [], apiKey: form.apiKey,
+      contextTokens: Number(form.context.replace(/[^0-9]/g, '')) || existing?.contextTokens || 0,
     });
     await refreshProviders(); showProviders('Saved. Use Test to check it.');
     return true;

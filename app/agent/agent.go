@@ -46,6 +46,9 @@ const (
 	FromAgent  = "agent"
 	FromSystem = "system" // harness notices: missing provider, model errors
 	FromTool   = "tool"   // results of an agent's tool calls, sent to the model
+	// FromCompaction is a summary of the conversation's earlier part; the model
+	// sees it instead of those messages (the log keeps them).
+	FromCompaction = "compaction"
 )
 
 // Tool call states, recorded as agent.tool events (the latest one per call wins).
@@ -91,6 +94,10 @@ type MessageData struct {
 	Prefix string `json:"prefix,omitempty"`
 	// Results answer the previous reply's Calls (FromTool messages).
 	Results []llm.ToolResult `json:"results,omitempty"`
+	// InputTokens is how much context the reply's request used (agent replies).
+	InputTokens int64 `json:"inputTokens,omitempty"`
+	// Covers is how many conversation messages a compaction summarizes.
+	Covers int `json:"covers,omitempty"`
 }
 
 // ToolData is the payload of an agent.tool event: one state of one call.

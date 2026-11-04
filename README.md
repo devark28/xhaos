@@ -129,6 +129,9 @@ The sample planning agent's questions are simulated (prototype data).
 
 ## Memory and compaction
 
+Each agent's context is kept within its model's budget. A provider's context size (Settings → Models; empty uses 200,000 tokens for Anthropic and 128,000 for OpenAI-compatible) is the budget; when a request nears 80% of it, measured from the token counts providers report, the agent's own model summarizes the older part of the conversation. The cut falls only where nothing is split: before a user message, or after a finished round of tool calls. The model then sees the summary and the recent messages; the event log keeps the full history, and the transcript shows a "Context compacted" note with the summary. A provider error saying the request is too long also triggers a compaction and one retry. Later compactions fold in the previous summary.
+
+
 The Memories icon in the side panel opens the current workspace's compact memory panel. Add, edit, and delete notes without selecting a scope; all agents in that workspace share them. Enter saves, Shift+Enter adds a line, and Escape cancels editing. Notes are saved in this browser only; backend storage and context retrieval are planned. Compaction summarizes an ongoing session so it can continue with less conversation in active context. Durable memory is selected knowledge reused across sessions, such as preferences, project conventions, and decisions. A summary or memory must not replace full session history or grant permissions.
 
 ## Sketching

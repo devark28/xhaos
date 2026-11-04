@@ -745,3 +745,79 @@ func TestDismissedQuestionsTellTheModel(t *testing.T) {
 		t.Fatalf("model saw %q", got)
 	}
 }
+
+// Near the context budget, older messages are summarized by the agent's own
+// model; the model then sees the summary and the recent messages, and the
+// log keeps everything.
+func TestCompactionKeepsTheRequestWithinBudget(t *testing.T) {
+	var summaries []string
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		if strings.HasPrefix(turn.System, "You compact") {
+			summaries = append(summaries, turn.Messages[0].Text)
+			return llm.Result{Text: fmt.Sprintf("SUMMARY %d", len(summaries)), StopReason: "end_turn"}, nil
+		}
+		last := turn.Messages[len(turn.Messages)-1].Text
+		return llm.Result{Text: "re: " + last, StopReason: "end_turn", InputTokens: 900}, nil
+	})
+	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}, ContextTokens: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "first", Provider: "f", Model: "m1"})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	send := func(key, body string) {
+		h.mu.Lock()
+		h.events = nil
+		h.mu.Unlock()
+		h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: key, WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: body})
+		h.waitStatus(t, a.ID, agent.StatusComplete)
+	}
+	send("m2", "second") // 900 of 1000 tokens used: compacts before answering
+	if len(summaries) != 1 || !strings.Contains(summaries[0], "[user]\nfirst") || !strings.Contains(summaries[0], "[agent]\nre: first") {
+		t.Fatalf("summarizer saw %q", summaries)
+	}
+	h.fake.mu.Lock()
+	turn := h.fake.turns[len(h.fake.turns)-1]
+	h.fake.mu.Unlock()
+	if len(turn.Messages) != 2 || !strings.Contains(turn.Messages[0].Text, "SUMMARY 1") || turn.Messages[1].Text != "second" {
+		t.Fatalf("after compaction the model saw %+v", turn.Messages)
+	}
+	send("m3", "third") // compacts again, folding in the previous summary
+	if len(summaries) != 2 || !strings.HasPrefix(summaries[1], "Summary so far:\nSUMMARY 1") || !strings.Contains(summaries[1], "[user]\nsecond") {
+		t.Fatalf("second summary input = %q", summaries[1:])
+	}
+	// The log keeps every message, plus the two compaction records.
+	kinds := map[string]int{}
+	for _, raw := range transcript(t, h) {
+		var m agent.MessageData
+		json.Unmarshal([]byte(raw), &m)
+		kinds[m.From]++
+	}
+	if kinds[agent.FromOwner] != 3 || kinds[agent.FromAgent] != 3 || kinds[agent.FromCompaction] != 2 {
+		t.Fatalf("log = %v", kinds)
+	}
+}
+
+func TestTooLongErrorCompactsAndRetries(t *testing.T) {
+	compacted := false
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		if strings.HasPrefix(turn.System, "You compact") {
+			compacted = true
+			return llm.Result{Text: "short summary", StopReason: "end_turn"}, nil
+		}
+		if !compacted && len(turn.Messages) > 1 {
+			return llm.Result{}, errors.New("400: prompt is too long: 210000 tokens > 200000 maximum")
+		}
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "first", Provider: "f", Model: "m1"})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	h.mu.Lock()
+	h.events = nil
+	h.mu.Unlock()
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "second"})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	if !compacted || h.lastReply(t) != "ok" {
+		t.Fatalf("compacted = %v, reply = %q", compacted, h.lastReply(t))
+	}
+}

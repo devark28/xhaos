@@ -20,14 +20,17 @@ import (
 )
 
 type Provider struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Name      string    `json:"name"`
-	BaseURL   string    `json:"baseUrl,omitempty"`
-	Models    []string  `json:"models"`
-	HasKey    bool      `json:"hasKey"`
-	KeyHint   string    `json:"keyHint,omitempty"` // e.g. "…a1b2"
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID      string   `json:"id"`
+	Kind    string   `json:"kind"`
+	Name    string   `json:"name"`
+	BaseURL string   `json:"baseUrl,omitempty"`
+	Models  []string `json:"models"`
+	HasKey  bool     `json:"hasKey"`
+	KeyHint string   `json:"keyHint,omitempty"` // e.g. "…a1b2"
+	// ContextTokens is the context window agents may fill before older
+	// messages are compacted; 0 means the kind's default (see Budget).
+	ContextTokens int64     `json:"contextTokens,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type SaveRequest struct {
@@ -37,6 +40,8 @@ type SaveRequest struct {
 	BaseURL string   `json:"baseUrl,omitempty"`
 	APIKey  string   `json:"apiKey,omitempty"` // empty keeps the stored key
 	Models  []string `json:"models,omitempty"` // empty: the adapter's defaults
+	// ContextTokens overrides the kind's default context budget (0 keeps it).
+	ContextTokens int64 `json:"contextTokens,omitempty"`
 }
 
 type TestResult struct {
@@ -54,7 +59,8 @@ CREATE TABLE IF NOT EXISTS providers (
 	models     TEXT NOT NULL,
 	key_sealed TEXT NOT NULL DEFAULT '',
 	key_hint   TEXT NOT NULL DEFAULT '',
-	updated_at TEXT NOT NULL
+	updated_at TEXT NOT NULL,
+	context_tokens INTEGER NOT NULL DEFAULT 0
 );`
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -74,6 +80,10 @@ func NewStore(db *sql.DB, box *secretbox.Box, adapters []llm.Adapter, defaults m
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("migrate providers: %w", err)
 	}
+	// Added after the first release: older tables lack the column.
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return nil, fmt.Errorf("migrate providers: %w", err)
+	}
 	byKind := map[string]llm.Adapter{}
 	for _, a := range adapters {
 		byKind[a.Kind()] = a
@@ -91,12 +101,12 @@ func (st *Store) keyOptional(kind string) bool {
 // Adapter returns the adapter for kind, or nil.
 func (st *Store) Adapter(kind string) llm.Adapter { return st.adapters[kind] }
 
-const selectProvider = `SELECT id, kind, name, base_url, models, key_sealed, key_hint, updated_at FROM providers`
+const selectProvider = `SELECT id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens FROM providers`
 
 func scan(r interface{ Scan(...any) error }) (Provider, string, error) {
 	var p Provider
 	var models, sealed, at string
-	if err := r.Scan(&p.ID, &p.Kind, &p.Name, &p.BaseURL, &models, &sealed, &p.KeyHint, &at); err != nil {
+	if err := r.Scan(&p.ID, &p.Kind, &p.Name, &p.BaseURL, &models, &sealed, &p.KeyHint, &at, &p.ContextTokens); err != nil {
 		return p, "", err
 	}
 	_ = json.Unmarshal([]byte(models), &p.Models)
@@ -121,6 +131,22 @@ func (st *Store) Credentials(id string) (Provider, llm.Credentials, error) {
 	}
 	key, err := st.box.Unseal(sealed)
 	return p, llm.Credentials{APIKey: key, BaseURL: p.BaseURL}, err
+}
+
+// DefaultContext is each kind's context budget when a provider sets none:
+// conservative, since one value covers all of a provider's models.
+var DefaultContext = map[string]int64{"anthropic": 200_000, "openai": 128_000}
+
+// Budget is how many input tokens an agent on this provider may use before
+// older messages are compacted.
+func (p Provider) Budget() int64 {
+	if p.ContextTokens > 0 {
+		return p.ContextTokens
+	}
+	if n := DefaultContext[p.Kind]; n > 0 {
+		return n
+	}
+	return 128_000
 }
 
 // Service is the client-facing API. Every exported method is callable by clients.
@@ -188,13 +214,16 @@ func (s *Service) Save(req SaveRequest) (Provider, error) {
 		}
 		hint = "…" + key[max(0, len(key)-4):]
 	}
-	_, err := s.st.db.Exec(`INSERT INTO providers (id, kind, name, base_url, models, key_sealed, key_hint, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	if req.ContextTokens < 0 {
+		return Provider{}, fmt.Errorf("%w: context tokens cannot be negative", apperr.Invalid)
+	}
+	_, err := s.st.db.Exec(`INSERT INTO providers (id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, name = excluded.name, base_url = excluded.base_url,
-			models = excluded.models, updated_at = excluded.updated_at,
+			models = excluded.models, updated_at = excluded.updated_at, context_tokens = excluded.context_tokens,
 			key_sealed = CASE WHEN excluded.key_sealed = '' THEN providers.key_sealed ELSE excluded.key_sealed END,
 			key_hint   = CASE WHEN excluded.key_sealed = '' THEN providers.key_hint   ELSE excluded.key_hint   END`,
-		req.ID, req.Kind, req.Name, strings.TrimSpace(req.BaseURL), string(modelsJSON), sealed, hint, sqlitedb.Stamp(time.Now()))
+		req.ID, req.Kind, req.Name, strings.TrimSpace(req.BaseURL), string(modelsJSON), sealed, hint, sqlitedb.Stamp(time.Now()), req.ContextTokens)
 	if err != nil {
 		return Provider{}, err
 	}

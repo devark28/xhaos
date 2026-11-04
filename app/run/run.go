@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"xhaos/app/agent"
@@ -208,9 +209,11 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		_ = r.agents.SetStatus(ws, id, agent.StatusAttention)
 	}
 	var (
-		adapter llm.Adapter
-		creds   llm.Credentials
-		kind    string
+		adapter  llm.Adapter
+		creds    llm.Credentials
+		kind     string
+		budget   int64
+		overflow bool // the model rejected the request as too long; compact once
 	)
 	for step := 0; ; step++ {
 		if ctx.Err() != nil {
@@ -255,7 +258,27 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 				fail(fmt.Sprintf("Provider kind %q has no adapter.", p.Kind))
 				return
 			}
-			creds, kind = c, p.Kind
+			creds, kind, budget = c, p.Kind, p.Budget()
+		}
+
+		// Keep the request within the model's context: summarize the older
+		// part of the conversation when it nears the budget.
+		last := latestCompaction(history)
+		if overflow || estimate(conv, last) > int64(float64(budget)*compactAt) {
+			forced := overflow
+			overflow = false
+			switch err := r.compact(ctx, ws, a, adapter, creds, conv, last); {
+			case err == nil:
+				continue
+			case ctx.Err() != nil:
+				r.stopped(ws, id)
+				return
+			case forced:
+				fail(fmt.Sprintf("The conversation is too long for %s and could not be compacted: %v", a.Model, err))
+				return
+			default:
+				slog.Warn("run: compaction skipped", "agent", id, "err", err)
+			}
 		}
 
 		root, err := r.rootFor(a)
@@ -265,14 +288,23 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		}
 		turn := llm.Turn{Model: a.Model, System: SystemPrompt(a, root), Tools: r.specs(ws)}
 		prefix := Prefix(turn)
-		for _, m := range conv {
+		start, madeAt := 0, 0
+		if last != nil {
+			// The model sees the summary, then the messages after it.
+			start, madeAt = last.Covers, last.Seen
+			turn.Messages = append(turn.Messages, llm.Message{Role: "user", Text: summaryIntro + last.Body})
+		}
+		for i, m := range conv[start:] {
+			// Replies made before the latest compaction were made on a longer
+			// history; their thinking does not replay on the shorter one.
+			stale := start+i < madeAt
 			switch m.From {
 			case agent.FromOwner:
 				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Text: m.Body})
 			case agent.FromTool:
 				turn.Messages = append(turn.Messages, llm.Message{Role: "user", Results: m.Results})
 			default:
-				turn.Messages = append(turn.Messages, llm.Message{Role: "assistant", Text: m.Body, RawKind: m.Provider, Raw: m.Raw, Calls: m.Calls, StripThinking: m.Prefix != prefix})
+				turn.Messages = append(turn.Messages, llm.Message{Role: "assistant", Text: m.Body, RawKind: m.Provider, Raw: m.Raw, Calls: m.Calls, StripThinking: m.Prefix != prefix || stale})
 			}
 		}
 
@@ -283,10 +315,14 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 				r.stopped(ws, id)
 				return
 			}
+			if tooLong(err) && last == nil || tooLong(err) && last.Seen < len(conv) {
+				overflow = true // compact what is there, then try again
+				continue
+			}
 			fail(fmt.Sprintf("Model call failed (%s %s): %v", kind, a.Model, err))
 			return
 		}
-		reply := agent.MessageData{From: agent.FromAgent, Body: res.Text, Provider: kind, Raw: res.Raw, Seen: len(conv), Calls: res.Calls, Stop: res.StopReason, Prefix: prefix}
+		reply := agent.MessageData{From: agent.FromAgent, Body: res.Text, Provider: kind, Raw: res.Raw, Seen: len(conv), Calls: res.Calls, Stop: res.StopReason, Prefix: prefix, InputTokens: res.InputTokens}
 		if res.Text != "" || len(res.Raw) > 0 || len(res.Calls) > 0 {
 			if err := r.agents.Append(ws, id, reply); err != nil {
 				slog.Error("run: save reply", "agent", id, "err", err)
@@ -464,4 +500,134 @@ func Conversation(history []agent.MessageData) []agent.MessageData {
 		}
 	}
 	return conv
+}
+
+// ---- context management ------------------------------------------------------
+
+// compactAt is the share of the context budget that triggers a compaction.
+const compactAt = 0.8
+
+const summaryIntro = "Summary of the earlier conversation (older messages were compacted to save context; Xhaos keeps the full history):\n\n"
+
+const summarizer = `You compact a conversation between a user and a coding agent so the agent can continue without the older messages.
+Write a summary that keeps: the user's goals and requirements, decisions and their reasons, what was done (files changed, commands run and their outcomes), what was found, open problems, and the next steps.
+Be complete but concise, in Markdown bullet points. Quote exact names, paths, and values. Do not invent anything.`
+
+// latestCompaction returns the newest compaction in the log, or nil.
+func latestCompaction(history []agent.MessageData) *agent.MessageData {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].From == agent.FromCompaction {
+			return &history[i]
+		}
+	}
+	return nil
+}
+
+// estimate approximates the next request's input tokens: the usage reported
+// for the latest reply made on the current (possibly compacted) history, plus
+// about four characters per token for what came after it.
+func estimate(conv []agent.MessageData, last *agent.MessageData) int64 {
+	var tokens int64
+	start, madeAt, chars := 0, 0, 0
+	if last != nil {
+		start, madeAt, chars = last.Covers, last.Seen, len(last.Body)
+	}
+	from := start
+	for i := len(conv) - 1; i >= start && i >= madeAt; i-- {
+		if conv[i].From == agent.FromAgent && conv[i].InputTokens > 0 {
+			tokens, from, chars = conv[i].InputTokens, i, 0
+			break
+		}
+	}
+	for _, m := range conv[from:] {
+		chars += len(m.Body)
+		for _, r := range m.Results {
+			chars += len(r.Content)
+		}
+		for _, c := range m.Calls {
+			chars += len(c.Input)
+		}
+	}
+	return tokens + int64(chars/4)
+}
+
+// cutPoint picks where a compaction ends: the latest point after `after`
+// that leaves at least the last message, and where nothing is split: before
+// a user message, or before a reply that follows a finished tool round.
+func cutPoint(conv []agent.MessageData, after int) int {
+	for i := len(conv) - 1; i > after; i-- {
+		switch {
+		case conv[i].From == agent.FromOwner:
+			return i
+		case conv[i].From == agent.FromAgent && conv[i-1].From == agent.FromTool:
+			return i
+		}
+	}
+	return -1
+}
+
+// compact summarizes the conversation up to a cut point with the agent's own
+// model and records the summary; nothing is removed from the log.
+func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter llm.Adapter, creds llm.Credentials, conv []agent.MessageData, last *agent.MessageData) error {
+	from, previous := 0, ""
+	if last != nil {
+		from, previous = last.Covers, last.Body
+	}
+	cut := cutPoint(conv, from)
+	if cut < 0 {
+		return errors.New("no point to compact at yet")
+	}
+	var b strings.Builder
+	if previous != "" {
+		b.WriteString("Summary so far:\n" + previous + "\n\nWhat happened next:\n")
+	}
+	for _, m := range conv[from:cut] {
+		switch m.From {
+		case agent.FromOwner:
+			fmt.Fprintf(&b, "\n[user]\n%s\n", clipText(m.Body, 4000))
+		case agent.FromAgent:
+			if m.Body != "" {
+				fmt.Fprintf(&b, "\n[agent]\n%s\n", clipText(m.Body, 4000))
+			}
+			for _, c := range m.Calls {
+				fmt.Fprintf(&b, "[agent calls %s %s]\n", c.Name, clipText(string(c.Input), 600))
+			}
+		case agent.FromTool:
+			for _, res := range m.Results {
+				state := "result"
+				if res.IsError {
+					state = "error"
+				}
+				fmt.Fprintf(&b, "[tool %s]\n%s\n", state, clipText(res.Content, 1500))
+			}
+		}
+	}
+	turn := llm.Turn{Model: a.Model, System: summarizer, Messages: []llm.Message{{Role: "user", Text: b.String()}}}
+	res, err := adapter.Stream(ctx, creds, turn, func(string) {})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(res.Text) == "" {
+		return errors.New("the model returned an empty summary")
+	}
+	return r.agents.Append(ws, a.ID, agent.MessageData{From: agent.FromCompaction, Body: strings.TrimSpace(res.Text), Covers: cut, Seen: len(conv)})
+}
+
+func clipText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + " …[cut]"
+}
+
+// tooLong reports a provider error that says the request exceeded the
+// model's context window.
+func tooLong(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"prompt is too long", "context_length_exceeded", "maximum context length", "context length", "too many tokens", "context window"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

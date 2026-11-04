@@ -152,8 +152,9 @@ export interface BackendEvent {
 }
 
 export interface MessageData {
-  from: 'owner' | 'agent' | 'system' | 'tool';
+  from: 'owner' | 'agent' | 'system' | 'tool' | 'compaction';
   body: string;
+  covers?: number; // compaction: how many earlier messages it summarizes
 }
 
 export interface ToolData {
@@ -190,6 +191,7 @@ export interface Provider {
   models: string[];
   hasKey: boolean;
   keyHint?: string;
+  contextTokens?: number; // 0 or absent: the kind's default
 }
 
 export interface Project {

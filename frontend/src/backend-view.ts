@@ -86,6 +86,10 @@ function trackQuestions(agent: Agent, data: ToolData) {
 }
 
 function entry(event: BackendEvent): Entry | null {
+  if (event.kind === 'agent.message' && event.data?.from === 'compaction') {
+    const n = event.data.covers || 0;
+    return { kind: 'tool', text: `Context compacted · ${n} earlier message${n === 1 ? '' : 's'} summarized for the model (all kept here)`, command: '', output: event.data.body || '', seq: event.seq };
+  }
   if (event.kind === 'agent.message') {
     const from = event.data?.from;
     if (from === 'tool') return null; // results are shown on each tool entry

@@ -96,3 +96,15 @@ test('a waiting ask_user call becomes the agent\'s question batch, and clears on
   assert.match(agent.activity.at(-1).text, /answered$/);
   assert.match(agent.activity.at(-1).output, /A: SQLite/);
 });
+
+test('a compaction shows as a note with its summary', async () => {
+  const { viewFromSnapshot } = await import('./backend-view.ts');
+  const view = viewFromSnapshot({ seq: 2, workspace: { id: 'w', name: 'W' }, agents: [{ id: 1, title: 'a', status: 'complete' }], transcript: [
+    { seq: 1, agentId: 1, kind: 'agent.message', data: { from: 'owner', body: 'go' } },
+    { seq: 2, agentId: 1, kind: 'agent.message', data: { from: 'compaction', body: '- did things', covers: 4 } },
+  ] });
+  const note = view.agents[0].activity.at(-1);
+  assert.equal(note.kind, 'tool');
+  assert.match(note.text, /Context compacted · 4 earlier messages summarized/);
+  assert.equal(note.output, '- did things');
+});

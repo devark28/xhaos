@@ -135,7 +135,7 @@ const presets = {
   other: { id: '', kind: 'openai', name: '', baseUrl: '', key: 'if the endpoint needs one' },
 } as const;
 type PresetName = keyof typeof presets;
-const blank = (preset: PresetName): ProviderForm => ({ id: presets[preset].id, kind: presets[preset].kind, name: presets[preset].name, baseUrl: presets[preset].baseUrl, apiKey: '', models: '' });
+const blank = (preset: PresetName): ProviderForm => ({ id: presets[preset].id, kind: presets[preset].kind, name: presets[preset].name, baseUrl: presets[preset].baseUrl, apiKey: '', models: '', context: '' });
 
 function Providers({ message, testing }: { message?: string; testing?: string }) {
   const backend = useApp(s => s.backendVersion !== null);
@@ -155,7 +155,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
     if (!p) return;
     setPreset(p.kind === 'anthropic' ? 'anthropic' : 'other');
     setEditingId(p.id);
-    setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', ') });
+    setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', '), context: p.contextTokens ? String(p.contextTokens) : '' });
   };
   const save = async () => { if (preset && await saveProvider(form)) choose(''); };
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
@@ -167,7 +167,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
         {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
             <div>
-              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}</span>
+              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}{p.contextTokens ? ` · ${p.contextTokens.toLocaleString()} tokens` : ''}</span>
               <div {...stylex.props(shell.muted, provider.models)}>{p.models.join(', ')}</div>
             </div>
             <div {...stylex.props(provider.actions)}>
@@ -208,6 +208,9 @@ function Providers({ message, testing }: { message?: string; testing?: string })
           <label htmlFor="provider-models" {...stylex.props(provider.fieldLabel)}>Models</label>
           <input id="provider-models" value={form.models} onChange={set('models')} autoComplete="off" spellCheck="false"
             placeholder={openai ? 'Comma-separated; empty asks the endpoint for its list' : 'Comma-separated; empty uses the defaults'} {...stylex.props(provider.input)} />
+          <label htmlFor="provider-context" {...stylex.props(provider.fieldLabel)}>Context</label>
+          <input id="provider-context" value={form.context} onChange={set('context')} inputMode="numeric" autoComplete="off"
+            placeholder={`Tokens before older messages are compacted; empty: ${openai ? '128,000' : '200,000'}`} {...stylex.props(provider.input)} />
         </div>
         {clash && <p {...stylex.props(provider.message)}>A provider with ID “{form.id.trim()}” exists: saving updates it (an empty key or model list keeps its own).</p>}
         <div {...stylex.props(provider.formActions)}>
