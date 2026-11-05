@@ -21,9 +21,11 @@ export interface Appearance {
   wrap: 'wrap' | 'scroll';
   time: 'relative' | 'exact';
   mentions: 'attach' | 'text'; // typing "#12 " in the composer attaches agent 12, or stays text
+  layout: 'list' | 'grid' | 'three'; // agent cards in one, two or three columns
+  developer: 'off' | 'on'; // Settings → Developer: tools for working on Xhaos itself (sample agents)
 }
 
-export const defaults: Appearance = { scale: 1, theme: 'dark', accent: 'violet', density: 'compact', mono: 'jetbrains', transcript: 1, motion: 'full', contrast: 'normal', wrap: 'wrap', time: 'exact', mentions: 'attach' };
+export const defaults: Appearance = { scale: 1, theme: 'dark', accent: 'violet', density: 'compact', mono: 'jetbrains', transcript: 1, motion: 'full', contrast: 'normal', wrap: 'wrap', time: 'exact', mentions: 'attach', layout: 'grid', developer: 'off' };
 const KEY = 'xhaos-appearance';
 
 export function loadAppearance(): Appearance {

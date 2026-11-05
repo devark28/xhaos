@@ -12,13 +12,13 @@ import { AttachedFiles } from './Transcript.tsx';
 import { QuestionInbox } from './QuestionInbox.tsx';
 import { authPost } from './SignIn.tsx';
 import { UsagePanel, usageLine } from './Usage.tsx';
-import { AppearanceSettings } from './AppearanceSettings.tsx';
+import { AppearanceSettings, DeveloperSettings } from './AppearanceSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
-import { slashCommands } from './state/composer.ts';
+import { visibleCommands, developerMode } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
   openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
@@ -359,7 +359,7 @@ function Status() {
 function Help() {
   return (
     <Shell title="Commands">
-      {slashCommands.map(([name, description, usage]) => (
+      {visibleCommands().map(([name, description, usage]) => (
         <div key={name} {...stylex.props(list.command)}><code>{usage}</code><p {...stylex.props(list.commandText)}>{description}</p></div>
       ))}
       <div {...stylex.props(list.command)}><Button id="help-status" onClick={() => openPanel('status')}>/help status — status indicators</Button></div>
@@ -369,7 +369,7 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'usage' | 'tools' | 'appearance' | 'security';
+type SectionId = 'models' | 'usage' | 'tools' | 'appearance' | 'security' | 'developer';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
@@ -421,6 +421,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         </Section>
         <Section id="security" title="Passphrase" summary="signs in and encrypts keys" open={open.has('security')} onToggle={() => toggle('security')}>
           <Security />
+        </Section>
+        <Section id="developer" title="Developer" summary={developerMode() ? 'on' : 'off'} open={open.has('developer')} onToggle={() => toggle('developer')}>
+          <DeveloperSettings />
         </Section>
       </> : null}
       <P muted>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>

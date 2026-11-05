@@ -81,11 +81,12 @@ function initial(): State {
     attachedProject: null,
     files: {},
     openDirs: new Set(),
-    layout: 'grid',
+    layout: (() => { try { return (JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').layout as Layout) || 'grid'; } catch { return 'grid' as Layout; } })(),
     search: '',
     collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),
     focusAgent: null,
-    showSamples: (() => { try { return localStorage.getItem('xhaos-samples') === 'on'; } catch { return false; } })(), // backend page only; off unless turned on
+    // Sample agents: a Developer mode tool (backend page only), off unless turned on there.
+    showSamples: (() => { try { return localStorage.getItem('xhaos-samples') === 'on' && JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').developer === 'on'; } catch { return false; } })(),
     mode: 'message',
     panel: { kind: 'questions' },
     selected: new Set(),

@@ -1,7 +1,8 @@
 // Views and panels: the composer's Message/Draw tab, which side panel is
 // open, and the panels' own actions (memories, providers, tools, dictation).
 import { update, get, focusLater, toast, errorText, saveMemories, pendingQuestions, type Layout, type Panel, type PanelKind } from './store.ts';
-import { call, connected, refreshProviders } from './backend.ts';
+import { call, connected, refreshProviders, pushAppearance } from './backend.ts';
+import { loadAppearance, saveAppearance } from '../appearance.ts';
 import { focusComposer, setDraft } from './composer.ts';
 import { refreshProjects } from './projects.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
@@ -28,7 +29,12 @@ export function showQuestions(id: number | null) {
   });
   focusLater('[data-questions-agent]');
 }
-export function setLayout(layout: Layout) { update(s => { s.layout = layout; }); }
+// setLayout changes the card columns and keeps the choice (Settings → Appearance → Columns).
+export function setLayout(layout: Layout) {
+  update(s => { s.layout = layout; });
+  const a = { ...loadAppearance(), layout };
+  saveAppearance(a); void pushAppearance(a);
+}
 export function clearSearch() { update(s => { s.search = ''; }); }
 
 // ---- memories --------------------------------------------------------------

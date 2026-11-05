@@ -7,12 +7,15 @@ import { colors } from './theme/tokens.stylex.ts';
 import { applyAppearance, defaults, loadAppearance, saveAppearance, type Appearance } from './appearance.ts';
 import { Button } from './kit.tsx';
 import { pushAppearance } from './state/backend.ts';
+import { update, useApp } from './state/store.ts';
+import { setSamples } from './state/composer.ts';
 
 type Choice<K extends keyof Appearance> = { key: K; label: string; hint?: string; options: [Appearance[K], string][] };
 const sizes: [number, string][] = [[0.9, 'Small'], [1, 'Normal'], [1.15, 'Large'], [1.3, 'Larger']];
 const choices: Choice<keyof Appearance>[] = [
   { key: 'scale', label: 'Text size', hint: 'Scales the whole interface.', options: sizes },
   { key: 'transcript', label: 'Transcript size', hint: 'On top of the text size, for agent transcripts only.', options: sizes },
+  { key: 'layout', label: 'Columns', hint: 'How many columns of agent cards (also the buttons above them).', options: [['list', 'One'], ['grid', 'Two'], ['three', 'Three']] },
   { key: 'theme', label: 'Theme', options: [['dark', 'Dark'], ['light', 'Light'], ['system', 'System']] },
   { key: 'accent', label: 'Accent', hint: 'For trying colours out; one will become the brand colour.', options: [['violet', 'Violet'], ['blue', 'Blue'], ['green', 'Green'], ['amber', 'Amber'], ['pink', 'Pink']] },
   { key: 'contrast', label: 'Contrast', options: [['normal', 'Normal'], ['high', 'High']] },
@@ -26,7 +29,9 @@ const choices: Choice<keyof Appearance>[] = [
 
 export function AppearanceSettings() {
   const [a, setA] = useState<Appearance>(loadAppearance);
-  const change = (next: Appearance) => { setA(next); saveAppearance(next); applyAppearance(next); void pushAppearance(next); };
+  const change = (next: Appearance) => { setA(next); saveAppearance(next); applyAppearance(next); void pushAppearance(next); update(s => { s.layout = next.layout; }); };
+  const layout = useApp(s => s.layout);
+  if (layout !== a.layout) setA({ ...a, layout }); // changed with the buttons above the cards
   return <>
     <div {...stylex.props(s.grid)}>
       {choices.map(c => (
@@ -44,6 +49,38 @@ export function AppearanceSettings() {
     </div>
     <div {...stylex.props(s.actions)}><Button id="appearance-reset" onClick={() => change({ ...defaults })}>Reset to defaults</Button></div>
   </>;
+}
+
+// DeveloperSettings: tools for working on Xhaos itself, off by default.
+// Turning it off also hides the sample agents and the /samples command.
+export function DeveloperSettings() {
+  const [a, setA] = useState<Appearance>(loadAppearance);
+  const samples = useApp(s => s.showSamples);
+  const set = (developer: Appearance['developer']) => {
+    const next = { ...loadAppearance(), developer };
+    setA(next); saveAppearance(next); void pushAppearance(next);
+    if (developer === 'off' && samples) setSamples(false);
+  };
+  return (
+    <div {...stylex.props(s.grid)}>
+      <label {...stylex.props(s.row)}>
+        <span {...stylex.props(s.label)}>Developer mode</span>
+        <select data-developer value={a.developer} onChange={e => set(e.target.value as Appearance['developer'])} {...stylex.props(s.select)}>
+          <option value="off">Off</option><option value="on">On</option>
+        </select>
+        <span {...stylex.props(s.hint)}>For working on Xhaos itself. Off hides everything below and the /samples command.</span>
+      </label>
+      {a.developer === 'on' && (
+        <label {...stylex.props(s.row)}>
+          <span {...stylex.props(s.label)}>Sample agents</span>
+          <select data-samples value={samples ? 'on' : 'off'} onChange={e => setSamples(e.target.value === 'on')} {...stylex.props(s.select)}>
+            <option value="off">Hidden</option><option value="on">Shown</option>
+          </select>
+          <span {...stylex.props(s.hint)}>Demo agents mixed into the page (never sent to the server). Same as /samples.</span>
+        </label>
+      )}
+    </div>
+  );
 }
 
 const s = stylex.create({

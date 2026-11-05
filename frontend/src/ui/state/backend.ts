@@ -77,6 +77,9 @@ async function pullAppearance() {
     if (stored && typeof stored === 'object') {
       const a = { ...appearanceDefaults, ...stored };
       saveAppearance(a); applyAppearance(a);
+      const samples = get().showSamples && a.developer === 'on';
+      update(s => { s.layout = a.layout; s.showSamples = samples; });
+      if (!samples) applySamples();
     } else {
       const local = loadAppearance();
       if (JSON.stringify(local) !== JSON.stringify(appearanceDefaults)) await pushAppearance(local); // first sync: this browser's choice

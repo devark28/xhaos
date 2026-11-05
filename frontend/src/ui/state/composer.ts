@@ -76,6 +76,16 @@ export function addFiles(files: File[]) { update(s => { s.pendingFiles.push(...f
 export function removeFile(index: number) { update(s => { s.pendingFiles.splice(index, 1); }); }
 
 // ---- slash commands --------------------------------------------------------
+export const developerMode = () => loadAppearance().developer === 'on';
+// visibleCommands leaves out developer commands unless Developer mode is on.
+export const visibleCommands = () => slashCommands.filter(([name]) => name !== 'samples' || developerMode());
+// setSamples shows or hides the sample agents (a Developer mode tool).
+export function setSamples(show: boolean) {
+  update(s => { s.showSamples = show; });
+  try { localStorage.setItem('xhaos-samples', show ? 'on' : 'off'); } catch { /* per-browser only */ }
+  if (connected()) applySamples();
+  toast(connected() ? `Sample agents ${show ? 'shown' : 'hidden'}.` : 'Samples are the prototype data here; this setting applies on the backend page.');
+}
 export const slashCommands: SlashCommand[] = [
   ['new', 'New agent', '/new Describe the task'],
   ['tools', 'Tools agents can call, and MCP servers', '/tools'],
@@ -107,7 +117,7 @@ export function onText(value: string) {
     update(d => { d.mode = 'message'; d.selected.add(mention.id); });
     setDraft(value = mention.text);
   }
-  const next = !value.startsWith('/') || /\s/.test(value) ? [] : slashCommands.filter(([name]) => name.startsWith(value.slice(1).toLowerCase()));
+  const next = !value.startsWith('/') || /\s/.test(value) ? [] : visibleCommands().filter(([name]) => name.startsWith(value.slice(1).toLowerCase()));
   const menu = get().menu;
   if (next.length === menu.length && next.every((c, i) => c === menu[i])) return;
   update(d => { d.menu = next; });
@@ -190,13 +200,10 @@ function runSlashCommand(value: string, attachments: Attachment[] = []) {
       done(); if (name === 'remove') terminateAgent(id); else restore(id); return;
     }
     case 'samples': {
+      if (!developerMode()) { toast('Turn on Developer mode in Settings → Developer first.'); return; }
       const choice = args.trim().toLowerCase();
       if (!['on', 'off', ''].includes(choice)) { toast('Use /samples on or /samples off.'); return; }
-      const show = choice ? choice === 'on' : !get().showSamples;
-      update(s => { s.showSamples = show; });
-      try { localStorage.setItem('xhaos-samples', show ? 'on' : 'off'); } catch { /* per-browser only */ }
-      done(); if (connected()) applySamples();
-      toast(connected() ? `Sample agents ${show ? 'shown' : 'hidden'}.` : 'Samples are the prototype data here; this setting applies on the backend page.');
+      done(); setSamples(choice ? choice === 'on' : !get().showSamples);
       return;
     }
     case 'tell':

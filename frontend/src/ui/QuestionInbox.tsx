@@ -11,7 +11,6 @@ import type { Agent, Answer, Question as QuestionData } from '../types.ts';
 
 const emptyAnswer: Answer = { choices: [], text: '' };
 const tabTitle = (q: QuestionData) => q.title || q.prompt.split(' ').slice(0, 4).join(' ');
-const answered = (q: QuestionData, a?: Partial<Answer>) => { const f = finalAnswer(q, a); return Boolean(f.choices.length || f.text); };
 const draftOf = (agent: Agent, id: string): Answer => ({ ...emptyAnswer, ...agent.questionBatch?.draft?.[id] });
 
 function Mark({ square = false, pencil = false, chosen = false }) {
@@ -80,25 +79,16 @@ function Question({ agent, question }: { agent: Agent; question: QuestionData })
   );
 }
 
-function Review({ agent }: { agent: Agent }) {
-  const batch = agent.questionBatch!;
-  return (
-    <div {...stylex.props(styles.review)}>
-      {batch.questions.map((q, index) => {
-        const answer = finalAnswer(q, draftOf(agent, q.id));
-        const chosen = (q.options || []).filter(option => answer.choices.includes(option.id)).map(option => option.label);
-        const text = [...chosen, answer.text].filter(Boolean).join(' · ');
-        return (
-          <button type="button" key={q.id} data-review-row onClick={() => setQuestionStep(agent, index)} {...stylex.props(styles.reviewRow)}>
-            <span {...stylex.props(styles.reviewTitle)}>{tabTitle(q)}</span>
-            <p {...stylex.props(styles.reviewText, !text && styles.reviewMissing)}>{text || (q.required === false ? 'Skipped' : 'Not answered')}</p>
-          </button>
-        );
-      })}
-    </div>
-  );
+// summary is what a question's row shows while closed: the answer, or why not.
+function summary(q: QuestionData, a: Answer) {
+  const f = finalAnswer(q, a);
+  const chosen = (q.options || []).filter(option => f.choices.includes(option.id)).map(option => option.label);
+  return [...chosen, f.text].filter(Boolean).join(' · ');
 }
 
+// QuestionInbox: one agent's questions as an accordion, one open at a time.
+// Closed rows show their answers, so the last step (all closed) is the
+// review; Enter goes to the next question, then sends.
 export function QuestionInbox() {
   const pending = activeAgents(useApp(s => workspaceOf(s).agents)).filter(hasPendingQuestions);
   const chosenId = useApp(s => s.questionAgentId);
@@ -110,7 +100,8 @@ export function QuestionInbox() {
   const step = questionStepIn({ questionSteps: steps }, agent);
   const question = batch.questions[step];
   const others = pending.filter(a => a.id !== agent.id);
-  // ← → move between questions from anywhere but the text box (radio
+  const last = batch.questions.length;
+  // ← → previous and next question from anywhere but the text box (radio
   // buttons would otherwise take the arrows); ↑ ↓ move between choices
   // without choosing; Space chooses; Enter goes on.
   const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
@@ -120,7 +111,7 @@ export function QuestionInbox() {
       event.preventDefault(); setQuestionStep(agent, step + (event.key === 'ArrowRight' ? 1 : -1)); return;
     }
     if (!inText && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
-      const inputs = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-choice-input], [data-review-row]')];
+      const inputs = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-choice-input], [data-question-row]')];
       if (!inputs.length) return;
       event.preventDefault();
       const at = inputs.indexOf(target);
@@ -128,41 +119,46 @@ export function QuestionInbox() {
       inputs[next].focus();
       return;
     }
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && (event.target as HTMLElement).tagName !== 'BUTTON') { event.preventDefault(); advanceOrSubmit(agent); }
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && target.tagName !== 'BUTTON') { event.preventDefault(); advanceOrSubmit(agent); }
   };
-  const tab = (index: number, label: string, done = false) => (
-    <button key={index} type="button" role="tab" aria-selected={index === step} data-question-step={index} data-question-owner={agent.id}
-      onClick={() => setQuestionStep(agent, index)} {...stylex.props(styles.tab, index === step && styles.tabChosen)}>
-      {done && <span {...stylex.props(styles.tick)}>✓</span>}{label}
-      {index === step && <span aria-hidden="true" {...stylex.props(styles.underline)} />}
-    </button>
-  );
   return (
     <div {...stylex.props(styles.root)}>
       <div {...stylex.props(styles.head)}>
         <StatusDot status="waiting" />
         <span {...stylex.props(styles.agentId)}>#{agent.id}</span>
         <span {...stylex.props(styles.agentTitle)}>{agent.title}</span>
-        <span {...stylex.props(styles.progress)}>{question ? `${step + 1} / ${batch.questions.length}` : 'Review'}</span>
+        <span {...stylex.props(styles.progress)}>{question ? `${step + 1} / ${last}` : 'Review'}</span>
         {backend && !agent.sample && <Button data-dismiss-questions={agent.id} title="Tell the agent you won't answer" onClick={() => dismissQuestions(agent)} sx={styles.next}>Dismiss</Button>}
         {others.length > 0 && (
           <Button onClick={() => setQuestionAgent(others[0].id)} sx={styles.next}>{others.length} more waiting →</Button>
         )}
       </div>
-      <div role="tablist" aria-label="Questions" {...stylex.props(styles.tabs)}
-        onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setQuestionStep(agent, step + (event.key === 'ArrowRight' ? 1 : -1)); } }}>
-        {batch.questions.map((q, index) => tab(index, tabTitle(q), answered(q, batch.draft?.[q.id])))}
-        {tab(batch.questions.length, 'Review')}
-      </div>
-      <form tabIndex={0} aria-label={question ? `Question ${step + 1} of ${batch.questions.length}` : 'Review answers'}
-        data-questions-agent={agent.id} data-question-batch={batch.id} data-question-step={step} data-question-count={batch.questions.length} data-question-id={question?.id || ''}
+      <form tabIndex={0} aria-label={question ? `Question ${step + 1} of ${last}` : 'Review answers'}
+        data-questions-agent={agent.id} data-question-batch={batch.id} data-question-step={step} data-question-count={last} data-question-id={question?.id || ''}
         onSubmit={event => { event.preventDefault(); advanceOrSubmit(agent); }} onKeyDown={onKeyDown} {...stylex.props(styles.body)}>
-        {question ? <Question key={`${agent.id}:${question.id}`} agent={agent} question={question} /> : <Review agent={agent} />}
+        {batch.questions.map((q, index) => {
+          const isOpen = index === step;
+          const text = summary(q, draftOf(agent, q.id));
+          return (
+            <section key={q.id} data-question={q.id} data-open={isOpen || undefined} {...stylex.props(styles.row, isOpen && styles.rowOpen)}>
+              <button type="button" data-question-row={index} data-question-owner={agent.id} aria-expanded={isOpen}
+                onClick={() => setQuestionStep(agent, isOpen ? last : index)} {...stylex.props(styles.rowHead)}>
+                <span {...stylex.props(styles.rowNumber)}>{text ? <span {...stylex.props(styles.tick)}>✓</span> : index + 1}</span>
+                <span {...stylex.props(styles.rowTitle)}>{tabTitle(q)}</span>
+                {!isOpen && <span {...stylex.props(styles.rowAnswer, !text && q.required !== false && styles.reviewMissing)}>{text || (q.required === false ? 'Skipped' : 'Not answered')}</span>}
+              </button>
+              {isOpen && <div {...stylex.props(styles.rowBody)}><Question key={`${agent.id}:${q.id}`} agent={agent} question={q} /></div>}
+            </section>
+          );
+        })}
+        <div {...stylex.props(styles.send)}>
+          <Button type="submit" data-question-next>{question ? (step + 1 < last ? 'Next question' : 'Review') : `Send answers to #${agent.id}`}</Button>
+        </div>
       </form>
       <div aria-hidden="true" {...stylex.props(styles.hints)}>
         {question
           ? <><Kbd>↑</Kbd><Kbd>↓</Kbd> choices <Kbd>Space</Kbd> choose <Kbd>Enter</Kbd> next <Kbd>←</Kbd><Kbd>→</Kbd> questions <Kbd>Esc</Kbd> leave text</>
-          : <><Kbd>Enter</Kbd> send answers to #{agent.id}</>}
+          : <><Kbd>Enter</Kbd> send answers to #{agent.id} <Kbd>←</Kbd> back to the questions</>}
       </div>
     </div>
   );
@@ -176,22 +172,14 @@ const styles = stylex.create({
   agentTitle: { minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: colors.text },
   progress: { marginLeft: 'auto', flexShrink: 0, color: colors.textGhost, fontVariantNumeric: 'tabular-nums' },
   next: { flexShrink: 0, paddingBlock: 2, paddingInline: 6, borderRadius: 3, fontSize: 10, color: colors.brand, backgroundColor: { default: 'transparent', ':hover': colors.brandSoft } },
-  tabs: { display: 'flex', gap: 2, flexShrink: 0, overflowX: 'auto', scrollbarWidth: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint },
-  tab: {
-    position: 'relative',
-    paddingTop: 3,
-    paddingInline: 10,
-    paddingBottom: 6,
-    borderWidth: 0,
-    backgroundColor: 'transparent',
-    fontFamily: 'inherit',
-    fontSize: 11,
-    color: { default: colors.textFaint, ':hover': colors.textSoft },
-    whiteSpace: 'nowrap',
-    cursor: 'pointer',
-  },
-  tabChosen: { color: { default: colors.textStrong, ':hover': colors.textStrong } },
-  underline: { position: 'absolute', left: 8, right: 8, bottom: -1, height: 2, borderRadius: 2, backgroundColor: colors.brand },
+  row: { borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint, borderRadius: 5, marginBottom: 4 },
+  rowOpen: { borderColor: colors.line },
+  rowHead: { display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', paddingBlock: 6, paddingInline: 8, borderWidth: 0, borderRadius: 5, backgroundColor: { default: 'transparent', ':hover': colors.hover }, textAlign: 'left', fontFamily: 'inherit', fontSize: 11, color: 'inherit', cursor: 'pointer' },
+  rowNumber: { width: 14, flexShrink: 0, fontSize: 10, color: colors.textGhost, textAlign: 'center' },
+  rowTitle: { flexShrink: 0, maxWidth: '45%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: colors.textSoft },
+  rowAnswer: { minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: colors.text },
+  rowBody: { paddingInline: 10, paddingBottom: 10 },
+  send: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 },
   tick: { marginRight: 5, fontSize: 10, color: colors.brand },
   body: { flexGrow: 1, minHeight: 0, overflow: 'auto', paddingTop: 2, paddingInline: 2, paddingBottom: 4, borderRadius: 4, boxShadow: { default: null, ':focus-visible': `0 0 0 1px ${colors.brandLine}` } },
   question: { minWidth: 0, margin: 0, padding: 0, borderWidth: 0 },
@@ -268,26 +256,6 @@ const styles = stylex.create({
     lineHeight: 1.55,
     color: colors.textStrong,
   },
-  review: { display: 'flex', flexDirection: 'column', gap: 4 },
-  reviewRow: {
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderRadius: 5,
-    display: 'grid',
-    gridTemplateColumns: 'minmax(120px, 180px) 1fr',
-    gap: 12,
-    paddingBlock: 6,
-    paddingInline: 10,
-    borderColor: { default: colors.menu, ':hover': colors.line },
-    backgroundColor: colors.sunken,
-    fontFamily: 'inherit',
-    fontSize: 11,
-    textAlign: 'left',
-    color: 'inherit',
-    cursor: 'pointer',
-  },
-  reviewTitle: { color: colors.textFaint },
-  reviewText: { margin: 0, color: colors.text },
   reviewMissing: { color: colors.warn },
   hints: { display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, fontSize: 10, color: colors.textHint },
 });
