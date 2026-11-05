@@ -1,11 +1,25 @@
 // Package eventlog is the ordered, per-workspace record of everything that
-// happens: transcripts, state changes, and later approvals and tool calls.
-// Every feature appends here; clients use it to catch up after a disconnect.
+// happens: transcripts, state changes, approvals and tool calls. Every
+// feature appends here; clients use it to catch up after a disconnect.
+//
+// SQLite is the index: each event's row holds its sequence number, agent,
+// and kind. An agent's event bodies (messages, tool output) live in that
+// agent's JSON Lines file, transcripts/<workspace>/<agent>.jsonl beside the
+// database, one self-describing line per event; the row records where its
+// line is. Workspace-level events, and rows written before files existed,
+// keep their body in the row. The row is what counts: a line whose
+// transaction rolled back stays in the file but nothing points at it.
 package eventlog
 
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"xhaos/app/sqlitedb"
@@ -37,7 +51,162 @@ CREATE TABLE IF NOT EXISTS events (
 );`
 
 // Migrate creates the events table. Run it after the workspace migration.
-func Migrate(db *sql.DB) error { _, err := db.Exec(schema); return err }
+func Migrate(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	// Added with transcript files: where the event's line is (NULL: inline).
+	for _, col := range []string{"file_off", "file_len"} {
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN ` + col + ` INTEGER`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---- transcript files ----------------------------------------------------------
+
+// files holds one database's transcript directory and its open files.
+type files struct {
+	dir  string
+	mu   sync.Mutex
+	open map[string]*os.File
+}
+
+var stores sync.Map // database file path -> *files
+
+// filesFor returns the transcript store beside q's database, or nil for a
+// database without a file (in memory), whose events stay inline.
+func filesFor(q sqlitedb.Querier) *files {
+	var path string
+	if err := q.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&path); err != nil || path == "" {
+		return nil
+	}
+	if f, ok := stores.Load(path); ok {
+		return f.(*files)
+	}
+	f, _ := stores.LoadOrStore(path, &files{dir: filepath.Join(filepath.Dir(path), "transcripts"), open: map[string]*os.File{}})
+	return f.(*files)
+}
+
+// Close closes the transcript files of db's database (on shutdown).
+func Close(db *sql.DB) {
+	f := filesFor(db)
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for name, h := range f.open {
+		h.Close()
+		delete(f.open, name)
+	}
+}
+
+// handle returns the agent's open file; create makes it if missing (reads
+// never create one).
+func (f *files) handle(workspaceID string, agentID int64, create bool) (*os.File, error) {
+	if workspaceID == "" || strings.ContainsAny(workspaceID, `/\`) || strings.HasPrefix(workspaceID, ".") {
+		return nil, fmt.Errorf("eventlog: bad workspace id %q", workspaceID)
+	}
+	name := filepath.Join(f.dir, workspaceID, fmt.Sprintf("%d.jsonl", agentID))
+	if h, ok := f.open[name]; ok {
+		return h, nil
+	}
+	flags := os.O_RDWR
+	if create {
+		if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+			return nil, err
+		}
+		flags |= os.O_CREATE
+	}
+	h, err := os.OpenFile(name, flags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.open[name] = h
+	return h, nil
+}
+
+// line is one event in a transcript file.
+type line struct {
+	Seq   int64           `json:"seq"`
+	At    string          `json:"at"`
+	Agent int64           `json:"agent"`
+	Kind  string          `json:"kind"`
+	Data  json.RawMessage `json:"data"`
+}
+
+// write appends the event's line and returns where it is.
+func (f *files) write(workspaceID string, l line) (off, n int64, err error) {
+	raw, err := json.Marshal(l)
+	if err != nil {
+		return 0, 0, err
+	}
+	raw = append(raw, '\n')
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, err := f.handle(workspaceID, l.Agent, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	if off, err = h.Seek(0, io.SeekEnd); err != nil {
+		return 0, 0, err
+	}
+	if _, err := h.WriteAt(raw, off); err != nil {
+		return 0, 0, err
+	}
+	return off, int64(len(raw)), nil
+}
+
+// read returns the data of the line at off.
+func (f *files) read(workspaceID string, agentID, off, n int64) (json.RawMessage, error) {
+	f.mu.Lock()
+	h, err := f.handle(workspaceID, agentID, false)
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, n)
+	if _, err := h.ReadAt(buf, off); err != nil {
+		return nil, err
+	}
+	var l line
+	if err := json.Unmarshal(buf, &l); err != nil {
+		return nil, err
+	}
+	return l.Data, nil
+}
+
+// lost stands in for a line that cannot be read (a file deleted by hand, or
+// a tail lost in a power cut), so one bad line does not hide a transcript.
+var lost = json.RawMessage(`{"lost":true}`)
+
+// scanner reads event rows, resolving bodies kept in files.
+type scanner struct {
+	files *files
+}
+
+const columns = `workspace_id, seq, at, COALESCE(agent_id, 0), kind, data, file_off, file_len`
+
+func (sc scanner) scan(rows *sql.Rows) (Event, error) {
+	var e Event
+	var at, data string
+	var off, n sql.NullInt64
+	if err := rows.Scan(&e.WorkspaceID, &e.Seq, &at, &e.AgentID, &e.Kind, &data, &off, &n); err != nil {
+		return e, err
+	}
+	e.At, e.Data = sqlitedb.ParseStamp(at), json.RawMessage(data)
+	if off.Valid {
+		e.Data = lost
+		if sc.files != nil {
+			if d, err := sc.files.read(e.WorkspaceID, e.AgentID, off.Int64, n.Int64); err == nil {
+				e.Data = d
+			}
+		}
+	}
+	return e, nil
+}
 
 // LastSeq returns the workspace's latest sequence number, or 0.
 func LastSeq(q sqlitedb.Querier, workspaceID string) (int64, error) {
@@ -59,7 +228,17 @@ func Append(tx *sql.Tx, workspaceID string, agentID int64, kind string, data any
 	}
 	seq++
 	stamp := sqlitedb.Stamp(at)
-	if _, err := tx.Exec(`INSERT INTO events (workspace_id, seq, at, agent_id, kind, data) VALUES (?, ?, ?, ?, ?, ?)`,
+	if f := filesFor(tx); f != nil && agentID != 0 {
+		// The line first: a committed row must never point past the file.
+		off, n, err := f.write(workspaceID, line{Seq: seq, At: stamp, Agent: agentID, Kind: kind, Data: raw})
+		if err != nil {
+			return Event{}, fmt.Errorf("transcript file: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO events (workspace_id, seq, at, agent_id, kind, data, file_off, file_len) VALUES (?, ?, ?, ?, ?, '', ?, ?)`,
+			workspaceID, seq, stamp, agentID, kind, off, n); err != nil {
+			return Event{}, err
+		}
+	} else if _, err := tx.Exec(`INSERT INTO events (workspace_id, seq, at, agent_id, kind, data) VALUES (?, ?, ?, ?, ?, ?)`,
 		workspaceID, seq, stamp, sqlitedb.NullID(agentID), kind, string(raw)); err != nil {
 		return Event{}, err
 	}
@@ -86,20 +265,22 @@ func List(q sqlitedb.Querier, workspaceID string, after int64, limit int) ([]Eve
 	if limit <= 0 {
 		limit = -1 // SQLite: no limit
 	}
-	rows, err := q.Query(`SELECT workspace_id, seq, at, COALESCE(agent_id, 0), kind, data FROM events
-		WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?`, workspaceID, after, limit)
+	return query(q, `SELECT `+columns+` FROM events WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?`, workspaceID, after, limit)
+}
+
+func query(q sqlitedb.Querier, sqlText string, args ...any) ([]Event, error) {
+	sc := scanner{files: filesFor(q)}
+	rows, err := q.Query(sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Event{}
 	for rows.Next() {
-		var e Event
-		var at, data string
-		if err := rows.Scan(&e.WorkspaceID, &e.Seq, &at, &e.AgentID, &e.Kind, &data); err != nil {
+		e, err := sc.scan(rows)
+		if err != nil {
 			return nil, err
 		}
-		e.At, e.Data = sqlitedb.ParseStamp(at), json.RawMessage(data)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -107,21 +288,5 @@ func List(q sqlitedb.Querier, workspaceID string, after int64, limit int) ([]Eve
 
 // ListAgent returns one agent's events of the given kind, in order.
 func ListAgent(q sqlitedb.Querier, workspaceID string, agentID int64, kind string) ([]Event, error) {
-	rows, err := q.Query(`SELECT workspace_id, seq, at, COALESCE(agent_id, 0), kind, data FROM events
-		WHERE workspace_id = ? AND agent_id = ? AND kind = ? ORDER BY seq`, workspaceID, agentID, kind)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Event{}
-	for rows.Next() {
-		var e Event
-		var at, data string
-		if err := rows.Scan(&e.WorkspaceID, &e.Seq, &at, &e.AgentID, &e.Kind, &data); err != nil {
-			return nil, err
-		}
-		e.At, e.Data = sqlitedb.ParseStamp(at), json.RawMessage(data)
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return query(q, `SELECT `+columns+` FROM events WHERE workspace_id = ? AND agent_id = ? AND kind = ? ORDER BY seq`, workspaceID, agentID, kind)
 }
