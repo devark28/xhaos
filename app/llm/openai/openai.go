@@ -212,8 +212,12 @@ type chunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
+		PromptTokens        int64 `json:"prompt_tokens"`
+		CompletionTokens    int64 `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"` // DeepSeek's name for it
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -266,7 +270,10 @@ func (a Adapter) Stream(ctx context.Context, creds llm.Credentials, turn llm.Tur
 			return llm.Result{}, errors.New(c.Error.Message)
 		}
 		if c.Usage != nil {
+			// prompt_tokens includes the cached part; these endpoints cache
+			// on their own and report it.
 			out.InputTokens, out.OutputTokens = c.Usage.PromptTokens, c.Usage.CompletionTokens
+			out.CacheReadTokens = max(c.Usage.PromptTokensDetails.CachedTokens, c.Usage.PromptCacheHitTokens)
 		}
 		for _, choice := range c.Choices {
 			if choice.Delta.Content != "" {

@@ -15,7 +15,7 @@ import (
 )
 
 const sse = `event: message_start
-data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":1}}}
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"cache_read_input_tokens":300,"cache_creation_input_tokens":40,"output_tokens":1}}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
@@ -163,5 +163,30 @@ func TestFilesBecomeImageAndDocumentBlocks(t *testing.T) {
 	s := string(raw)
 	if !strings.Contains(s, `"media_type":"image/png"`) || !strings.Contains(s, `"data":"UE5H"`) || !strings.Contains(s, `"type":"document"`) || !strings.Contains(s, `"data":"JVBERg=="`) {
 		t.Fatalf("params = %s", s)
+	}
+}
+
+// Agent turns ask for automatic prompt caching and count cached prompt
+// tokens as input; a small side call (a title) asks for none.
+func TestPromptCachingAndCacheCounts(t *testing.T) {
+	srv, bodies := fakeAPI(t)
+	creds := llm.Credentials{APIKey: "sk-test", BaseURL: srv.URL}
+	turn := llm.Turn{Model: "claude-opus-5-5", System: "s", Messages: []llm.Message{{Role: "user", Text: "Hi"}}}
+	res, err := Adapter{}.Stream(context.Background(), creds, turn, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*bodies)[0], `"cache_control":{"type":"ephemeral"}`) {
+		t.Fatalf("no automatic cache breakpoint: %s", (*bodies)[0])
+	}
+	if res.InputTokens != res.CacheReadTokens+res.CacheWriteTokens+12 || res.CacheReadTokens != 300 || res.CacheWriteTokens != 40 {
+		t.Fatalf("counts = %+v", res)
+	}
+	turn.Small = true
+	if _, err := (Adapter{}).Stream(context.Background(), creds, turn, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if b := (*bodies)[1]; strings.Contains(b, `"cache_control"`) || !strings.Contains(b, `"effort":"low"`) || !strings.Contains(b, `"max_tokens":1024`) {
+		t.Fatalf("small call: %s", b)
 	}
 }

@@ -71,15 +71,24 @@ type Turn struct {
 	System   string // must stay identical across a conversation's turns
 	Tools    []Tool // must stay identical too, so the prompt prefix is stable
 	Messages []Message
+	// Small marks a short side call (a title): low effort and a small output
+	// limit where the provider supports them, and no prompt caching.
+	Small bool
+	// Purpose names a side call ("title"), for adapters that script replies.
+	Purpose string
 }
 
 type Result struct {
-	Text         string
-	Calls        []ToolCall
-	StopReason   string // provider value, e.g. "end_turn", "tool_use", "max_tokens", "refusal"
-	Raw          json.RawMessage
-	InputTokens  int64
-	OutputTokens int64
+	Text       string
+	Calls      []ToolCall
+	StopReason string // provider value, e.g. "end_turn", "tool_use", "max_tokens", "refusal"
+	Raw        json.RawMessage
+	// InputTokens is the whole prompt, cached parts included; the cache
+	// counts say how much of it was read from or written to the cache.
+	InputTokens      int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	OutputTokens     int64
 }
 
 type Adapter interface {

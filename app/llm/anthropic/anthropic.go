@@ -46,6 +46,15 @@ func (a Adapter) Stream(ctx context.Context, creds llm.Credentials, turn llm.Tur
 		Messages:     messages,
 		OutputConfig: sdk.OutputConfigParam{Effort: sdk.OutputConfigEffortHigh},
 	}
+	if turn.Small {
+		params.MaxTokens = 1024
+		params.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffortLow}
+	} else {
+		// Automatic prompt caching: the breakpoint sits on the last block
+		// and moves forward as the conversation grows. The history is append
+		// only, so each turn reads the previous turn's prefix from the cache.
+		params.CacheControl = sdk.NewCacheControlEphemeralParam()
+	}
 	if turn.System != "" {
 		params.System = []sdk.TextBlockParam{{Text: turn.System}}
 	}
@@ -91,12 +100,15 @@ func (a Adapter) Stream(ctx context.Context, creds llm.Credentials, turn llm.Tur
 		return llm.Result{}, err
 	}
 	return llm.Result{
-		Text:         text.String(),
-		Calls:        calls,
-		StopReason:   string(msg.StopReason),
-		Raw:          raw,
-		InputTokens:  msg.Usage.InputTokens,
-		OutputTokens: msg.Usage.OutputTokens,
+		Text:       text.String(),
+		Calls:      calls,
+		StopReason: string(msg.StopReason),
+		Raw:        raw,
+		// Anthropic counts cached prompt tokens apart from input_tokens.
+		InputTokens:      msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens,
+		CacheReadTokens:  msg.Usage.CacheReadInputTokens,
+		CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
+		OutputTokens:     msg.Usage.OutputTokens,
 	}, nil
 }
 
