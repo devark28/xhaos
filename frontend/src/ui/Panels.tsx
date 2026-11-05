@@ -477,6 +477,12 @@ function Tools() {
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
+          {catalog.sandbox && (
+            <div data-sandbox={catalog.sandbox.active ? 'on' : 'off'} {...stylex.props(tools.sandbox, !catalog.sandbox.active && tools.sandboxOff)}>
+              <strong>{catalog.sandbox.active ? `Commands are sandboxed (Landlock v${catalog.sandbox.abi})` : 'Commands are not sandboxed'}</strong>
+              <span>{catalog.sandbox.note}{catalog.sandbox.active ? '' : ' Start the server with -sandbox auto on a kernel with Landlock (Linux 5.13+).'}</span>
+            </div>
+          )}
           {toolGroups.map(([source, title, note], i) => {
             const list = catalog.tools.filter(t => t.source === source);
             return list.length ? <div key={source} data-tool-group={source}>
@@ -652,6 +658,8 @@ const list = stylex.create({
 });
 
 const tools = stylex.create({
+  sandbox: { display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 12, paddingBlock: 7, paddingInline: 10, borderRadius: 4, fontSize: 10.5, lineHeight: 1.5, color: colors.textMuted, backgroundColor: colors.sunken, borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.brand },
+  sandboxOff: { borderLeftColor: colors.warn },
   list: { display: 'flex', flexDirection: 'column', gap: 2 },
   row: { display: 'grid', gridTemplateColumns: '110px 1fr', columnGap: 12, paddingBlock: 6, borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.raised },
   name: { color: colors.text },

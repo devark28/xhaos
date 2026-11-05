@@ -267,4 +267,6 @@ export interface McpServer {
 
 export interface ToolCatalog {
   tools: ToolInfo[];
+  // How agents' shell commands are confined (Landlock, package sandbox).
+  sandbox?: { mode: 'auto' | 'on' | 'off'; active: boolean; abi: number; note: string };
 }

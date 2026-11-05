@@ -28,6 +28,7 @@ import (
 	"xhaos/app/prefs"
 	"xhaos/app/provider"
 	"xhaos/app/run"
+	"xhaos/app/sandbox"
 	"xhaos/app/secretbox"
 	"xhaos/app/sqlitedb"
 	"xhaos/app/workspace"
@@ -48,6 +49,9 @@ type Options struct {
 	Passphrase bool
 	// Version names this server to MCP servers it connects to.
 	Version string
+	// Sandbox is how agents' shell commands are confined: sandbox.Auto,
+	// On or Off ("" is Off, for tests).
+	Sandbox string
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -167,6 +171,8 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		return strings.TrimSpace(channels.Digest(ws) + "\n\n## Memories\n" + memories.Index(ws))
 	}
 	catalog := tool.NewService()
+	runner.Sandbox = sandbox.Config{Mode: opts.Sandbox, Cache: filepath.Join(dataDir, "sandbox")}
+	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
 		return append(append(runner.Catalog(), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
 	}

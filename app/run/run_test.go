@@ -31,6 +31,7 @@ import (
 	"xhaos/app/project"
 	"xhaos/app/provider"
 	"xhaos/app/run"
+	"xhaos/app/sandbox"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 	"xhaos/app/workspace"
@@ -75,15 +76,19 @@ func setup(t *testing.T, reply func(llm.Turn) (llm.Result, error)) *harness {
 	return setupIn(t, t.TempDir(), reply)
 }
 
-func setupIn(t *testing.T, root string, reply func(llm.Turn) (llm.Result, error)) *harness {
+func setupIn(t *testing.T, root string, reply func(llm.Turn) (llm.Result, error), options ...func(*backend.Options)) *harness {
 	t.Helper()
 	h := &harness{fake: &fake{reply: reply}}
-	s, err := backend.Open(filepath.Join(t.TempDir(), "x.db"), backend.Options{
+	opts := backend.Options{
 		Root:     root,
 		Adapters: []llm.Adapter{h.fake},
 		Publish:  func(e eventlog.Event) { h.mu.Lock(); h.events = append(h.events, e); h.mu.Unlock() },
 		Notify:   func(d run.Delta) { h.mu.Lock(); h.deltas = append(h.deltas, d); h.mu.Unlock() },
-	})
+	}
+	for _, o := range options {
+		o(&opts)
+	}
+	s, err := backend.Open(filepath.Join(t.TempDir(), "x.db"), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1117,6 +1122,49 @@ func TestAttachmentsReachTheModel(t *testing.T) {
 	}
 	if _, err := h.s.Files.Read("other", pic.ID); err == nil {
 		t.Fatal("read across workspaces")
+	}
+}
+
+// With the sandbox on, an agent's command works in its project but cannot
+// read Xhaos's own data beside the database.
+func TestSandboxedCommands(t *testing.T) {
+	if sandbox.ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "README.md"), []byte("project readme"), 0o644)
+	var dataDir string
+	h := setupIn(t, root, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		if len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{Calls: []llm.ToolCall{
+			tc("in", "bash", map[string]any{"command": "cat README.md && echo built > out.txt"}),
+			tc("out", "bash", map[string]any{"command": "ls " + dataDir}),
+		}, StopReason: "tool_use"}, nil
+	}, func(o *backend.Options) { o.Sandbox = sandbox.Auto })
+	var dbFile string
+	h.s.DB().QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&dbFile)
+	dataDir = filepath.Dir(dbFile)
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, Allow: true, CallID: "in"})
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "e", WorkspaceID: ws, AgentID: a.ID, Allow: true, CallID: "out"})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	tools := h.tools(t, a.ID)
+	if out := tools["in"].Output; !strings.Contains(out, "project readme") {
+		t.Fatalf("in the project = %+v", tools["in"])
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "out.txt")); string(b) != "built\n" {
+		t.Fatalf("out.txt = %q", b)
+	}
+	if out := tools["out"].Output; !strings.Contains(out, "Permission denied") || strings.Contains(out, "x.db") {
+		t.Fatalf("the data folder was readable: %+v", tools["out"])
+	}
+	if cat := h.s.Tools.Catalog(); !cat.Sandbox.Active {
+		t.Fatalf("catalog sandbox = %+v", cat.Sandbox)
 	}
 }
 

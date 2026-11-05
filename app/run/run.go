@@ -23,6 +23,7 @@ import (
 	"xhaos/app/llm"
 	"xhaos/app/policy"
 	"xhaos/app/provider"
+	"xhaos/app/sandbox"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 )
@@ -60,6 +61,8 @@ type Runner struct {
 	// OnFinal, when set, receives an agent's final answer when a turn ends
 	// with one (channels use it to report a subagent's result to its parent).
 	OnFinal func(a agent.Agent, answer string)
+	// Sandbox confines agents' shell commands (package sandbox).
+	Sandbox sandbox.Config
 	// Usage, when set, counts the tokens of every model call.
 	Usage   *usage.Recorder
 	titling map[key]bool // titles asked for since start (at most once each)
@@ -121,7 +124,7 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}
-	return tool.Execute(ctx, root, call)
+	return tool.ExecuteIn(ctx, root, r.Sandbox, call)
 }
 
 // Catalog lists the runner's own tools beyond tool.Specs (read_attachment),

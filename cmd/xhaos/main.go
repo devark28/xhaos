@@ -24,6 +24,7 @@ import (
 	"xhaos/app/health"
 	"xhaos/app/live"
 	"xhaos/app/run"
+	"xhaos/app/sandbox"
 )
 
 const version = "0.1.0-dev"
@@ -44,11 +45,16 @@ func defaultDBPath() string {
 }
 
 func main() {
+	sandbox.MaybeRun() // when started as the command sandbox helper, this never returns
 	frontend := flag.String("frontend", "frontend", "directory containing the static frontend (served from disk)")
 	dbPath := flag.String("db", defaultDBPath(), "SQLite database path")
 	verbose := flag.Bool("verbose", false, "log every request and connection")
 	root := flag.String("root", "", "register this folder as a project at startup (optional; add projects in the Files tab)")
+	sandboxMode := flag.String("sandbox", sandbox.Auto, "confine agents' commands with Landlock: auto (when the kernel supports it), on (refuse commands without it), off")
 	flag.Parse()
+	if m := *sandboxMode; m != sandbox.Auto && m != sandbox.On && m != sandbox.Off {
+		log.Fatalf("-sandbox must be auto, on or off")
+	}
 
 	if _, err := os.Stat(filepath.Join(*frontend, "index.html")); err != nil {
 		log.Fatalf("frontend not found (run from the repo root or pass -frontend): %v", err)
@@ -63,6 +69,7 @@ func main() {
 		Root:       *root,
 		Version:    version,
 		Passphrase: true,
+		Sandbox:    *sandboxMode,
 		Publish:    func(e eventlog.Event) { hub.Publish(EventName, e) },
 		Notify:     func(d run.Delta) { hub.PublishLossy(DeltaEventName, d) },
 	})

@@ -21,6 +21,7 @@ import (
 
 	"xhaos/app/llm"
 	"xhaos/app/policy"
+	"xhaos/app/sandbox"
 )
 
 // Effects, from least to most dangerous.
@@ -176,6 +177,11 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 
 // Execute runs an allowed call. Errors are tool failures to report to the model.
 func Execute(ctx context.Context, root string, call Call) (string, error) {
+	return ExecuteIn(ctx, root, sandbox.Config{}, call)
+}
+
+// ExecuteIn runs a call; bash commands run under sb (package sandbox).
+func ExecuteIn(ctx context.Context, root string, sb sandbox.Config, call Call) (string, error) {
 	in := call.input
 	switch call.Name {
 	case "list_dir":
@@ -219,7 +225,7 @@ func Execute(ctx context.Context, root string, call Call) (string, error) {
 		}
 		return "Edited " + in.Path + ".", nil
 	case "bash":
-		return bash(ctx, root, in.Command)
+		return bash(ctx, root, sb, in.Command)
 	}
 	return "", fmt.Errorf("unknown tool %q", call.Name)
 }
@@ -407,11 +413,13 @@ func search(ctx context.Context, root, rel, pattern string) (string, error) {
 	return clip(out), nil
 }
 
-func bash(ctx context.Context, root, command string) (string, error) {
+func bash(ctx context.Context, root string, sb sandbox.Config, command string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	cmd.Dir = root
+	cmd, err := sb.Command(ctx, root, command)
+	if err != nil {
+		return "", err
+	}
 	// Own process group, so stopping kills the command's children too
 	// (otherwise `sleep` in `sleep 20; make` outlives a stop).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -419,7 +427,7 @@ func bash(ctx context.Context, root, command string) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
+	err = cmd.Run()
 	text := clip(out.String())
 	var exit *exec.ExitError
 	switch {
