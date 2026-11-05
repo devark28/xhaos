@@ -17,6 +17,7 @@ import (
 	"xhaos/app/apperr"
 	"xhaos/app/llm"
 	"xhaos/app/provider"
+	"xhaos/app/usage"
 )
 
 const (
@@ -42,6 +43,8 @@ type Service struct {
 	// Context, when set, adds workspace sections to the digest (channels,
 	// memories), each already rendered as text.
 	Context func(workspaceID string) string
+	// Usage, when set, counts the tokens of each question.
+	Usage *usage.Recorder
 }
 
 func NewService(agents *agent.Service, providers *provider.Store) *Service {
@@ -83,6 +86,7 @@ func (s *Service) Ask(req AskRequest) (Answer, error) {
 	}
 	turn := llm.Turn{Model: req.Model, System: system, Messages: []llm.Message{{Role: "user", Text: digest + "\n\nQuestion: " + q}}}
 	res, err := adapter.Stream(ctx, creds, turn, func(string) {})
+	_ = s.Usage.Record(req.WorkspaceID, 0, req.Provider, p.Kind, req.Model, usage.Btw, res)
 	if err != nil {
 		return Answer{}, err
 	}

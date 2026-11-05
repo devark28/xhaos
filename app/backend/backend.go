@@ -9,19 +9,23 @@ import (
 	"path/filepath"
 	"strings"
 	"xhaos/app/attachment"
+	"xhaos/app/auth"
 	"xhaos/app/btw"
 	"xhaos/app/channel"
 	"xhaos/app/llm/openai"
+	"xhaos/app/llm/sim"
 	"xhaos/app/mcp"
 	"xhaos/app/memory"
 	"xhaos/app/project"
 	"xhaos/app/tool"
+	"xhaos/app/usage"
 
 	"xhaos/app/agent"
 	"xhaos/app/eventlog"
 	"xhaos/app/idempotency"
 	"xhaos/app/llm"
 	"xhaos/app/llm/anthropic"
+	"xhaos/app/prefs"
 	"xhaos/app/provider"
 	"xhaos/app/run"
 	"xhaos/app/secretbox"
@@ -37,6 +41,11 @@ type Options struct {
 	Root     string             // a folder to register as a project at startup (optional)
 	// DisableRuns stops owner messages from starting model turns (storage tests).
 	DisableRuns bool
+	// Passphrase guards the server and its secrets with the owner's
+	// passphrase (package auth): the key that encrypts API keys is unwrapped
+	// at sign-in, and agents resume only then. Without it (tests) the key
+	// sits in secret.key beside the database.
+	Passphrase bool
 	// Version names this server to MCP servers it connects to.
 	Version string
 }
@@ -56,7 +65,11 @@ type Services struct {
 	Channels   *channel.Service
 	Files      *attachment.Service
 	Memories   *memory.Service
+	Usage      *usage.Service
+	Prefs      *prefs.Service
 	mcp        *mcp.Manager
+	// Vault is the passphrase guard (nil without Options.Passphrase).
+	Vault *auth.Vault
 }
 
 // Open opens the database at path (the API key encryption key is kept beside
@@ -86,21 +99,31 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"mcp", mcp.Migrate},
 		{"attachment", attachment.Migrate},
 		{"memory", memory.Migrate},
+		{"usage", usage.Migrate},
+		{"prefs", prefs.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
 			return nil, fmt.Errorf("migrate %s: %w", step.name, err)
 		}
 	}
-	box, err := secretbox.Open(filepath.Join(dataDir, "secret.key"))
+	keyFile := filepath.Join(dataDir, "secret.key")
+	var vault *auth.Vault
+	var box *secretbox.Box
+	var err error
+	if opts.Passphrase {
+		vault, box, err = auth.Open(db, keyFile)
+	} else {
+		box, err = secretbox.Open(keyFile)
+	}
 	if err != nil {
 		return nil, err
 	}
 	adapters := opts.Adapters
 	if adapters == nil {
-		adapters = []llm.Adapter{anthropic.Adapter{}, openai.Adapter{}}
+		adapters = []llm.Adapter{anthropic.Adapter{}, openai.Adapter{}, sim.Adapter{}}
 	}
-	providers, err := provider.NewStore(db, box, adapters, map[string][]string{anthropic.Kind: anthropic.DefaultModels})
+	providers, err := provider.NewStore(db, box, adapters, map[string][]string{anthropic.Kind: anthropic.DefaultModels, sim.Kind: sim.Models})
 	if err != nil {
 		return nil, err
 	}
@@ -131,28 +154,63 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	store := agent.NewStore(db, opts.Publish)
 	runner := run.New(store, providers, opts.Notify)
 	runner.Files = files
+	counter := usage.NewRecorder(db)
+	runner.Usage = counter
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)
 	runner.Memories = memories.Index
 	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memory.NewTools(memories)}
 	side := btw.NewService(agents, providers)
+	side.Usage = counter
 	side.Context = func(ws string) string {
 		return strings.TrimSpace(channels.Digest(ws) + "\n\n## Memories\n" + memories.Index(ws))
 	}
 	catalog := tool.NewService()
-	catalog.More = func() []tool.Info { return append(channels.Tools().Catalog(), memory.NewTools(memories).Catalog()...) }
+	catalog.More = func() []tool.Info {
+		return append(append(runner.Catalog(), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
+	}
 	runner.OnFinal = channels.OnFinal
+	spend := usage.NewService(db)
+	channels.Models = func(id string) ([]string, error) {
+		list, err := provider.NewService(providers).Providers() // no secrets read
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range list {
+			if p.ID == id {
+				return append([]string(nil), p.Models...), nil
+			}
+		}
+		return nil, fmt.Errorf("provider %q not found", id)
+	}
+	channels.Price = func(model string) (float64, float64, bool) {
+		if p := spend.PriceOf(model); p != nil {
+			return p.Input, p.Output, true
+		}
+		return 0, 0, false
+	}
 	runner.ProjectRoot = func(workspaceID string, projectID int64) (string, error) {
 		p, err := project.Get(db, workspaceID, projectID)
 		return p.Path, err
 	}
-	tools.Start() // connect enabled MCP servers in the background
+	// Both need the secrets: with a passphrase they wait for the first sign-in.
+	ready := func() {
+		tools.Start() // connect enabled MCP servers in the background
+		if !opts.DisableRuns {
+			runner.Resume()
+		}
+	}
 	if !opts.DisableRuns {
 		agents.Wake = runner.Kick
 		agents.Halt = runner.Stop
 		channels.Wake = runner.Kick
-		runner.Resume()
+	}
+	if vault != nil {
+		vault.OnUnlock = ready
+		vault.Ready() // the older key file: unlocked already
+	} else {
+		ready()
 	}
 	return &Services{
 		db:         db,
@@ -168,7 +226,10 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Channels:   channels,
 		Files:      attachment.NewService(files),
 		Memories:   memories,
+		Usage:      spend,
+		Prefs:      prefs.NewService(db),
 		mcp:        tools,
+		Vault:      vault,
 	}, nil
 }
 
@@ -176,6 +237,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 func (s *Services) Close() error {
 	s.runner.Close()
 	s.mcp.Close()
+	eventlog.Close(s.db)
 	return s.db.Close()
 }
 

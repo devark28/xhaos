@@ -33,6 +33,10 @@ import (
 const (
 	EventCreated = "channel.created"
 	EventMessage = "channel.message"
+	EventClosed  = "channel.closed"
+	// EventLink: the channel was published, given a new passphrase, or
+	// unpublished (the data is the channel; never the passphrase).
+	EventLink = "channel.link"
 
 	KindSpawn = "spawn" // a parent and the subagent it spawned
 
@@ -55,14 +59,21 @@ type Channel struct {
 	CreatorID   int64     `json:"creatorId"`
 	Members     []int64   `json:"members"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// Closed: the user closed it; nothing more can be sent.
+	Closed bool `json:"closed,omitempty"`
+	// Published: the user put it on a link, where anyone with its
+	// passphrase can read it and send messages from outside Xhaos.
+	Published bool `json:"published,omitempty"`
 }
 
 type Message struct {
-	ID        int64     `json:"id"`
-	ChannelID int64     `json:"channelId"`
-	SenderID  int64     `json:"senderId"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        int64 `json:"id"`
+	ChannelID int64 `json:"channelId"`
+	SenderID  int64 `json:"senderId"` // 0: sent from outside, through the channel's link
+	// SenderName names an outside sender (as it introduced itself).
+	SenderName string    `json:"senderName,omitempty"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 const schema = `
@@ -82,14 +93,21 @@ CREATE TABLE IF NOT EXISTS channel_members (
 CREATE TABLE IF NOT EXISTS channel_messages (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	channel_id INTEGER NOT NULL REFERENCES channels(id),
-	sender_id  INTEGER NOT NULL REFERENCES agents(id),
+	sender_id  INTEGER REFERENCES agents(id), -- NULL: from outside, through the link
+	sender_name TEXT NOT NULL DEFAULT '',
 	body       TEXT NOT NULL,
 	created_at TEXT NOT NULL
 );`
 
 func Migrate(db *sql.DB) error {
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	_, err := db.Exec(`ALTER TABLE channels ADD COLUMN closed_at TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return migrateLinks(db)
 }
 
 // Service holds channels. Its exported methods are the client-facing API
@@ -101,7 +119,12 @@ type Service struct {
 	publish eventlog.Publisher
 	// Wake starts or continues an agent's turn after a delivery.
 	Wake func(workspaceID string, agentID int64)
-	now  func() time.Time
+	// Models lists the models configured for a provider (its key), and
+	// Price prices one (USD per million input and output tokens; ok false
+	// when unknown). spawn_agent may choose among them.
+	Models func(providerID string) ([]string, error)
+	Price  func(model string) (input, output float64, ok bool)
+	now    func() time.Time
 }
 
 func NewService(db *sql.DB, agents *agent.Service, store *agent.Store, publish eventlog.Publisher) *Service {
@@ -142,13 +165,110 @@ func (s *Service) contacts(a agent.Agent) ([]agent.Agent, error) {
 	return out, nil
 }
 
+// family reports whether member is in a's own family: its subagents, its
+// parent, or its siblings. Channels within a family need no approval (the
+// spawn that made the family was approved); any other channel does.
+func family(a, member agent.Agent) bool {
+	return member.ParentID == a.ID || (a.ParentID != 0 && (member.ID == a.ParentID || member.ParentID == a.ParentID))
+}
+
+// task is the latest instruction the user gave an agent (first line), so an
+// approval shows what each member is working on.
+func (s *Service) task(ws string, id int64) string {
+	events, err := eventlog.ListAgent(s.db, ws, id, agent.EventMessage)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		var m agent.MessageData
+		if json.Unmarshal(events[i].Data, &m) == nil && m.From == agent.FromOwner && strings.TrimSpace(m.Body) != "" {
+			return firstLine(m.Body)
+		}
+	}
+	return ""
+}
+
+// outsiders describes the members outside creator's family, one line each;
+// empty when the channel stays within the family.
+func (s *Service) outsiders(creator agent.Agent, members []int64) (string, error) {
+	snap, err := s.agents.Snapshot(creator.WorkspaceID)
+	if err != nil {
+		return "", err
+	}
+	byID := map[int64]agent.Agent{}
+	for _, a := range snap.Agents {
+		byID[a.ID] = a
+	}
+	var b strings.Builder
+	for _, id := range members {
+		m, ok := byID[id]
+		if !ok || id == creator.ID || family(creator, m) {
+			continue
+		}
+		fmt.Fprintf(&b, "#%d %s · project %d · %s", m.ID, m.Title, m.ProjectID, m.Status)
+		if m.ParentID != 0 {
+			fmt.Fprintf(&b, " · subagent of #%d", m.ParentID)
+		}
+		if t := s.task(creator.WorkspaceID, m.ID); t != "" && t != m.Title {
+			fmt.Fprintf(&b, "\n    working on: %s", t)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// Close ends a channel: members are told, and nothing more can be sent.
+func (s *Service) Close(workspaceID string, channelID int64) (Channel, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Channel{}, err
+	}
+	defer tx.Rollback()
+	c, err := s.load(tx, workspaceID, channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if c.Closed {
+		return c, nil
+	}
+	at := s.now()
+	if _, err := tx.Exec(`UPDATE channels SET closed_at = ? WHERE id = ?`, sqlitedb.Stamp(at), c.ID); err != nil {
+		return Channel{}, err
+	}
+	c.Closed = true
+	events := []eventlog.Event{}
+	ev, err := eventlog.Append(tx, workspaceID, 0, EventClosed, c, at)
+	if err != nil {
+		return Channel{}, err
+	}
+	events = append(events, ev)
+	note := fmt.Sprintf("[channel #%d %q] closed by the user. Messages can no longer be sent there.", c.ID, c.Subject)
+	for _, m := range c.Members {
+		// Told, not woken: the note reaches them with their next turn.
+		ev, err := eventlog.Append(tx, workspaceID, m, agent.EventMessage, agent.MessageData{From: agent.FromChannel, Body: note, Channel: c.ID}, at)
+		if err != nil {
+			return Channel{}, err
+		}
+		events = append(events, ev)
+	}
+	if err := tx.Commit(); err != nil {
+		return Channel{}, err
+	}
+	for _, e := range events {
+		s.publish(e)
+	}
+	return c, nil
+}
+
 // ---- storage -------------------------------------------------------------------
 
 func (s *Service) load(q sqlitedb.Querier, ws string, id int64) (Channel, error) {
 	var c Channel
-	var at string
-	err := q.QueryRow(`SELECT id, workspace_id, subject, kind, creator_id, created_at FROM channels WHERE workspace_id = ? AND id = ?`, ws, id).
-		Scan(&c.ID, &c.WorkspaceID, &c.Subject, &c.Kind, &c.CreatorID, &at)
+	var at, closed string
+	err := q.QueryRow(`SELECT id, workspace_id, subject, kind, creator_id, created_at, closed_at,
+		EXISTS (SELECT 1 FROM channel_links l WHERE l.channel_id = channels.id) FROM channels WHERE workspace_id = ? AND id = ?`, ws, id).
+		Scan(&c.ID, &c.WorkspaceID, &c.Subject, &c.Kind, &c.CreatorID, &at, &closed, &c.Published)
+	c.Closed = closed != ""
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, fmt.Errorf("%w: channel #%d", apperr.NotFound, id)
 	}
@@ -266,6 +386,18 @@ func (s *Service) Send(sender agent.Agent, channelID int64, body string) (Messag
 	if !isMember(c, sender.ID) {
 		return Message{}, fmt.Errorf("you are not a member of channel #%d", channelID)
 	}
+	header := fmt.Sprintf("[channel #%d %q] message from agent #%d (%s):", c.ID, c.Subject, sender.ID, sender.Title)
+	return s.deliver(tx, c, sender.ID, "", header, body)
+}
+
+// deliver posts body to channel c (in tx, which it commits) and puts it, after
+// header, in every other live member's transcript, waking those not paused.
+// senderID 0 is a message from outside, named senderName.
+func (s *Service) deliver(tx *sql.Tx, c Channel, senderID int64, senderName, header, body string) (Message, error) {
+	ws, channelID := c.WorkspaceID, c.ID
+	if c.Closed {
+		return Message{}, fmt.Errorf("channel #%d was closed by the user; nothing more can be sent there", channelID)
+	}
 	at := s.now()
 	var recent int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM channel_messages WHERE channel_id = ? AND created_at > ?`, channelID, sqlitedb.Stamp(at.Add(-burstWindow))).Scan(&recent); err != nil {
@@ -274,29 +406,33 @@ func (s *Service) Send(sender agent.Agent, channelID int64, body string) (Messag
 	if recent >= burstLimit {
 		return Message{}, fmt.Errorf("channel #%d is busy (%d messages in %s); stop and ask the user before continuing the exchange", channelID, recent, burstWindow)
 	}
-	res, err := tx.Exec(`INSERT INTO channel_messages (channel_id, sender_id, body, created_at) VALUES (?, ?, ?, ?)`, channelID, sender.ID, body, sqlitedb.Stamp(at))
+	var sid any // NULL for an outside sender
+	if senderID != 0 {
+		sid = senderID
+	}
+	res, err := tx.Exec(`INSERT INTO channel_messages (channel_id, sender_id, sender_name, body, created_at) VALUES (?, ?, ?, ?, ?)`, channelID, sid, senderName, body, sqlitedb.Stamp(at))
 	if err != nil {
 		return Message{}, err
 	}
 	id, _ := res.LastInsertId()
-	msg := Message{ID: id, ChannelID: channelID, SenderID: sender.ID, Body: body, CreatedAt: at}
+	msg := Message{ID: id, ChannelID: channelID, SenderID: senderID, SenderName: senderName, Body: body, CreatedAt: at}
 	events := []eventlog.Event{}
-	ev, err := eventlog.Append(tx, sender.WorkspaceID, sender.ID, EventMessage, msg, at)
+	ev, err := eventlog.Append(tx, ws, senderID, EventMessage, msg, at)
 	if err != nil {
 		return Message{}, err
 	}
 	events = append(events, ev)
-	text := fmt.Sprintf("[channel #%d %q] message from agent #%d (%s):\n%s", c.ID, c.Subject, sender.ID, sender.Title, body)
+	text := header + "\n" + body
 	var woken []int64
 	for _, m := range c.Members {
-		if m == sender.ID {
+		if m == senderID {
 			continue
 		}
 		var status string
-		if err := tx.QueryRow(`SELECT status FROM agents WHERE workspace_id = ? AND id = ?`, sender.WorkspaceID, m).Scan(&status); err != nil || status == agent.StatusTerminated {
+		if err := tx.QueryRow(`SELECT status FROM agents WHERE workspace_id = ? AND id = ?`, ws, m).Scan(&status); err != nil || status == agent.StatusTerminated {
 			continue
 		}
-		ev, err := eventlog.Append(tx, sender.WorkspaceID, m, agent.EventMessage, agent.MessageData{From: agent.FromChannel, Body: text, Channel: c.ID, Sender: sender.ID}, at)
+		ev, err := eventlog.Append(tx, ws, m, agent.EventMessage, agent.MessageData{From: agent.FromChannel, Body: text, Channel: c.ID, Sender: senderID}, at)
 		if err != nil {
 			return Message{}, err
 		}
@@ -315,15 +451,28 @@ func (s *Service) Send(sender agent.Agent, channelID int64, body string) (Messag
 	}
 	if s.Wake != nil {
 		for _, m := range woken {
-			s.Wake(sender.WorkspaceID, m)
+			s.Wake(ws, m)
 		}
 	}
 	return msg, nil
 }
 
+// From names a message's sender for agents and digests.
+func (m Message) From() string {
+	if m.SenderID == 0 {
+		return fmt.Sprintf("outside (%s)", m.SenderName)
+	}
+	return fmt.Sprintf("#%d", m.SenderID)
+}
+
 func (s *Service) messages(ws string, channelID int64, limit int) ([]Message, error) {
-	rows, err := s.db.Query(`SELECT m.id, m.channel_id, m.sender_id, m.body, m.created_at FROM channel_messages m
-		JOIN channels c ON c.id = m.channel_id WHERE c.workspace_id = ? AND m.channel_id = ? ORDER BY m.id DESC LIMIT ?`, ws, channelID, limit)
+	return s.messagesAfter(ws, channelID, 0, limit)
+}
+
+// messagesAfter lists the latest limit messages with ids above after, oldest first.
+func (s *Service) messagesAfter(ws string, channelID, after int64, limit int) ([]Message, error) {
+	rows, err := s.db.Query(`SELECT m.id, m.channel_id, COALESCE(m.sender_id, 0), m.sender_name, m.body, m.created_at FROM channel_messages m
+		JOIN channels c ON c.id = m.channel_id WHERE c.workspace_id = ? AND m.channel_id = ? AND m.id > ? ORDER BY m.id DESC LIMIT ?`, ws, channelID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +481,7 @@ func (s *Service) messages(ws string, channelID int64, limit int) ([]Message, er
 	for rows.Next() {
 		var m Message
 		var at string
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &m.Body, &at); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &m.SenderName, &m.Body, &at); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = sqlitedb.ParseStamp(at)
@@ -410,6 +559,16 @@ func (s *Service) Owner() *Owner { return &Owner{s: s} }
 // Channels lists the workspace's channels with their messages.
 func (o *Owner) Channels(workspaceID string) ([]View, error) { return o.s.Channels(workspaceID) }
 
+type CloseRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+	ChannelID   int64  `json:"channelId"`
+}
+
+// Close closes a channel: its members are told, and nothing more can be sent.
+func (o *Owner) Close(req CloseRequest) (Channel, error) {
+	return o.s.Close(req.WorkspaceID, req.ChannelID)
+}
+
 // Digest renders the workspace's channels for /btw: subject, members, and
 // the last few messages of each (cut short).
 func (s *Service) Digest(workspaceID string) string {
@@ -430,7 +589,7 @@ func (s *Service) Digest(workspaceID string) string {
 			if r := []rune(body); len(r) > 300 {
 				body = string(r[:300]) + "…"
 			}
-			fmt.Fprintf(&b, "- #%d: %s\n", m.SenderID, body)
+			fmt.Fprintf(&b, "- %s: %s\n", m.From(), body)
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -466,8 +625,10 @@ type Tools struct{ s *Service }
 func (s *Service) Tools() *Tools { return &Tools{s: s} }
 
 var effects = map[string]string{
-	"agents_list": tool.Read, "channel_list": tool.Read, "channel_read": tool.Read,
-	// Talking to other agents changes no files and runs nothing.
+	"agents_list": tool.Read, "channel_list": tool.Read, "channel_read": tool.Read, "models_list": tool.Read,
+	// Talking within the family changes no files and runs nothing. Prepare
+	// raises channel_create to tool.Contact when it reaches outside the
+	// family, so the user approves who starts talking to whom.
 	"channel_create": tool.Read, "channel_send": tool.Read,
 	// A new agent spends tokens and can act: gated like a file write.
 	"spawn_agent": tool.Write,
@@ -488,16 +649,18 @@ func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
 		{Name: "agents_list", Description: "List the agents you can talk to through channels: their ID, title, project, and status.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
-		{Name: "channel_create", Description: "Open a channel with other agents (see agents_list for who you may include). Messages sent there reach every member and wake them.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"subject": str, "members": map[string]any{"type": "array", "items": integer, "description": "Agent IDs to include besides you."}}, Required: []string{"subject", "members"}}},
+		{Name: "channel_create", Description: "Open a channel with other agents (see agents_list for who you may include). Messages sent there reach every member and wake them. A channel with agents outside your own family (your parent, siblings, and subagents) waits for the user's approval, so say in message who you are and why you are reaching out.",
+			Schema: llm.ToolSchema{Properties: map[string]any{"subject": str, "members": map[string]any{"type": "array", "items": integer, "description": "Agent IDs to include besides you."}, "message": map[string]any{"type": "string", "description": "Optional first message, sent when the channel opens."}}, Required: []string{"subject", "members"}}},
 		{Name: "channel_send", Description: "Send a message to a channel you are in. Every other member receives it and wakes up; their replies come back to you the same way.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"channel": integer, "message": str}, Required: []string{"channel", "message"}}},
 		{Name: "channel_list", Description: "List the channels you are in, with their subjects and members.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
 		{Name: "channel_read", Description: "Read a channel's recent messages (default the last 30).",
 			Schema: llm.ToolSchema{Properties: map[string]any{"channel": integer, "limit": integer}, Required: []string{"channel"}}},
-		{Name: "spawn_agent", Description: "Start a subagent on a focused task. It works in your project with your model and at most your permissions, and gets a channel with you; its final answer arrives in that channel. Use it to split independent work; keep the task self-contained.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"task": str, "title": map[string]any{"type": "string", "description": "A short title for its card."}}, Required: []string{"task"}}},
+		{Name: "models_list", Description: "List the models a subagent can use: those configured for your provider, cheapest first, with prices.",
+			Schema: llm.ToolSchema{Properties: map[string]any{}}},
+		{Name: "spawn_agent", Description: "Start a subagent on a focused task. It works in your project with at most your permissions, and gets a channel with you; its final answer arrives in that channel. Use it to split independent work; keep the task self-contained. Choose its model with cost in mind: prefer the cheapest model (see models_list) that can do the task well, and keep larger models for hard reasoning.",
+			Schema: llm.ToolSchema{Properties: map[string]any{"task": str, "title": map[string]any{"type": "string", "description": "A short title for its card."}, "model": map[string]any{"type": "string", "description": "A model from models_list. Default: your own model."}}, Required: []string{"task"}}},
 	}
 }
 
@@ -509,6 +672,7 @@ type input struct {
 	Limit   int     `json:"limit"`
 	Task    string  `json:"task"`
 	Title   string  `json:"title"`
+	Model   string  `json:"model"`
 }
 
 func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, error) {
@@ -522,6 +686,17 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 	switch c.Name {
 	case "channel_create":
 		call.Summary = fmt.Sprintf("%q with %s", in.Subject, ids(in.Members))
+		out, err := t.s.outsiders(a, in.Members)
+		if err != nil {
+			return call, err
+		}
+		if out != "" {
+			call.Effect = tool.Contact
+			call.Preview = "Opens a channel with agents outside #" + fmt.Sprint(a.ID) + "'s family:\n" + out
+			if m := strings.TrimSpace(in.Message); m != "" {
+				call.Preview += "\n\nFirst message:\n" + m
+			}
+		}
 	case "channel_send":
 		call.Summary = fmt.Sprintf("channel #%d: %s", in.Channel, firstLine(in.Message))
 	case "channel_read":
@@ -530,8 +705,15 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 		if strings.TrimSpace(in.Task) == "" {
 			return call, errors.New("spawn_agent needs a task")
 		}
+		model := strings.TrimSpace(in.Model)
+		if model == "" {
+			model = a.Model
+		}
+		if err := t.s.allowedModel(a, model); err != nil {
+			return call, err
+		}
 		call.Summary = firstLine(in.Title + " " + in.Task)
-		call.Preview = in.Task
+		call.Preview = "Model: " + model + "\n\n" + in.Task
 	default:
 		call.Summary = c.Name
 	}
@@ -570,6 +752,12 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		if err != nil {
 			return "", err
 		}
+		if strings.TrimSpace(in.Message) != "" {
+			if _, err := s.Send(a, c.ID, in.Message); err != nil {
+				return fmt.Sprintf("Opened channel #%d %q with %s, but the first message failed: %v", c.ID, c.Subject, ids(c.Members), err), nil
+			}
+			return fmt.Sprintf("Opened channel #%d %q with %s and sent your message.", c.ID, c.Subject, ids(c.Members)), nil
+		}
 		return fmt.Sprintf("Opened channel #%d %q with %s.", c.ID, c.Subject, ids(c.Members)), nil
 	case "channel_send":
 		if _, err := s.Send(a, in.Channel, in.Message); err != nil {
@@ -586,7 +774,11 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		}
 		var b strings.Builder
 		for _, c := range chans {
-			fmt.Fprintf(&b, "#%d %q · members %s\n", c.ID, c.Subject, ids(c.Members))
+			closed := ""
+			if c.Closed {
+				closed = " · closed"
+			}
+			fmt.Fprintf(&b, "#%d %q · members %s%s\n", c.ID, c.Subject, ids(c.Members), closed)
 		}
 		return strings.TrimSpace(b.String()), nil
 	case "channel_read":
@@ -610,17 +802,87 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		}
 		var b strings.Builder
 		for _, m := range msgs {
-			fmt.Fprintf(&b, "#%d at %s:\n%s\n\n", m.SenderID, m.CreatedAt.Format("15:04:05"), m.Body)
+			fmt.Fprintf(&b, "%s at %s:\n%s\n\n", m.From(), m.CreatedAt.Format("15:04:05"), m.Body)
 		}
 		return tool.Clip(strings.TrimSpace(b.String())), nil
 	case "spawn_agent":
-		return s.spawn(a, in.Task, in.Title)
+		return s.spawn(a, in.Task, in.Title, in.Model)
+	case "models_list":
+		return s.modelsList(a)
 	}
 	return "", fmt.Errorf("unknown tool %s", call.Name)
 }
 
 // spawn creates a subagent of a and a channel between them, then starts it.
-func (s *Service) spawn(parent agent.Agent, task, title string) (string, error) {
+// choices lists the models parent's provider offers, cheapest first (priced
+// by input plus output; unpriced last).
+func (s *Service) choices(parent agent.Agent) ([]string, error) {
+	if s.Models == nil {
+		return []string{parent.Model}, nil
+	}
+	models, err := s.Models(parent.Provider)
+	if err != nil {
+		return nil, err
+	}
+	cost := func(m string) float64 {
+		if s.Price != nil {
+			if in, out, ok := s.Price(m); ok {
+				return in + out
+			}
+		}
+		return 1e18
+	}
+	sort.SliceStable(models, func(i, j int) bool { return cost(models[i]) < cost(models[j]) })
+	return models, nil
+}
+
+// allowedModel accepts the parent's own model or one configured for its provider.
+func (s *Service) allowedModel(parent agent.Agent, model string) error {
+	if model == parent.Model {
+		return nil
+	}
+	models, err := s.choices(parent)
+	if err != nil {
+		return err
+	}
+	for _, m := range models {
+		if m == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not configured for your provider; choose one of: %s", model, strings.Join(models, ", "))
+}
+
+func (s *Service) modelsList(a agent.Agent) (string, error) {
+	models, err := s.choices(a)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, m := range models {
+		price := "price unknown"
+		if s.Price != nil {
+			if in, out, ok := s.Price(m); ok {
+				price = fmt.Sprintf("$%g in / $%g out per million tokens", in, out)
+			}
+		}
+		mark := ""
+		if m == a.Model {
+			mark = " (yours)"
+		}
+		fmt.Fprintf(&b, "%s%s · %s\n", m, mark, price)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func (s *Service) spawn(parent agent.Agent, task, title, model string) (string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = parent.Model
+	}
+	if err := s.allowedModel(parent, model); err != nil {
+		return "", err
+	}
 	snap, err := s.agents.Snapshot(parent.WorkspaceID)
 	if err != nil {
 		return "", err
@@ -652,7 +914,7 @@ func (s *Service) spawn(parent agent.Agent, task, title string) (string, error) 
 	child, err := s.agents.Create(agent.CreateRequest{
 		IdempotencyKey: fmt.Sprintf("spawn-%d-%d", parent.ID, s.now().UnixNano()),
 		WorkspaceID:    parent.WorkspaceID, ParentID: parent.ID, Title: title, Role: "Subagent",
-		Provider: parent.Provider, Model: parent.Model,
+		Provider: parent.Provider, Model: model,
 	})
 	if err != nil {
 		return "", err
@@ -669,7 +931,7 @@ func (s *Service) spawn(parent agent.Agent, task, title string) (string, error) 
 	if s.Wake != nil {
 		s.Wake(parent.WorkspaceID, child.ID)
 	}
-	return fmt.Sprintf("Started subagent #%d (%q) in channel #%d. Its final answer will arrive in that channel.", child.ID, title, c.ID), nil
+	return fmt.Sprintf("Started subagent #%d (%q, %s) in channel #%d. Its final answer will arrive in that channel.", child.ID, title, model, c.ID), nil
 }
 
 func ids(list []int64) string {

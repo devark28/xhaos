@@ -39,6 +39,7 @@ const (
 	EventMessage = "agent.message"
 	EventStatus  = "agent.status"
 	EventTool    = "agent.tool"
+	EventTitle   = "agent.title" // a better title, written by the model
 )
 
 // Message authors.
@@ -221,6 +222,10 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 	if err := addColumn(db, "agents", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
 	}
+	// 1: the title is the prompt's first line, for the model to replace.
+	if err := addColumn(db, "agents", "title_auto", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return nil, fmt.Errorf("migrate agents: %w", err)
+	}
 	return &Service{db: db, publish: publish, now: time.Now}, nil
 }
 
@@ -286,8 +291,9 @@ func TitleFrom(prompt string) string {
 // inherits its parent's policy and can only be restricted further.
 func (s *Service) Create(req CreateRequest) (Agent, error) {
 	req.Title = strings.TrimSpace(req.Title)
+	auto := 0
 	if req.Title == "" {
-		req.Title = TitleFrom(req.Prompt)
+		req.Title, auto = TitleFrom(req.Prompt), 1
 	}
 	if req.Title == "" || strings.ContainsAny(req.Title, "\r\n") {
 		return Agent{}, fmt.Errorf("%w: title must be one non-empty line", apperr.Invalid)
@@ -335,10 +341,10 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 			return err
 		}
 		at := s.now()
-		res, err := tx.Exec(`INSERT INTO agents (workspace_id, parent_id, title, role, status, provider, model, access, review, commit_policy, created_at, project_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		res, err := tx.Exec(`INSERT INTO agents (workspace_id, parent_id, title, role, status, provider, model, access, review, commit_policy, created_at, project_id, title_auto)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			req.WorkspaceID, sqlitedb.NullID(req.ParentID), req.Title, req.Role, StatusIdle, req.Provider, req.Model,
-			p.Access, p.Review, p.Commit, sqlitedb.Stamp(at), sqlitedb.NullID(req.ProjectID))
+			p.Access, p.Review, p.Commit, sqlitedb.Stamp(at), sqlitedb.NullID(req.ProjectID), auto)
 		if err != nil {
 			return err
 		}
@@ -765,6 +771,34 @@ func (st *Store) SetStatus(workspaceID string, id int64, status string) error {
 			return eventlog.Event{}, errSkip
 		}
 		return eventlog.Append(tx, workspaceID, id, EventStatus, StatusData{Status: status}, at)
+	})
+}
+
+// TitlePending reports whether the agent's title is still its prompt's first
+// line, waiting for the model to write a better one.
+func (st *Store) TitlePending(workspaceID string, id int64) bool {
+	var auto int
+	err := st.db.QueryRow(`SELECT title_auto FROM agents WHERE workspace_id = ? AND id = ?`, workspaceID, id).Scan(&auto)
+	return err == nil && auto == 1
+}
+
+// TitleData is an agent.title event.
+type TitleData struct {
+	Title string `json:"title"`
+}
+
+// SetTitle replaces a pending title (once; a title the user or a parent gave
+// is never replaced).
+func (st *Store) SetTitle(workspaceID string, id int64, title string) error {
+	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		res, err := tx.Exec(`UPDATE agents SET title = ?, title_auto = 0 WHERE workspace_id = ? AND id = ? AND title_auto = 1`, title, workspaceID, id)
+		if err != nil {
+			return eventlog.Event{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return eventlog.Event{}, errSkip
+		}
+		return eventlog.Append(tx, workspaceID, id, EventTitle, TitleData{Title: title}, at)
 	})
 }
 

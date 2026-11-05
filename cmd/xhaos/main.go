@@ -18,9 +18,11 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"xhaos/app/auth"
 	"xhaos/app/backend"
 	"xhaos/app/eventlog"
 	"xhaos/app/health"
+	"xhaos/app/live"
 	"xhaos/app/run"
 )
 
@@ -54,24 +56,27 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
 		log.Fatal(err)
 	}
-	// The publisher needs the Wails app, which needs the services; break the
-	// cycle with a variable assigned before Run starts serving.
-	var wailsApp *application.App
+	// Live events go out on /xhaos/events (behind the session check), not on
+	// the Wails event socket, which any local client could open.
+	hub := live.NewHub()
 	services, err := backend.Open(*dbPath, backend.Options{
-		Root:    *root,
-		Version: version,
-		Publish: func(e eventlog.Event) { wailsApp.Event.Emit(EventName, e) },
-		Notify:  func(d run.Delta) { wailsApp.Event.Emit(DeltaEventName, d) },
+		Root:       *root,
+		Version:    version,
+		Passphrase: true,
+		Publish:    func(e eventlog.Event) { hub.Publish(EventName, e) },
+		Notify:     func(d run.Delta) { hub.PublishLossy(DeltaEventName, d) },
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	guarded := http.NewServeMux()
+	guarded.Handle("/xhaos/events", hub)
 
 	level := slog.LevelWarn
 	if *verbose {
 		level = slog.LevelInfo
 	}
-	wailsApp = application.New(application.Options{
+	wailsApp := application.New(application.Options{
 		Name:        "Xhaos",
 		Description: "Headless agent orchestration backend",
 		LogLevel:    level,
@@ -82,6 +87,8 @@ func main() {
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{
 			Handler: noCache(application.AssetFileServerFS(os.DirFS(*frontend))),
+			// Sign-in, and a session for every runtime call and the event stream.
+			Middleware: services.Vault.Middleware(guarded, services.Channels.Links()),
 		},
 	})
 
@@ -93,6 +100,12 @@ func main() {
 		port = "5180"
 	}
 	log.Printf("xhaos %s: http://%s:%s (db %s)", version, host, port, *dbPath)
+	switch services.Vault.State() {
+	case auth.StateSetup:
+		log.Printf("no passphrase yet: open the page to set one (it encrypts API keys and signs browsers in)")
+	case auth.StateLocked:
+		log.Printf("locked: agents resume once you sign in with the passphrase")
+	}
 	if err := wailsApp.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -126,5 +139,7 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Channels.Owner()),
 		application.NewService(s.Files),
 		application.NewService(s.Memories),
+		application.NewService(s.Usage),
+		application.NewService(s.Prefs),
 	}
 }

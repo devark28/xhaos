@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 	"xhaos/app/attachment"
 
 	"xhaos/app/agent"
@@ -23,6 +24,7 @@ import (
 	"xhaos/app/policy"
 	"xhaos/app/provider"
 	"xhaos/app/tool"
+	"xhaos/app/usage"
 )
 
 // Delta is a live, unpersisted text chunk of an agent's reply in progress.
@@ -58,6 +60,9 @@ type Runner struct {
 	// OnFinal, when set, receives an agent's final answer when a turn ends
 	// with one (channels use it to report a subagent's result to its parent).
 	OnFinal func(a agent.Agent, answer string)
+	// Usage, when set, counts the tokens of every model call.
+	Usage   *usage.Recorder
+	titling map[key]bool // titles asked for since start (at most once each)
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -86,7 +91,7 @@ type ExternalTools interface {
 
 // specs lists every tool an agent in the workspace can call.
 func (r *Runner) specs(ws string) []llm.Tool {
-	specs := tool.Specs()
+	specs := append(tool.Specs(), attachTools{r}.Specs(ws)...)
 	for _, x := range r.Extras {
 		specs = append(specs, x.Specs(ws)...)
 	}
@@ -94,6 +99,9 @@ func (r *Runner) specs(ws string) []llm.Tool {
 }
 
 func (r *Runner) extra(name string) ExternalTools {
+	if (attachTools{r}).Owns(name) {
+		return attachTools{r}
+	}
 	for _, x := range r.Extras {
 		if x.Owns(name) {
 			return x
@@ -115,6 +123,10 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 	}
 	return tool.Execute(ctx, root, call)
 }
+
+// Catalog lists the runner's own tools beyond tool.Specs (read_attachment),
+// for the Tools panel.
+func (r *Runner) Catalog() []tool.Info { return attachTools{r}.Catalog() }
 
 // rootFor is the folder an agent's tools work in.
 func (r *Runner) rootFor(a agent.Agent) (string, error) {
@@ -199,9 +211,11 @@ func (r *Runner) loop(k key) {
 const maxSteps = 40
 
 // SystemPrompt is fixed per agent so every turn of a conversation sends the
-// same system prompt (a requirement for replaying thinking blocks).
+// same system prompt (a requirement for replaying thinking blocks and for
+// the prompt cache). It leaves out the title, which the model may rewrite
+// after the first turn; the task is in the first message anyway.
 func SystemPrompt(a agent.Agent, root string) string {
-	return fmt.Sprintf("You are agent #%d in Xhaos, an agent workspace, working on: %s\n"+
+	return fmt.Sprintf("You are agent #%d in Xhaos, an agent workspace.\n"+
 		"The workspace is the directory %s. Use the tools to read, search, and change files there and to run commands. "+
 		"Paths are relative to the workspace. Depending on your policy (access %s, review %s, commits %s), "+
 		"changes and commands may wait for the user to allow or deny them; a denied call is the user's answer, so do not retry it unchanged. "+
@@ -209,7 +223,7 @@ func SystemPrompt(a agent.Agent, root string) string {
 		"Other agents work in this workspace, some in other projects; you cannot see their files, so coordinate through channels (agents_list, channel_create, channel_send). "+
 		"Messages from other agents arrive marked [channel #N]. Use spawn_agent to hand a self-contained task to a subagent. "+
 		"Read before you edit, keep changes small, and reply to the user in concise Markdown.",
-		a.ID, a.Title, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
+		a.ID, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
 }
 
 // stopped marks the agent paused after its turn was cancelled by the owner.
@@ -280,6 +294,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 				return
 			}
 			creds, kind, budget = c, p.Kind, p.Budget()
+			r.maybeTitle(ws, a, adapter, creds, kind, conv)
 		}
 
 		// Keep the request within the model's context: summarize the older
@@ -288,7 +303,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		if overflow || estimate(conv, last) > int64(float64(budget)*compactAt) {
 			forced := overflow
 			overflow = false
-			switch err := r.compact(ctx, ws, a, adapter, creds, conv, last); {
+			switch err := r.compact(ctx, ws, a, adapter, creds, kind, conv, last); {
 			case err == nil:
 				continue
 			case ctx.Err() != nil:
@@ -335,6 +350,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 
 		_ = r.agents.SetStatus(ws, id, agent.StatusRunning)
 		res, err := adapter.Stream(ctx, creds, turn, func(text string) { r.notify(Delta{WorkspaceID: ws, AgentID: id, Text: text}) })
+		r.count(ws, a, kind, usage.Turn, res)
 		if err != nil {
 			if ctx.Err() != nil {
 				r.stopped(ws, id)
@@ -599,7 +615,7 @@ func cutPoint(conv []agent.MessageData, after int) int {
 
 // compact summarizes the conversation up to a cut point with the agent's own
 // model and records the summary; nothing is removed from the log.
-func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter llm.Adapter, creds llm.Credentials, conv []agent.MessageData, last *agent.MessageData) error {
+func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter llm.Adapter, creds llm.Credentials, kind string, conv []agent.MessageData, last *agent.MessageData) error {
 	from, previous := 0, ""
 	if last != nil {
 		from, previous = last.Covers, last.Body
@@ -638,6 +654,7 @@ func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter 
 	}
 	turn := llm.Turn{Model: a.Model, System: summarizer, Messages: []llm.Message{{Role: "user", Text: b.String()}}}
 	res, err := adapter.Stream(ctx, creds, turn, func(string) {})
+	r.count(ws, a, kind, usage.Compaction, res)
 	if err != nil {
 		return err
 	}
@@ -645,6 +662,78 @@ func (r *Runner) compact(ctx context.Context, ws string, a agent.Agent, adapter 
 		return errors.New("the model returned an empty summary")
 	}
 	return r.agents.Append(ws, a.ID, agent.MessageData{From: agent.FromCompaction, Body: strings.TrimSpace(res.Text), Covers: cut, Seen: len(conv)})
+}
+
+// count records a call's tokens (a failed count is logged, never fatal).
+func (r *Runner) count(ws string, a agent.Agent, kind, purpose string, res llm.Result) {
+	if err := r.Usage.Record(ws, a.ID, a.Provider, kind, a.Model, purpose, res); err != nil {
+		slog.Warn("run: record usage", "agent", a.ID, "err", err)
+	}
+}
+
+const titler = "You name tasks for a list of agents. Reply with the title only."
+
+// maybeTitle asks the agent's model, once, for a title that says what the
+// task is about, replacing the prompt's first line. It runs beside the
+// turn and costs one small call.
+func (r *Runner) maybeTitle(ws string, a agent.Agent, adapter llm.Adapter, creds llm.Credentials, kind string, conv []agent.MessageData) {
+	k := key{ws, a.ID}
+	r.mu.Lock()
+	if r.titling == nil {
+		r.titling = map[key]bool{}
+	}
+	if r.titling[k] || !r.agents.TitlePending(ws, a.ID) {
+		r.mu.Unlock()
+		return
+	}
+	r.titling[k] = true
+	r.mu.Unlock()
+	task := ""
+	for _, m := range conv {
+		if m.From == agent.FromOwner && strings.TrimSpace(m.Body) != "" {
+			task = m.Body
+			break
+		}
+	}
+	if task == "" {
+		return
+	}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
+		defer cancel()
+		turn := llm.Turn{Model: a.Model, System: titler, Small: true, Purpose: "title", Messages: []llm.Message{{Role: "user", Text: "Write a title for this task in 6 to 12 words: plain words saying what will be done, no quotes, no trailing period.\n\nTask:\n" + clipText(task, 3000)}}}
+		res, err := adapter.Stream(ctx, creds, turn, func(string) {})
+		r.count(ws, a, kind, usage.Title, res)
+		if err != nil {
+			slog.Info("run: title", "agent", a.ID, "err", err)
+			return
+		}
+		if t := CleanTitle(res.Text); t != "" {
+			if err := r.agents.SetTitle(ws, a.ID, t); err != nil {
+				slog.Warn("run: set title", "agent", a.ID, "err", err)
+			}
+		}
+	}()
+}
+
+// CleanTitle keeps a model's title to one plain line of 3 to 16 words.
+func CleanTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(s, "Title:"), "title:"))
+	s = strings.Trim(s, "\"'`*#. ")
+	words := strings.Fields(s)
+	if len(words) < 3 {
+		return ""
+	}
+	if len(words) > 16 {
+		words = words[:16]
+	}
+	return strings.Join(words, " ")
 }
 
 func clipText(s string, n int) string {
@@ -665,9 +754,6 @@ func tooLong(err error) bool {
 	}
 	return false
 }
-
-// maxInlineText is how much of a text attachment goes into the message.
-const maxInlineText = 100_000
 
 // userMessage builds a user message: text attachments are inlined after the
 // body, images and PDFs go as files, anything else becomes a note.
@@ -693,7 +779,7 @@ func (r *Runner) userMessage(ws string, m agent.MessageData) llm.Message {
 			fmt.Fprintf(&b, "\n\n(Attached %s follows.)", f.Name)
 			msg.Files = append(msg.Files, llm.File{Name: f.Name, Type: f.Type, Data: f.Data})
 		case "text":
-			fmt.Fprintf(&b, "\n\nAttached file %s:\n````\n%s\n````", f.Name, clipText(string(f.Data), maxInlineText))
+			b.WriteString("\n\n" + inlineText(f))
 		default:
 			fmt.Fprintf(&b, "\n\n(Attached %s, %s, %d bytes: a binary file the model cannot read.)", f.Name, f.Type, f.Size)
 		}
@@ -711,5 +797,8 @@ func attachmentChars(f attachment.Ref) int {
 	case f.Type == "application/pdf":
 		return int(f.Size/50_000+1) * 2400 * 4
 	}
-	return int(min(f.Size, maxInlineText))
+	if f.Size > maxInlineText {
+		return previewText
+	}
+	return int(f.Size)
 }

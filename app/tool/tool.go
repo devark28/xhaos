@@ -28,6 +28,8 @@ const (
 	Read  = policy.EffectRead  // reads inside the root
 	Write = policy.EffectWrite // changes files inside the root
 	Exec  = policy.EffectExec  // runs a shell command (can do anything the server user can)
+	// Contact opens a channel to agents outside the caller's family.
+	Contact = policy.EffectContact
 )
 
 const (

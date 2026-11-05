@@ -63,6 +63,10 @@ const (
 	EffectWrite = "write" // file changes in the project
 	EffectGit   = "git"   // local git changes: add, commit, switch
 	EffectExec  = "exec"  // any other command
+	// EffectContact opens a channel to agents outside the caller's family
+	// (another top-level agent and its subagents): it always waits for the
+	// owner, whatever the policy, so agents never start talking unseen.
+	EffectContact = "contact"
 )
 
 // Gate decides what happens to a tool call with the given effect. commit
@@ -74,6 +78,9 @@ const (
 func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 	if effect == EffectRead {
 		return Allow, ""
+	}
+	if effect == EffectContact {
+		return Ask, "opening a channel to agents outside its own family needs your approval"
 	}
 	if p.Access != "rw" {
 		return Deny, "this agent is read-only"

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"xhaos/app/attachment"
@@ -20,15 +21,18 @@ import (
 	"xhaos/app/agent"
 	"xhaos/app/backend"
 	"xhaos/app/btw"
+	"xhaos/app/channel"
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
 	"xhaos/app/llm/openai"
+	"xhaos/app/llm/sim"
 	"xhaos/app/mcp"
 	"xhaos/app/policy"
 	"xhaos/app/project"
 	"xhaos/app/provider"
 	"xhaos/app/run"
 	"xhaos/app/tool"
+	"xhaos/app/usage"
 	"xhaos/app/workspace"
 )
 
@@ -39,10 +43,15 @@ type fake struct {
 	mu    sync.Mutex
 	turns []llm.Turn
 	reply func(llm.Turn) (llm.Result, error)
+	// titles: title calls go to reply too (otherwise they get no title).
+	titles bool
 }
 
 func (*fake) Kind() string { return "fake" }
 func (f *fake) Stream(_ context.Context, _ llm.Credentials, t llm.Turn, onDelta func(string)) (llm.Result, error) {
+	if t.Purpose == "title" && !f.titles { // a side call, outside the scripted conversation; no new title
+		return llm.Result{InputTokens: 10, OutputTokens: 1}, nil
+	}
 	f.mu.Lock()
 	f.turns = append(f.turns, t)
 	f.mu.Unlock()
@@ -595,6 +604,11 @@ func TestOpenAICompatibleAgentUsesTools(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if msgs, _ := body["messages"].([]any); len(msgs) > 0 && strings.Contains(fmt.Sprint(msgs[0]), "You name tasks") {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Look around the project folder and report\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
 		mu.Lock()
 		requests = append(requests, body)
 		n := len(requests)
@@ -905,6 +919,110 @@ func TestChannelBurstLimit(t *testing.T) {
 	}
 }
 
+// A published channel takes messages from outside with its passphrase: the
+// members get them (marked as from outside) and are woken; the link reads
+// the channel back; a reset or unpublish locks the old passphrase out.
+func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) { return llm.Result{Text: "on it", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
+	c, _ := h.s.Channels.Create(a, "ops", []int64{b.ID}, "")
+	srv := httptest.NewServer(h.s.Channels.Links())
+	defer srv.Close()
+	do := func(method, pass, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, srv.URL+channel.LinkPath(ws, c.ID), strings.NewReader(body))
+		if pass != "" {
+			req.Header.Set("Authorization", "Bearer "+pass)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+	if code, _ := do("GET", "xhc_nope", ""); code != http.StatusUnauthorized {
+		t.Fatalf("unpublished GET = %d", code)
+	}
+	owner := h.s.Channels.Owner()
+	pub, err := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
+	if err != nil || !strings.HasPrefix(pub.Passphrase, "xhc_") || !pub.Channel.Published || pub.Path != "/xhaos/channel/"+ws+fmt.Sprintf("/%d", c.ID) {
+		t.Fatalf("publish = %+v %v", pub, err)
+	}
+	var raw string
+	h.s.DB().QueryRow(`SELECT pass_hash FROM channel_links`).Scan(&raw)
+	if raw == "" || strings.Contains(raw, pub.Passphrase) {
+		t.Fatalf("stored = %q", raw)
+	}
+	code, out := do("POST", pub.Passphrase, `{"from":"claude code","body":"please run the tests"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST = %d %v", code, out)
+	}
+	// Both members get it from outside, and are woken.
+	for _, id := range []int64{a.ID, b.ID} {
+		h.waitStatus(t, id, agent.StatusComplete)
+		msgs, _ := agent.NewStore(h.s.DB(), nil).Messages(ws, id)
+		found := false
+		for _, m := range msgs {
+			found = found || (m.From == agent.FromChannel && strings.Contains(m.Body, "message from outside Xhaos (claude code)") && strings.HasSuffix(m.Body, "please run the tests"))
+		}
+		if !found {
+			t.Fatalf("agent %d messages = %+v", id, msgs)
+		}
+	}
+	code, out = do("GET", pub.Passphrase, "")
+	list, _ := out["messages"].([]any)
+	if code != http.StatusOK || len(list) != 1 || !strings.Contains(fmt.Sprint(list[0]), "outside:claude code") {
+		t.Fatalf("GET = %d %v", code, out)
+	}
+	// wait holds the request until a message arrives.
+	go func() { time.Sleep(300 * time.Millisecond); h.s.Channels.Send(a, c.ID, "tests pass") }()
+	first := int64(list[0].(map[string]any)["id"].(float64))
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s%s?after=%d&wait=5", srv.URL, channel.LinkPath(ws, c.ID), first), nil)
+	req.Header.Set("Authorization", "Bearer "+pub.Passphrase)
+	started := time.Now()
+	res, _ := http.DefaultClient.Do(req)
+	var waited map[string]any
+	json.NewDecoder(res.Body).Decode(&waited)
+	res.Body.Close()
+	if took := time.Since(started); took < 200*time.Millisecond || took > 4*time.Second || !strings.Contains(fmt.Sprint(waited["messages"]), "tests pass") {
+		t.Fatalf("wait = %v after %v", waited, took)
+	}
+	// Reset: the old passphrase stops working.
+	again, _ := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
+	if again.Passphrase == pub.Passphrase {
+		t.Fatal("reset kept the passphrase")
+	}
+	if code, _ := do("GET", pub.Passphrase, ""); code != http.StatusUnauthorized {
+		t.Fatalf("old passphrase after reset = %d", code)
+	}
+	if code, _ := do("GET", again.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("new passphrase = %d", code)
+	}
+	// Unpublish: nothing works.
+	if ch, err := owner.Unpublish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID}); err != nil || ch.Published {
+		t.Fatalf("unpublish = %+v %v", ch, err)
+	}
+	if code, _ := do("POST", again.Passphrase, `{"body":"x"}`); code != http.StatusUnauthorized {
+		t.Fatalf("after unpublish = %d", code)
+	}
+	// Guessing is slowed down after three wrong tries in a row.
+	do("GET", "a", "")
+	do("GET", "b", "")
+	if code, _ := do("GET", "c", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth wrong try in a row = %d", code)
+	}
+	// A closed channel cannot be published.
+	h.s.Channels.Close(ws, c.ID)
+	if _, err := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID}); err == nil {
+		t.Fatal("published a closed channel")
+	}
+}
+
 // spawn_agent: the parent starts a subagent; the subagent's final answer is
 // posted to their channel and wakes the parent.
 func TestSpawnedSubagentReportsBack(t *testing.T) {
@@ -999,6 +1117,56 @@ func TestAttachmentsReachTheModel(t *testing.T) {
 	}
 	if _, err := h.s.Files.Read("other", pic.ID); err == nil {
 		t.Fatal("read across workspaces")
+	}
+}
+
+// A large text attachment sends its start and a note; read_attachment reads
+// the rest by character range, and only files that were sent to the agent.
+func TestLargeAttachmentsAreReadInParts(t *testing.T) {
+	var big, other string
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		switch {
+		case len(turn.Messages) == 1:
+			return llm.Result{Calls: []llm.ToolCall{
+				tc("r1", "read_attachment", map[string]any{"id": big, "offset": 20_000, "limit": 30}),
+				tc("r2", "read_attachment", map[string]any{"id": big, "offset": 149_990}),
+				tc("r3", "read_attachment", map[string]any{"id": other}),
+			}, StopReason: "tool_use"}, nil
+		case len(last.Results) > 0:
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	// 150,000 characters, some of them multi-byte, marked every 10.
+	var b strings.Builder
+	for i := 0; i < 15_000; i++ {
+		fmt.Fprintf(&b, "é%08d|", i*10)
+	}
+	f, err := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "board.excalidraw", Type: "application/json", Data: []byte(b.String())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, _ := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "secret.md", Data: []byte("not yours")})
+	big, other = f.ID, g.ID
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "draw", Provider: "f", Model: "m1", Attachments: []string{f.ID}})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	first := h.fake.turns[0].Messages[0].Text
+	h.fake.mu.Unlock()
+	if !strings.Contains(first, "has 150000 characters") || !strings.Contains(first, "offset 20000") || strings.Contains(first, "é00020000|") || !strings.Contains(first, "é00019990|") {
+		t.Fatalf("message = %q…", first[:300])
+	}
+	tools := h.tools(t, a.ID)
+	if out := tools["r1"].Output; !strings.Contains(out, "characters 20000–20030 of 150000") || !strings.Contains(out, "\né00020000|é00020010|é00020020|\n") || !strings.Contains(out, "next part starts at offset 20030") {
+		t.Fatalf("r1 = %q", out)
+	}
+	if out := tools["r2"].Output; !strings.Contains(out, "é00149990|") || !strings.Contains(out, "end of the file") {
+		t.Fatalf("r2 = %q", out)
+	}
+	if st := tools["r3"]; !strings.Contains(st.Output, "was sent to you") || strings.Contains(st.Output, "not yours") {
+		t.Fatalf("r3 = %+v", st)
 	}
 }
 
@@ -1144,5 +1312,267 @@ func TestBtwDigestIncludesChannelsAndMemories(t *testing.T) {
 	}
 	if strings.Contains(text, "SECRET SUMMARY") {
 		t.Error("the digest shows a compaction summary")
+	}
+}
+
+// Opening a channel to another top-level agent waits for the owner, even
+// under auto review, and the approval says who they are and what they do.
+// Within the family it runs at once; a closed channel takes no messages.
+func TestChannelOutsideTheFamilyWaitsForTheOwner(t *testing.T) {
+	var target atomic.Int64
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		if !strings.HasPrefix(turn.Messages[0].Text, "caller:") || len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{StopReason: "tool_use", Calls: []llm.ToolCall{
+			tc("c", "channel_create", map[string]any{"subject": "api shape", "members": []int64{target.Load()}, "message": "I own the client; which fields does /orders return?"}),
+		}}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	other, _ := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: t.TempDir()})
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "billing api", ProjectID: other.ID, Provider: "f", Model: "m1"})
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "bm", WorkspaceID: ws, AgentIDs: []int64{b.ID}, Body: "Add pagination to /orders"})
+	h.waitStatus(t, b.ID, agent.StatusComplete)
+	target.Store(b.ID)
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "caller", Prompt: "caller: go", Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+
+	call := h.tools(t, a.ID)["c"]
+	if call.State != agent.ToolPending || call.Effect != tool.Contact {
+		t.Fatalf("call = %+v", call)
+	}
+	for _, want := range []string{fmt.Sprintf("#%d billing api", b.ID), fmt.Sprintf("project %d", other.ID), "working on: Add pagination to /orders", "First message:\nI own the client"} {
+		if !strings.Contains(call.Preview, want) {
+			t.Errorf("preview lacks %q:\n%s", want, call.Preview)
+		}
+	}
+	if views, _ := h.s.Channels.Channels(ws); len(views) != 0 {
+		t.Fatal("channel opened before approval")
+	}
+	if _, err := h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "c", Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	views, _ := h.s.Channels.Channels(ws)
+	if len(views) != 1 || len(views[0].Messages) != 1 || !strings.HasPrefix(views[0].Messages[0].Body, "I own the client") {
+		t.Fatalf("channels = %+v", views)
+	}
+
+	// Own subagent: no approval, even under manual review.
+	sub, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "s", WorkspaceID: ws, Title: "sub", ParentID: a.ID, Provider: "f", Model: "m1"})
+	got, err := h.s.Channels.Tools().Prepare(ws, a, tc("f", "channel_create", map[string]any{"subject": "x", "members": []int64{sub.ID}}))
+	if err != nil || got.Effect != tool.Read {
+		t.Fatalf("family channel: effect %q, err %v", got.Effect, err)
+	}
+	if v, _ := policy.Default().Gate(tool.Contact, false); v != policy.Ask {
+		t.Fatalf("contact under the default policy: %s", v)
+	}
+
+	if _, err := h.s.Channels.Owner().Close(channel.CloseRequest{WorkspaceID: ws, ChannelID: views[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Channels.Send(b, views[0].ID, "late reply"); err == nil || !strings.Contains(err.Error(), "closed by the user") {
+		t.Fatalf("send to a closed channel: %v", err)
+	}
+	if views, _ := h.s.Channels.Channels(ws); !views[0].Closed {
+		t.Fatal("channel not marked closed")
+	}
+}
+
+// The simulated model drives the real harness: it splits work across two
+// subagents and summarizes their answers, and its channel to another
+// top-level agent waits for approval and then ends after one reply.
+func TestSimulatedAgentsSplitAndTalk(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "README.md"), []byte("# demo\nline two\n"), 0o644)
+	h := setupIn(t, root, func(turn llm.Turn) (llm.Result, error) {
+		turn.Model = "scripted-fast"
+		return sim.Adapter{}.Stream(context.Background(), llm.Credentials{}, turn, func(string) {})
+	})
+	h.fake.titles = true
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	lastSaid := func(id int64) string {
+		snap, _ := h.s.Agents.Snapshot(ws)
+		said := ""
+		for _, e := range snap.Transcript {
+			var m agent.MessageData
+			if e.AgentID == id && e.Kind == agent.EventMessage && json.Unmarshal(e.Data, &m) == nil && m.From == agent.FromAgent && m.Body != "" {
+				said = m.Body
+			}
+		}
+		return said
+	}
+	waitSaid := func(id int64, want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !strings.Contains(lastSaid(id), want) {
+			if time.Now().After(deadline) {
+				t.Fatalf("#%d last said %q, want %q", id, lastSaid(id), want)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "Please split the review of this repo", Provider: "f", Model: "m1", Policy: &auto})
+	waitSaid(a.ID, "All 2 subagents reported back")
+	// The model (here the simulation) renamed the agent once; titles given
+	// by spawn_agent ("Part 1") stay.
+	snap0, _ := h.s.Agents.Snapshot(ws)
+	for _, x := range snap0.Agents {
+		if x.ID == a.ID && x.Title != "Simulated: Please split the review of this repo" {
+			t.Errorf("title = %q", x.Title)
+		}
+	}
+	if rep, _ := h.s.Usage.Usage(ws); rep.Total.Calls < 7 || rep.Models[0].Purposes["title"] != 1 {
+		t.Errorf("usage = %+v", rep)
+	}
+	snap, _ := h.s.Agents.Snapshot(ws)
+	children := 0
+	for _, x := range snap.Agents {
+		if x.ParentID == a.ID {
+			children++
+			if s := lastSaid(x.ID); !strings.Contains(s, "README.md (") {
+				t.Errorf("subagent #%d said %q", x.ID, s)
+			}
+		}
+	}
+	if children != 2 {
+		t.Fatalf("%d subagents", children)
+	}
+
+	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Prompt: fmt.Sprintf("Please contact #%d about the API", a.ID), Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, b.ID, agent.StatusAttention)
+	var callID string
+	for id, d := range h.tools(t, b.ID) {
+		if d.Name == "channel_create" && d.State == agent.ToolPending && d.Effect == tool.Contact {
+			callID = id
+		}
+	}
+	if callID == "" {
+		t.Fatalf("no contact approval: %+v", h.tools(t, b.ID))
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: b.ID, CallID: callID, Allow: true})
+	waitSaid(b.ID, "nothing more to send")
+	time.Sleep(200 * time.Millisecond)
+	views, _ := h.s.Channels.Channels(ws)
+	last := views[len(views)-1]
+	if len(last.Messages) != 2 || last.Messages[0].SenderID != b.ID || last.Messages[1].SenderID != a.ID {
+		t.Fatalf("contact channel = %+v", last)
+	}
+}
+
+// With a passphrase, a restarted server is locked: agents left running wait
+// until someone signs in, then resume with the decrypted key.
+func TestLockedServerResumesAgentsAfterSignIn(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	f := &patient{block: true}
+	open := func() *backend.Services {
+		s, err := backend.Open(filepath.Join(dir, "x.db"), backend.Options{Root: root, Passphrase: true, Adapters: []llm.Adapter{f}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	s := open()
+	if _, err := s.Vault.Setup("a long enough passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "sk-x", Models: []string{"m1"}})
+	a, _ := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
+	deadline := time.Now().Add(3 * time.Second)
+	for f.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.Close() // mid-turn: the agent stays running for the next start
+	f.mu.Lock()
+	f.block = false
+	f.mu.Unlock()
+	before := f.count()
+
+	s = open()
+	defer s.Close()
+	if s.Vault.State() != "locked" {
+		t.Fatalf("state %s", s.Vault.State())
+	}
+	if r, _ := s.Providers.Test("f"); r.OK || !strings.Contains(r.Message, "locked") {
+		t.Fatalf("provider test while locked: %+v", r)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if f.count() != before {
+		t.Fatal("an agent ran before sign-in")
+	}
+	if _, err := s.Vault.SignIn("a long enough passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		snap, _ := s.Agents.Snapshot(ws)
+		for _, x := range snap.Agents {
+			if x.ID == a.ID && x.Status == agent.StatusComplete {
+				return
+			}
+		}
+	}
+	t.Fatal("the agent did not resume after sign-in")
+}
+
+// patient is a fake model that, while block is set, waits until its turn is
+// cancelled (as a stopping server does).
+type patient struct {
+	mu    sync.Mutex
+	block bool
+	turns int
+}
+
+func (*patient) Kind() string { return "fake" }
+func (*patient) Models(context.Context, llm.Credentials) ([]string, error) {
+	return []string{"m1"}, nil
+}
+func (p *patient) count() int { p.mu.Lock(); defer p.mu.Unlock(); return p.turns }
+func (p *patient) Stream(ctx context.Context, _ llm.Credentials, t llm.Turn, _ func(string)) (llm.Result, error) {
+	if t.Purpose == "title" {
+		return llm.Result{}, nil
+	}
+	p.mu.Lock()
+	p.turns++
+	block := p.block
+	p.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return llm.Result{}, ctx.Err()
+	}
+	return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+}
+
+// spawn_agent can pick a cheaper model, but only one configured for the
+// parent's provider; models_list shows them cheapest first.
+func TestSpawnChoosesAConfiguredModel(t *testing.T) {
+	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"big", "small", "unpriced"}})
+	h.s.Usage.SetPrice(usage.Price{Model: "big", Input: 5, Output: 25})
+	h.s.Usage.SetPrice(usage.Price{Model: "small", Input: 0.1, Output: 0.5})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "parent", Provider: "f", Model: "big"})
+	tools := h.s.Channels.Tools()
+	list, err := tools.Execute(context.Background(), ws, a, tool.Call{Name: "models_list"})
+	if err != nil || !strings.HasPrefix(list, "small · $0.1 in") || !strings.Contains(list, "big (yours)") || !strings.HasSuffix(list, "unpriced · price unknown") {
+		t.Fatalf("models_list = %q, %v", list, err)
+	}
+	if _, err := tools.Prepare(ws, a, tc("x", "spawn_agent", map[string]any{"task": "t", "model": "claude-fable-5-1"})); err == nil || !strings.Contains(err.Error(), "not configured for your provider") {
+		t.Fatalf("an unconfigured model was accepted: %v", err)
+	}
+	call, err := tools.Prepare(ws, a, tc("s", "spawn_agent", map[string]any{"task": "count things", "model": "small"}))
+	if err != nil || !strings.HasPrefix(call.Preview, "Model: small") {
+		t.Fatalf("prepare = %+v, %v", call, err)
+	}
+	if _, err := tools.Execute(context.Background(), ws, a, call); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := h.s.Agents.Snapshot(ws)
+	for _, x := range snap.Agents {
+		if x.ParentID == a.ID && x.Model != "small" {
+			t.Fatalf("subagent model = %q", x.Model)
+		}
 	}
 }
