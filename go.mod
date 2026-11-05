@@ -7,6 +7,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/wailsapp/wails/v3 v3.1.0
+	golang.org/x/crypto v0.57.0
 )
 
 require (
