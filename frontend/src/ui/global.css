@@ -8,13 +8,13 @@
 @layer reset {
   :root {
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    color: #dedede;
-    background: #111111;
+    color: var(--x-text, #dedede);
+    background: var(--x-bg, #111111);
     font-synthesis: none;
     color-scheme: dark;
   }
   *, *::before, *::after { box-sizing: border-box; }
-  body { margin: 0; font-size: 12px; background: #111111; }
+  body { margin: 0; font-size: 12px; background: var(--x-bg, #111111); }
   button, input, textarea, select { font: inherit; }
   :focus, :focus-visible { outline: none; box-shadow: none; }
   svg { flex-shrink: 0; vertical-align: middle; }
@@ -29,37 +29,61 @@
 .markdown-body { overflow-wrap: anywhere; min-width: 0; }
 :is(.markdown-body, xhaos-input) p { margin: 0 0 9px; line-height: 1.7; white-space: normal; }
 :is(.markdown-body, xhaos-input) p:last-child { margin-bottom: 0; }
-:is(.markdown-body, xhaos-input) :is(h1, h2, h3, h4, h5, h6) { font-size: 13px; color: #ddd; margin: 12px 0 7px; font-weight: 600; }
+:is(.markdown-body, xhaos-input) :is(h1, h2, h3, h4, h5, h6) { font-size: 13px; color: var(--x-heading, #ddd); margin: 12px 0 7px; font-weight: 600; }
 :is(.markdown-body, xhaos-input) h1 { font-size: 16px; }
 :is(.markdown-body, xhaos-input) h2 { font-size: 14px; }
 :is(.markdown-body, xhaos-input) :is(ul, ol) { padding-left: 22px; margin: 8px 0; }
 :is(.markdown-body, xhaos-input) li { margin: 3px 0; }
-:is(.markdown-body, xhaos-input) a { color: #9cbde0; text-decoration: underline; }
-:is(.markdown-body, xhaos-input) blockquote { margin: 9px 0; padding-left: 12px; color: #aaa; font-style: italic; }
-:is(.markdown-body, xhaos-input) code { font: inherit; color: #c5b4df; }
+:is(.markdown-body, xhaos-input) a { color: var(--x-link, #9cbde0); text-decoration: underline; }
+:is(.markdown-body, xhaos-input) blockquote { margin: 9px 0; padding-left: 12px; color: var(--x-quote, #aaa); font-style: italic; }
+:is(.markdown-body, xhaos-input) code { font: inherit; color: var(--x-code, #c5b4df); }
+/* Tables are static, like Claude Code's in the terminal: never wider than
+   the card, no scrolling; cell text wraps to fit. */
+.markdown-body .md-table { margin: 8px 0; max-width: 100%; }
+.markdown-body table { border-collapse: collapse; font-size: inherit; width: 100%; table-layout: auto; }
+.markdown-body :is(th, td) { border: 1px solid var(--x-table-line, #333); padding: 4px 8px; vertical-align: top; text-align: left; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+.markdown-body th { font-weight: 600; color: var(--x-heading, #ddd); background: var(--x-table-head, #1b1b1b); }
 :is(.markdown-body, xhaos-input) pre { padding: 8px 0; margin: 8px 0; white-space: pre-wrap; background: none; border: 0; }
 
 /* The caret at the end of a reply that is still streaming. */
-[data-entry="live"] .markdown-body > :last-child::after { content: "▍"; margin-left: 1px; color: #a78bfa; animation: working-caret 1s steps(1) infinite; }
+[data-entry="live"] .markdown-body > :last-child::after { content: "▍"; margin-left: 1px; color: var(--x-brand, #a78bfa); animation: working-caret 1s steps(1) infinite; }
 @keyframes working-caret { 50% { opacity: 0; } }
 
 /* ---- syntax colors (highlight.ts output) ----------------------------------- */
-.syntax-keyword { color: #c4a7e7; }
-.syntax-string { color: #a8c49b; }
-.syntax-number { color: #deb98c; }
-.syntax-function { color: #8eb8dc; }
-.syntax-comment { color: #777; font-style: italic; }
-.syntax-addition { color: #9fc79f; }
-.syntax-deletion { color: #d49e9e; }
+.syntax-keyword { color: var(--x-keyword, #c4a7e7); }
+.syntax-string { color: var(--x-string, #a8c49b); }
+.syntax-number { color: var(--x-number, #deb98c); }
+.syntax-function { color: var(--x-function, #8eb8dc); }
+.syntax-comment { color: var(--x-comment, #777); font-style: italic; }
+.syntax-addition { color: var(--x-addition, #9fc79f); }
+.syntax-deletion { color: var(--x-deletion, #d49e9e); }
 
 /* ---- <xhaos-input> --------------------------------------------------------- */
 xhaos-input {
   display: block; position: relative; min-width: 0; outline: none; cursor: text;
-  overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; line-height: 1.65; color: #ddd;
+  overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; line-height: 1.65; color: var(--x-pre, #ddd);
 }
 xhaos-input[data-empty="true"]::before {
-  content: attr(data-placeholder); color: #777; pointer-events: none; position: absolute; top: 0; left: 0;
+  content: attr(data-placeholder); color: var(--x-comment, #777); pointer-events: none; position: absolute; top: 0; left: 0;
 }
 xhaos-input p { margin: 0; line-height: inherit; }
 xhaos-input :is(strong, b) { font-weight: 700; }
 xhaos-input :is(em, i) { font-style: italic; }
+
+/* ---- appearance settings (appearance.ts) ------------------------------------ */
+/* Text size: the whole app scales; its height is divided back so it still
+   fills the window. The transcript can be scaled again on its own. */
+#app { zoom: var(--x-zoom, 1); }
+[data-transcript] { zoom: var(--x-transcript-zoom, 1); }
+/* Comfortable density: more air between rows, cards and lines. */
+[data-density="comfortable"] [data-agent-header] { padding-block: 3px; }
+[data-density="comfortable"] [data-agent-card] { margin-block: 3px; }
+[data-density="comfortable"] :is(.markdown-body, xhaos-input) p { line-height: 1.85; }
+[data-density="comfortable"] [data-entry] { margin-block: 4px; }
+/* Reduce motion: everything still, whatever the system says. */
+[data-motion="reduce"] *, [data-motion="reduce"] *::before, [data-motion="reduce"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+/* Code and diffs: scroll sideways instead of wrapping. */
+[data-wrap="scroll"] pre, [data-wrap="scroll"] pre code { white-space: pre !important; overflow-wrap: normal !important; overflow-x: auto; }
+
+/* A card reached through a link (#agent=…) flashes once. */
+[data-agent-header][data-flash] { box-shadow: inset 0 0 0 1px var(--x-brand, #a78bfa); transition: box-shadow 0.4s; }

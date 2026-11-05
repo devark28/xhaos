@@ -39,7 +39,7 @@ const buttons = stylex.create({
     borderRadius: 3,
     color: colors.textDim,
   },
-  chosen: { color: colors.text, backgroundColor: { default: '#303030', ':hover': '#303030' } },
+  chosen: { color: colors.text, backgroundColor: { default: colors.control, ':hover': colors.control } },
   allow: {
     borderWidth: 1,
     borderStyle: 'solid',
@@ -49,7 +49,7 @@ const buttons = stylex.create({
     borderRadius: 3,
     paddingBlock: 3,
     paddingInline: 7,
-    color: '#141414',
+    color: colors.onLight,
     backgroundColor: { default: colors.brand, ':hover': colors.brandStrong },
   },
   deny: { marginInline: 6, fontSize: 10, color: colors.textMuted, padding: 3 },
@@ -128,12 +128,12 @@ export function Kbd({ children }: { children: ReactNode }) {
   return <kbd {...stylex.props(kbd.base)}>{children}</kbd>;
 }
 const kbd = stylex.create({
-  base: { paddingBlock: 1, paddingInline: 4, borderWidth: 1, borderStyle: 'solid', borderColor: '#2c2c2c', borderRadius: 3, backgroundColor: '#1d1d1d', fontFamily: 'inherit', fontSize: 9, color: colors.textDim },
+  base: { paddingBlock: 1, paddingInline: 4, borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineSoft, borderRadius: 3, backgroundColor: colors.card, fontFamily: 'inherit', fontSize: 9, color: colors.textDim },
 });
 
 // Common text styles, for use with stylex.props in other components.
 export const text = stylex.create({
-  muted: { color: '#858585' },
+  muted: { color: colors.textFaint },
   faint: { color: colors.textGhost, fontSize: 10 },
   mono: { fontFamily: 'ui-monospace, monospace' },
   ellipsis: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },

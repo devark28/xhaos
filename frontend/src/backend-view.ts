@@ -23,13 +23,17 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
   };
 }
 
-const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read', search: 'Search', write_file: 'Write', edit_file: 'Edit', bash: 'Run' };
+const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read', search: 'Search', write_file: 'Write', edit_file: 'Edit', bash: 'Run', channel_create: 'Open channel', channel_send: 'Send to', spawn_agent: 'Spawn' };
 const stateNotes: Record<string, string> = { pending: 'waiting for you', allowed: 'allowed', denied: 'denied', done: '', failed: 'failed' };
 
 // toolEntry renders one tool call's latest state. Pending calls show as an
 // approval with the command or diff; the rest as a collapsible tool entry.
 function toolEntry(data: ToolData, seq: number): Entry {
   if (data.name.startsWith('mcp__')) return mcpEntry(data, seq);
+  if (data.effect === 'contact' && data.state === 'pending') {
+    // A channel to agents outside the caller's family: who, and what they do.
+    return { kind: 'approval', callId: data.callId, state: data.state, text: `Open channel ${data.summary}?`, command: data.preview || '', language: 'text', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
+  }
   const write = data.effect === 'write';
   const verb = toolVerbs[data.name] || data.name;
   if (data.state === 'pending') {
@@ -161,6 +165,12 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
     place(view, byId, node(event.data));
     return { tree: true, created: true, agentId: event.data.id };
   }
+  if (event.kind === 'agent.title') { // the model's title replaces the prompt's first line
+    const agent = byId.get(event.agentId);
+    if (!agent || !event.data?.title) return null;
+    agent.title = event.data.title;
+    return { tree: true, agentId: agent.id };
+  }
   if (event.kind === 'agent.status') {
     const agent = byId.get(event.agentId);
     if (!agent) return null;
@@ -184,13 +194,15 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
 // applyDelta appends live reply text (not persisted) and returns the agent ID.
 export function applyDelta(view: Workspace, delta: Delta): number | null {
   const agent = index(view).get(delta.agentId);
-  if (!agent || delta.workspaceId !== view.id) return null;
+  // Text that arrives after the agent stopped running belongs to a reply
+  // already saved; it must not bring the streamed draft back.
+  if (!agent || delta.workspaceId !== view.id || agent.status !== 'running') return null;
   agent.live = (agent.live || '') + delta.text;
   return agent.id;
 }
 
 // usable: Anthropic needs a key; OpenAI-compatible endpoints may run without one.
-const usable = (p: Provider) => p.hasKey || p.kind === 'openai';
+const usable = (p: Provider) => p.hasKey || p.kind === 'openai' || p.kind === 'sim'; // keyless kinds
 // pickerChoices lists "provider/model" options from configured providers.
 export const pickerChoices = (providers: Provider[]): ModelChoice[] => providers.filter(usable).flatMap(p =>
   p.models.map(model => ({ id: `${p.id}/${model}`, provider: p.id, model, label: providers.length > 1 ? `${modelLabel(p.kind, model)} · ${p.name}` : modelLabel(p.kind, model) })));
@@ -198,20 +210,30 @@ export const pickerChoices = (providers: Provider[]): ModelChoice[] => providers
 // ---- channels -------------------------------------------------------------------
 
 const toMessage = (c: { members: number[] }, m: BackendChannel['messages'][number]): ChannelMessage => ({
-  id: String(m.id), timestamp: m.createdAt, writer: m.senderId, readers: c.members.filter(id => id !== m.senderId), text: m.body,
+  id: String(m.id), timestamp: m.createdAt, writer: m.senderId || `outside:${m.senderName || 'unnamed'}`, readers: c.members.filter(id => id !== m.senderId), text: m.body,
 });
 
 // channelsFromBackend maps channel.Service.Channels into the view's channels.
 export const channelsFromBackend = (list: BackendChannel[]): Channel[] => list.map(c => ({
-  id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)),
+  id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)), closed: c.closed, published: c.published,
 }));
 
-// applyChannelEvent applies channel.created / channel.message; true if it did.
+// applyChannelEvent applies channel.created / .message / .closed; true if it did.
 export function applyChannelEvent(view: Workspace, event: BackendEvent): boolean {
   view.channels ||= [];
   if (event.kind === 'channel.created') {
     const c = event.data as BackendChannel;
     if (!view.channels.some(x => x.id === String(c.id))) view.channels.push({ id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: [] });
+    return true;
+  }
+  if (event.kind === 'channel.link') {
+    const d = event.data as BackendChannel, c = view.channels.find(x => x.id === String(d.id));
+    if (c) c.published = Boolean(d.published);
+    return true;
+  }
+  if (event.kind === 'channel.closed') {
+    const c = view.channels.find(x => x.id === String((event.data as BackendChannel).id));
+    if (c) c.closed = true;
     return true;
   }
   if (event.kind === 'channel.message') {

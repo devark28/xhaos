@@ -18,7 +18,7 @@ export const options = {
   chunkNames: 'chunks/[name]-[hash]',
   splitting: true,
   conditions: ['production'], // Excalidraw exports its CSS only under a build condition
-  loader: { '.woff2': 'file' }, // Excalidraw's UI font, referenced from its CSS
+  loader: { '.woff2': 'file', '.woff': 'file' }, // fonts referenced from CSS (ours, Excalidraw's)
   assetNames: 'assets/[name]-[hash]',
   bundle: true,
   format: 'esm',

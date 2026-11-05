@@ -14,19 +14,23 @@ export const colors = stylex.defineVars({
   menu: '#232323',
   input: '#161616',
   hover: 'rgba(255,255,255,0.03)',
+  control: '#303030',
 
   line: '#333333',
   lineSoft: '#2d2d2d',
   lineFaint: '#262626',
   lineStrong: '#444444',
+  lineBright: '#555555',
 
   textStrong: '#eeeeee',
   text: '#dddddd',
   textSoft: '#cccccc',
+  textSub: '#b8b8b8',
   textMuted: '#aaaaaa',
   textDim: '#999999',
   textFaint: '#888888',
   textGhost: '#777777',
+  textHint: '#666666',
 
   brand: '#a78bfa',
   brandStrong: '#c4b5fd',
@@ -52,7 +56,7 @@ export const colors = stylex.defineVars({
 
 export const fonts = stylex.defineVars({
   sans: 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-  mono: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+  mono: '"JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace',
 });
 
 export const breakpoints = stylex.defineConsts({

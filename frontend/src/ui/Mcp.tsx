@@ -111,7 +111,7 @@ export function McpServers() {
 }
 
 const styles = stylex.create({
-  muted: { color: '#858585', fontSize: 10, marginTop: 6, marginBottom: 8 },
+  muted: { color: colors.textFaint, fontSize: 10, marginTop: 6, marginBottom: 8 },
   server: { borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint, borderRadius: 4, backgroundColor: colors.sunken, paddingBlock: 8, paddingInline: 10, marginBottom: 6 },
   head: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   name: { fontSize: 12, color: colors.text, flexShrink: 0 },

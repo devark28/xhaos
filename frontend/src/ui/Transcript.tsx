@@ -13,6 +13,7 @@ import { toast, get } from './state/store.ts';
 import type { Agent, Attachment, Entry as EntryData } from '../types.ts';
 
 const html = (value: string) => ({ __html: value });
+const links = { agentLinks: true }; // #12 links to agent 12's card
 
 // ---- attachments -----------------------------------------------------------
 export const blobUrls = new Map<string, string>();
@@ -83,14 +84,14 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
     return (
       <div data-entry="channel" aria-label="Message from another agent" {...stylex.props(styles.entry, styles.channel)}>
         <span {...stylex.props(styles.kind)}>channel</span><span {...stylex.props(styles.channelHead)}>{head.replace(/^\[channel /, '#').replace(/\] message from /, ' · from ').replace(/:$/, '')}</span>
-        <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(rest.join('\n')))} />
+        <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(rest.join('\n'), links))} />
       </div>
     );
   }
   const label = kind === 'user' ? 'Your message' : kind === 'system' ? 'Status update' : 'Agent response';
   return (
     <div data-entry={kind} aria-label={label} {...stylex.props(styles.entry, kind === 'user' && styles.user, kind === 'system' && styles.system)}>
-      <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(entry.text))} />
+      <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(entry.text, links))} />
       <AttachedFiles files={entry.attachments} />
     </div>
   );
@@ -127,12 +128,12 @@ export function Transcript({ agent, nested = false }: { agent: Agent; nested?: b
       {entries.map((entry, index) => <Entry key={entry.callId || index} entry={entry} agent={agent} />)}
       {(agent.notes || []).map((note, index) => (
         <div key={`note-${index}`} data-entry="user" aria-label="Your message" {...stylex.props(styles.entry, styles.user)}>
-          <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(note))} />
+          <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(note, links))} />
         </div>
       ))}
       {agent.live && (
         <div data-entry="live" aria-live="polite" aria-label="Agent reply in progress" {...stylex.props(styles.entry, styles.live)}>
-          <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(agent.live))} />
+          <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(agent.live, links))} />
         </div>
       )}
       <WorkingLine agent={agent} />
@@ -152,18 +153,18 @@ const styles = stylex.create({
     scrollbarColor: `${colors.lineStrong} ${colors.card}`,
   },
   nested: { paddingTop: 3, paddingInline: 9, paddingBottom: 9 },
-  sample: { fontFamily: 'inherit', fontSize: 9, color: '#727272', marginBottom: 9 },
+  sample: { fontFamily: 'inherit', fontSize: 9, color: colors.textGhost, marginBottom: 9 },
   entry: { display: 'block', paddingBlock: 8 },
-  user: { backgroundColor: '#2a2a2a', borderRadius: 3, paddingBlock: 9, paddingInline: 11, marginTop: 8, marginBottom: 12, color: '#e0e0e0' },
-  system: { paddingBlock: 6, fontSize: 10, color: '#808080' },
+  user: { backgroundColor: colors.selected, borderRadius: 3, paddingBlock: 9, paddingInline: 11, marginTop: 8, marginBottom: 12, color: colors.text },
+  system: { paddingBlock: 6, fontSize: 10, color: colors.textFaint },
   live: { opacity: 0.85 },
   channel: { borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.lineStrong, paddingLeft: 10 },
   channelHead: { fontSize: 10, color: colors.textMuted },
-  kind: { display: 'inline-block', fontSize: 9, color: '#808080', marginRight: 9 },
+  kind: { display: 'inline-block', fontSize: 9, color: colors.textFaint, marginRight: 9 },
   tool: { marginBlock: 12 },
   summary: { cursor: 'pointer', paddingBlock: 2, fontFamily: 'inherit', fontSize: 10, lineHeight: 1.7, color: colors.textMuted },
-  toolTitle: { color: '#b8b8b8' },
-  command: { display: 'block', paddingLeft: 12, color: '#d1d1d1', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 10, fontFamily: 'inherit' },
+  toolTitle: { color: colors.textSub },
+  command: { display: 'block', paddingLeft: 12, color: colors.textSoft, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 10, fontFamily: 'inherit' },
   pre: {
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',

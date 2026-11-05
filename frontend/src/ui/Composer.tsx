@@ -6,7 +6,7 @@ import { composerPlaceholder } from '../composer-target.ts';
 import { markdown } from '../markdown.ts';
 import { activeAgents } from '../model.ts';
 import { fileSize } from '../attachments.ts';
-import { colors, breakpoints } from './theme/tokens.stylex.ts';
+import { colors, breakpoints, fonts } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Badge } from './AgentCard.tsx';
@@ -260,17 +260,17 @@ const form = stylex.create({
     backgroundColor: 'transparent',
   },
   dragging: { backgroundColor: colors.attached },
-  input: { flexGrow: 1, flexShrink: 0, flexBasis: '1.65em', minHeight: '1.65em', overflowY: 'auto', padding: 0 },
+  input: { flexGrow: 1, flexShrink: 0, flexBasis: '1.65em', minHeight: '1.65em', overflowY: 'auto', padding: 0, fontFamily: fonts.mono },
   targets: { display: 'flex', gap: 6, flexWrap: 'nowrap', overflow: 'auto', maxHeight: 32, flexShrink: 0 },
   recipient: { display: 'inline-flex', alignItems: 'center', gap: 7, paddingBlock: 4, paddingInline: 7, borderRadius: 3, backgroundColor: colors.selected, fontSize: 10, flexShrink: 0, maxWidth: 270 },
   ellipsis: { whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' },
   chipButton: { paddingBlock: 0, paddingInline: 2, color: colors.textMuted, fontSize: 12 },
   files: { display: 'flex', flexWrap: 'nowrap', gap: 5, maxHeight: 26, overflow: 'auto', flexShrink: 0 },
-  file: { display: 'inline-flex', alignItems: 'center', gap: 6, backgroundColor: '#2a2a2a', borderRadius: 3, paddingBlock: 3, paddingInline: 6, fontSize: 10, flexShrink: 0, maxWidth: 260 },
+  file: { display: 'inline-flex', alignItems: 'center', gap: 6, backgroundColor: colors.selected, borderRadius: 3, paddingBlock: 3, paddingInline: 6, fontSize: 10, flexShrink: 0, maxWidth: 260 },
   fileSize: { color: colors.textFaint, fontSize: 9, marginLeft: 4 },
   tools: { display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0, overflowX: 'auto', scrollbarWidth: 'thin', marginRight: 76, minHeight: 28 },
   pick: { fontSize: 18, width: 26, height: 26, padding: 0, margin: 0, color: colors.textDim },
-  model: { maxWidth: '65%', marginLeft: 8, fontSize: 10, backgroundColor: 'transparent', color: '#bbbbbb', borderWidth: 0, paddingBlock: 6, paddingInline: 4 },
+  model: { maxWidth: '65%', marginLeft: 8, fontSize: 10, backgroundColor: 'transparent', color: colors.textSub, borderWidth: 0, paddingBlock: 6, paddingInline: 4 },
   actions: { position: 'absolute', bottom: 9, right: 9, display: 'flex', gap: 8, alignItems: 'center' },
   menu: {
     position: 'absolute',
@@ -301,7 +301,7 @@ const form = stylex.create({
     cursor: 'pointer',
     color: 'inherit',
     fontFamily: 'inherit',
-    backgroundColor: { default: 'transparent', ':hover': colors.hover, ':focus': '#383838' },
+    backgroundColor: { default: 'transparent', ':hover': colors.hover, ':focus': colors.control },
   },
   menuName: { minWidth: 65, color: colors.textStrong, fontSize: 11 },
   menuText: { color: colors.textDim, fontSize: 11 },
@@ -340,8 +340,8 @@ const aside = stylex.create({
     paddingBottom: 4,
     backgroundColor: colors.sunken,
   },
-  kind: { fontSize: 9, color: '#808080' },
+  kind: { fontSize: 9, color: colors.textFaint },
   question: { flexGrow: 1, minWidth: 0, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  muted: { color: '#858585', margin: 0 },
+  muted: { color: colors.textFaint, margin: 0 },
   error: { color: colors.danger, margin: 0 },
 });

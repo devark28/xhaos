@@ -4,19 +4,23 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import * as stylex from '@stylexjs/stylex';
 import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
-import { colors } from './theme/tokens.stylex.ts';
+import { colors, fonts } from './theme/tokens.stylex.ts';
 import { Button, Chip, StatusDot } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
 import { QuestionInbox } from './QuestionInbox.tsx';
+import { authPost } from './SignIn.tsx';
+import { UsagePanel, usageLine } from './Usage.tsx';
+import { AppearanceSettings } from './AppearanceSettings.tsx';
+import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { McpServers } from './Mcp.tsx';
-import { useApp, workspaceOf } from './state/store.ts';
+import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
-  openPanel, showTools, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
+  openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
 } from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -94,6 +98,7 @@ function Channels({ channelId }: { channelId?: string }) {
   const current = channels.find(channel => channel.id === channelId) || channels[0];
   const identity = (id: number | string) => {
     const agent = flatten(w.agents).find(agent => agent.id === Number(id));
+    if (typeof id === 'string' && id.startsWith('outside:')) return `${id.slice(8)} (outside, via the link)`;
     return agent ? `#${agent.id} ${agent.title}` : id === 'user' ? 'User (legacy preview message)' : String(id);
   };
   if (!current) {
@@ -105,22 +110,55 @@ function Channels({ channelId }: { channelId?: string }) {
     );
   }
   return (
-    <Shell title="Agent channels">
+    <Shell title="Agent channels" action={current.closed ? <Chip>closed</Chip> : <Button data-close-channel={current.id} onClick={() => closeChannel(current.id)}>Close channel</Button>}>
       <div {...stylex.props(channel.tabs)}>
-        {channels.map(c => <Button key={c.id} data-channel={c.id} chosen={c.id === current.id} onClick={() => openPanel('channels', { channelId: c.id })} sx={channel.tab}># {c.subject}</Button>)}
+        {channels.map(c => <Button key={c.id} data-channel={c.id} chosen={c.id === current.id} onClick={() => openPanel('channels', { channelId: c.id })} sx={channel.tab}># {c.subject}{c.closed ? ' (closed)' : ''}</Button>)}
       </div>
       <div {...stylex.props(channel.members)}>{current.participants.map(id => <Chip key={id}>{identity(id)}</Chip>)}</div>
+      {!current.closed && <ChannelLink id={current.id} published={Boolean(current.published)} />}
       <div {...stylex.props(channel.log)}>
         {current.messages.length ? current.messages.map((message, index) => (
           <article key={index} {...stylex.props(channel.message)}>
-            <div {...stylex.props(channel.meta)}>{identity(message.writer)} → {message.readers.map(identity).join(', ')} <time {...stylex.props(channel.time)}>{message.timestamp}</time></div>
-            <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(message.text))} />
+            <div {...stylex.props(channel.meta)}>{identity(message.writer)} → {message.readers.map(identity).join(', ')} <time dateTime={message.timestamp} title={message.timestamp} {...stylex.props(channel.time)}>{formatTime(message.timestamp)}</time></div>
+            <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(message.text, { agentLinks: true }))} />
             <AttachedFiles files={message.attachments} />
           </article>
         )) : <P muted>No agent messages in this channel yet.</P>}
       </div>
-      <p {...stylex.props(memory.note, memory.noteAfter)}>Read-only: agents write here. Top-level agents can talk to each other and to their own subagents; subagents only to their parent and siblings.</p>
+      <p {...stylex.props(memory.note, memory.noteAfter)}>Agents write here; you can close a channel. Top-level agents can talk to each other and to their own subagents; subagents only to their parent and siblings. Opening a channel outside an agent's own family (parent, siblings, subagents) waits for your approval.</p>
     </Shell>
+  );
+}
+
+// ChannelLink publishes a channel: programs outside Xhaos (a script, another
+// Claude Code session) can then read it and send messages into it with the
+// passphrase, which is shown here once.
+function ChannelLink({ id, published }: { id: string; published: boolean }) {
+  const [shown, setShown] = useState<{ id: string; passphrase: string; path: string } | null>(null);
+  const issue = async () => { const r = await publishChannel(id); if (r) setShown({ id, ...r }); };
+  const fresh = shown?.id === id ? shown : null;
+  const url = fresh ? `${location.origin}${fresh.path}` : '';
+  const example = fresh ? `curl -s -X POST ${url} \\\n  -H 'Authorization: Bearer ${fresh.passphrase}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"from":"my script","body":"hello agents"}'\n\n# read it, waiting up to 30s for new messages:\ncurl -s '${url}?after=0&wait=30' -H 'Authorization: Bearer ${fresh.passphrase}'` : '';
+  return (
+    <div data-channel-link={id} {...stylex.props(channel.link)}>
+      <div {...stylex.props(channel.linkRow)}>
+        {published ? <><Chip>published</Chip><Button data-reset-link={id} onClick={issue}>Reset passphrase</Button><Button data-unpublish={id} onClick={() => { setShown(null); void unpublishChannel(id); }}>Unpublish</Button></>
+          : <Button data-publish={id} onClick={issue}>Publish</Button>}
+      </div>
+      {fresh ? <>
+        <P>Copy the passphrase now: it is not shown again (Reset gives a new one and stops this one).</P>
+        <div {...stylex.props(channel.linkRow)}>
+          <code data-passphrase {...stylex.props(channel.secret)}>{fresh.passphrase}</code>
+          <Button data-copy-passphrase onClick={() => {
+            // navigator.clipboard is missing on insecure origins (a LAN address).
+            if (!navigator.clipboard) { toast('This page cannot copy here (plain HTTP); select the passphrase and copy it.'); return; }
+            navigator.clipboard.writeText(fresh.passphrase).then(() => toast('Passphrase copied.'), () => toast('Copy failed; select the passphrase instead.'));
+          }}>Copy</Button>
+        </div>
+        <pre data-link-example {...stylex.props(channel.example)}>{example}</pre>
+      </> : published ? <P muted>Programs with the passphrase can read this channel and post into it; its agents see those messages as coming from outside.</P>
+        : <P muted>Publish to let a program outside Xhaos (a script, another Claude Code session) read this channel and send its agents messages, with a passphrase shown once.</P>}
+    </div>
   );
 }
 
@@ -131,6 +169,7 @@ const presets = {
   openai: { id: 'openai', kind: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', key: 'sk-…' },
   deepseek: { id: 'deepseek', kind: 'openai', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', key: 'sk-…' },
   local: { id: 'local', kind: 'openai', name: 'Local (Ollama)', baseUrl: 'http://localhost:11434/v1', key: 'none needed' },
+  sim: { id: 'sim', kind: 'sim', name: 'Simulated', baseUrl: '', key: 'none needed' },
   other: { id: '', kind: 'openai', name: '', baseUrl: '', key: 'if the endpoint needs one' },
 } as const;
 type PresetName = keyof typeof presets;
@@ -152,13 +191,13 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   const edit = (id: string) => {
     const p = providers.find(x => x.id === id);
     if (!p) return;
-    setPreset(p.kind === 'anthropic' ? 'anthropic' : 'other');
+    setPreset(p.kind === 'anthropic' ? 'anthropic' : p.kind === 'sim' ? 'sim' : 'other');
     setEditingId(p.id);
     setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', '), context: p.contextTokens ? String(p.contextTokens) : '' });
   };
   const save = async () => { if (preset && await saveProvider(form)) choose(''); };
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
-  const openai = form.kind === 'openai';
+  const openai = form.kind === 'openai', simulated = form.kind === 'sim';
   return (
     <>
       <P muted>Providers give agents their models. Each new agent uses the model picked next to the composer.</P>
@@ -166,7 +205,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
         {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
             <div>
-              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}{p.contextTokens ? ` · ${p.contextTokens.toLocaleString()} tokens` : ''}</span>
+              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind === 'sim' ? 'simulated, no tokens' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}{p.contextTokens ? ` · ${p.contextTokens.toLocaleString()} tokens` : ''}</span>
               <div {...stylex.props(shell.muted, provider.models)}>{p.models.join(', ')}</div>
             </div>
             <div {...stylex.props(provider.actions)}>
@@ -189,6 +228,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
             <option value="deepseek">DeepSeek</option>
             <option value="local">Local (Ollama)</option>
             <option value="other">Other OpenAI-compatible</option>
+            <option value="sim">Simulated (no model, no tokens)</option>
           </select>
         </div>
         {preset && <>
@@ -201,9 +241,11 @@ function Providers({ message, testing }: { message?: string; testing?: string })
             <label htmlFor="provider-url" {...stylex.props(provider.fieldLabel)}>Base URL</label>
             <input id="provider-url" value={form.baseUrl} onChange={set('baseUrl')} placeholder="https://…/v1 (the part before /chat/completions)" autoComplete="off" spellCheck="false" {...stylex.props(provider.input)} />
           </>}
+          {!simulated && <>
           <label htmlFor="provider-key" {...stylex.props(provider.fieldLabel)}>API key</label>
           <input id="provider-key" type="text" name="xhaos-provider-key" value={form.apiKey} onChange={set('apiKey')} autoComplete="off" autoCapitalize="off" spellCheck="false" data-1p-ignore="" data-lpignore="true" data-bwignore=""
             placeholder={editing?.hasKey ? 'Leave empty to keep the saved key' : presets[preset].key} {...stylex.props(provider.input, provider.key)} />
+          </>}
           <label htmlFor="provider-models" {...stylex.props(provider.fieldLabel)}>Models</label>
           <input id="provider-models" value={form.models} onChange={set('models')} autoComplete="off" spellCheck="false"
             placeholder={openai ? 'Comma-separated; empty asks the endpoint for its list' : 'Comma-separated; empty uses the defaults'} {...stylex.props(provider.input)} />
@@ -211,6 +253,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
           <input id="provider-context" value={form.context} onChange={set('context')} inputMode="numeric" autoComplete="off"
             placeholder={`Tokens before older messages are compacted; empty: ${openai ? '128,000' : '200,000'}`} {...stylex.props(provider.input)} />
         </div>
+        {simulated && <P muted>A scripted stand-in for a model: agents list the project, read a file, and then act on words in the task. "split" or "spawn" starts two subagents, "contact #N" opens a channel with agent #N, "ask" asks you a question, "write" writes sim-notes.md, and "run" runs git status. Every approval and channel works as with a real model. No provider is called and nothing is billed. scripted-fast skips the typing delay.</P>}
         {clash && <p {...stylex.props(provider.message)}>A provider with ID “{form.id.trim()}” exists: saving updates it (an empty key or model list keeps its own).</p>}
         <div {...stylex.props(provider.formActions)}>
           <Button id="provider-cancel" onClick={() => choose('')}>Cancel</Button>
@@ -261,11 +304,11 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'tools';
+type SectionId = 'models' | 'usage' | 'tools' | 'appearance' | 'security';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
-      <button type="button" id={id === 'models' ? 'open-providers' : 'integrations'} aria-expanded={open} onClick={onToggle} {...stylex.props(settings.head)}>
+      <button type="button" id={id === 'models' ? 'open-providers' : id === 'tools' ? 'integrations' : `settings-${id}`} aria-expanded={open} onClick={onToggle} {...stylex.props(settings.head)}>
         <span {...stylex.props(settings.chevron, open && settings.chevronOpen)}><Icon name="arrow" size={12} /></span>
         <span {...stylex.props(settings.title)}>{title}</span>
         <span {...stylex.props(settings.summary)}>{summary}</span>
@@ -275,11 +318,12 @@ function Section({ id, title, summary, open, onToggle, children }: { id: string;
   );
 }
 
-function Settings({ focus, message, testing }: { focus?: SectionId; message?: string; testing?: string }) {
+function Settings({ focus, message, testing, request }: { focus?: SectionId; message?: string; testing?: string; request?: object }) {
   const version = useApp(s => s.backendVersion);
   const providers = useApp(s => s.providers.length);
   const servers = useApp(s => s.mcpServers.length);
   const catalogCount = useApp(s => (s.tools && 'tools' in s.tools ? s.tools.tools.length : 0));
+  const usageSummary = useApp(s => usageLine(s.usage));
   const [open, setOpen] = useState<Set<SectionId>>(() => new Set(focus ? [focus] : []));
   // Opening a section from elsewhere (/providers, /tools, a provider action)
   // expands it and brings it into view.
@@ -287,11 +331,13 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
     if (!focus) return;
     setOpen(o => (o.has(focus) ? o : new Set([...o, focus])));
     requestAnimationFrame(() => document.querySelector(`[data-settings-section="${focus}"]`)?.scrollIntoView({ block: 'nearest' }));
-  }, [focus]);
+  }, [focus, request]); // each request to show a section expands it, even the one already in the link
   const toggle = (id: SectionId) => {
     const next = new Set(open);
     if (next.has(id)) next.delete(id); else { next.add(id); if (id === 'tools') showTools(false); }
     setOpen(next);
+    // The section opened last goes in the link (#panel=settings&section=…).
+    if (next.has(id)) update(s => { if (s.panel.kind === 'settings') s.panel.section = id; });
   };
   return (
     <Shell title="Settings">
@@ -299,8 +345,17 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
         <Section id="models" title="Models" summary={providers ? `${providers} provider${providers > 1 ? 's' : ''}` : 'none set up'} open={open.has('models')} onToggle={() => toggle('models')}>
           <Providers message={message} testing={testing} />
         </Section>
+        <Section id="usage" title="Usage and cost" summary={usageSummary} open={open.has('usage')} onToggle={() => toggle('usage')}>
+          <UsagePanel />
+        </Section>
         <Section id="tools" title="Tools and MCP" summary={`${catalogCount ? `${catalogCount} tools` : 'tools'}${servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}`} open={open.has('tools')} onToggle={() => toggle('tools')}>
           <Tools />
+        </Section>
+        <Section id="appearance" title="Appearance" summary="text size, theme, fonts" open={open.has('appearance')} onToggle={() => toggle('appearance')}>
+          <AppearanceSettings />
+        </Section>
+        <Section id="security" title="Passphrase" summary="signs in and encrypts keys" open={open.has('security')} onToggle={() => toggle('security')}>
+          <Security />
         </Section>
       </> : null}
       <P muted>{version ? `Connected to the Go backend ${version}. Agents and messages are stored on the server.` : 'Prototype mode: tasks are stored in this browser. Run scripts/server.sh to use the Go backend.'}</P>
@@ -308,10 +363,35 @@ function Settings({ focus, message, testing }: { focus?: SectionId; message?: st
   );
 }
 
+// Security: change the passphrase (the same data key is rewrapped, so saved
+// keys stay readable) or sign this browser out.
+function Security() {
+  const [old, setOld] = useState(''), [next, setNext] = useState(''), [note, setNote] = useState('');
+  const change = async () => {
+    const failed = await authPost('change', { passphrase: old, next });
+    setNote(failed ? `Not changed: ${failed}.` : 'Passphrase changed. Other signed-in browsers stay signed in.');
+    if (!failed) { setOld(''); setNext(''); }
+  };
+  return <>
+    <P muted>The passphrase signs browsers in and wraps the key that encrypts API keys and MCP secrets. After a server restart, agents wait until someone signs in.</P>
+    <div {...stylex.props(provider.grid)}>
+      <label htmlFor="passphrase-old" {...stylex.props(provider.fieldLabel)}>Current</label>
+      <input id="passphrase-old" type="password" autoComplete="current-password" value={old} onChange={e => setOld(e.target.value)} {...stylex.props(provider.input)} />
+      <label htmlFor="passphrase-new" {...stylex.props(provider.fieldLabel)}>New</label>
+      <input id="passphrase-new" type="password" autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} {...stylex.props(provider.input)} />
+    </div>
+    <div {...stylex.props(provider.formActions)}>
+      <Button id="sign-out" onClick={async () => { await authPost('signout', {}); location.reload(); }}>Sign out</Button>
+      <Button id="passphrase-change" onClick={change}>Change passphrase</Button>
+    </div>
+    {note && <p id="passphrase-note" {...stylex.props(provider.message)}>{note}</p>}
+  </>;
+}
+
 // Tool groups in the Tools section, by catalog source.
 const toolGroups: [string, string, string][] = [
   ['built-in', 'Files and commands', "Part of Xhaos itself, no MCP server needed. Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first."],
-  ['channels', 'Agents and channels', 'Talking to other agents changes no files, so it runs at once; starting a subagent is gated like a write. Top-level agents reach each other across projects; subagents only their parent and siblings.'],
+  ['channels', 'Agents and channels', 'Opening a channel to agents outside its own family always waits for you, showing who they are and what they work on; within the family, and on channels already open, talking runs at once. Starting a subagent is gated like a write. Top-level agents reach each other across projects; subagents only their parent and siblings.'],
   ['memory', 'Memories', "Every agent sees the workspace's memories in its prompt; saving one is gated like a write."],
 ];
 const effectNotes: Record<string, string> = {
@@ -371,7 +451,7 @@ export function Panel() {
   else if (panel.kind === 'history') body = <History />;
   else if (panel.kind === 'status') body = <Status />;
   else if (panel.kind === 'help') body = <Help />;
-  else if (panel.kind === 'settings') body = <Settings />;
+  else if (panel.kind === 'settings') body = <Settings focus={panel.section as SectionId | undefined} request={panel} />;
   else if (panel.kind === 'tools') body = <Settings focus="tools" />;
   else { const entry = simple()[panel.kind]; if (entry) body = <Shell title={entry[0]}>{entry[1]}</Shell>; }
   return <section id="utility-panel" aria-label="Panel" {...stylex.props(shell.root)}>{body}</section>;
@@ -407,7 +487,7 @@ const shell = stylex.create({
   actions: { display: 'flex', alignItems: 'center', gap: 10 },
   content: { flexGrow: 1, minHeight: 0, overflow: 'auto', paddingBlock: 8, paddingInline: 12, fontSize: 11, lineHeight: 1.65 },
   p: { color: colors.textMuted, marginTop: 6, marginBottom: 12, marginInline: 0 },
-  muted: { color: '#858585' },
+  muted: { color: colors.textFaint },
   wide: { width: 'auto', paddingInline: 12, marginBlock: 8 },
   questions: { height: '100%', display: 'flex', flexDirection: 'column' },
 });
@@ -416,7 +496,7 @@ const memory = stylex.create({
   note: { fontSize: 10, color: colors.textFaint, marginTop: 0, marginInline: 0, marginBottom: 8 },
   noteAfter: { marginTop: 8 },
   list: { display: 'flex', flexDirection: 'column', gap: 1 },
-  row: { position: 'relative', paddingBlock: 8, paddingLeft: 7, paddingRight: 88, borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: '#3b3b3b', backgroundColor: colors.sunken, minHeight: 40 },
+  row: { position: 'relative', paddingBlock: 8, paddingLeft: 7, paddingRight: 88, borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.line, backgroundColor: colors.sunken, minHeight: 40 },
   content: { fontSize: 11, color: colors.text, lineHeight: 1.45 },
   actions: { position: 'absolute', right: 5, top: 5, display: 'flex', gap: 4 },
   small: { fontSize: 9 },
@@ -455,6 +535,10 @@ const channel = stylex.create({
   message: { marginTop: 10, marginBottom: 16 },
   meta: { fontSize: 9, color: colors.textGhost, marginBottom: 5 },
   time: { marginLeft: 8 },
+  link: { marginBottom: 10, fontSize: 11 },
+  linkRow: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBlock: 6 },
+  secret: { fontFamily: fonts.mono, fontSize: 11, backgroundColor: colors.sunken, paddingBlock: 4, paddingInline: 6, borderRadius: 3, overflowWrap: 'anywhere', userSelect: 'all' },
+  example: { fontFamily: fonts.mono, fontSize: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: colors.textMuted, margin: 0 },
 });
 
 const provider = stylex.create({

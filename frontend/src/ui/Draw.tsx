@@ -11,6 +11,7 @@ import { Button } from './kit.tsx';
 import { addFiles } from './state/composer.ts';
 import { update, toast, errorText } from './state/store.ts';
 import { showMessageComposer } from './state/panels.ts';
+import { useThemeMode } from './appearance.ts';
 
 // Fonts come from our own server (copied there by scripts/build.mjs).
 (window as any).EXCALIDRAW_ASSET_PATH = `${location.origin}/dist/excalidraw/`;
@@ -44,9 +45,10 @@ const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 export default function Draw() {
   const api = useRef<API | null>(null);
   const [empty, setEmpty] = useState(true);
+  const theme = useThemeMode();
   const initialData = useMemo(() => {
     const saved = loadScene();
-    return { elements: saved?.elements || [], files: saved?.files, appState: { ...(saved?.appState || {}), theme: 'dark' as const, collaborators: new Map() } };
+    return { elements: saved?.elements || [], files: saved?.files, appState: { ...(saved?.appState || {}), collaborators: new Map() } }; // the theme comes from the app's setting
   }, []);
   useEffect(() => setEmpty(!(initialData.elements as any[]).some(e => !e.isDeleted)), [initialData]);
   useEffect(() => persist, []); // save at once when the board closes
@@ -90,7 +92,7 @@ export default function Draw() {
         <Excalidraw
           excalidrawAPI={instance => { api.current = instance; }}
           initialData={initialData as any}
-          theme="dark"
+          theme={theme}
           onChange={(elements, appState, files) => {
             setEmpty(!elements.some(e => !e.isDeleted));
             saveScene({ elements, appState, files });

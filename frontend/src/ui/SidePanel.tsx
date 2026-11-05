@@ -6,6 +6,7 @@ import { colors, breakpoints } from './theme/tokens.stylex.ts';
 import { Button, StatusDot } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Panel } from './Panels.tsx';
+import { UsageTotal } from './Usage.tsx';
 import { useApp, pendingQuestionsIn, type PanelKind } from './state/store.ts';
 import { selectPanel } from './state/panels.ts';
 import type { IconName } from './icons.ts';
@@ -26,6 +27,7 @@ export function SidePanel() {
   return (
     <aside id="side" aria-label="Side panel" {...stylex.props(side.root)}>
       <nav aria-label="Panels" {...stylex.props(side.tabs)}>
+        <UsageTotal />
         {tabs.map(tab => {
           const chosen = kind === tab.kind || Boolean(tab.also?.includes(kind));
           const waiting = tab.kind === 'questions' && pending > 0;

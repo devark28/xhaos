@@ -100,6 +100,8 @@ export interface Channel {
   creatorId: number;
   participants: number[];
   messages: ChannelMessage[];
+  closed?: boolean; // the user closed it; nothing more can be sent
+  published?: boolean; // on its link: readable and writable from outside with its passphrase
 }
 
 // A channel as the backend sends it (channel.Service.Channels).
@@ -110,7 +112,10 @@ export interface BackendChannel {
   creatorId: number;
   members: number[];
   createdAt: string;
-  messages: { id: number; channelId: number; senderId: number; body: string; createdAt: string }[];
+  closed?: boolean;
+  published?: boolean;
+  // senderId 0: sent from outside through the link, by senderName.
+  messages: { id: number; channelId: number; senderId: number; senderName?: string; body: string; createdAt: string }[];
 }
 
 export interface Workspace {
@@ -219,10 +224,21 @@ export interface FileEntry {
   size?: number;
 }
 
+// Token use and cost (usage.Service.Usage). Costs are USD; absent when the
+// model has no price.
+export interface UsageTokens { calls: number; input: number; cacheRead: number; cacheWrite: number; output: number; cost?: number }
+export interface UsagePrice { model: string; input: number; output: number; cacheRead: number; cacheWrite: number; longAfter?: number; longInput?: number; longOutput?: number; source: 'built-in' | 'yours' }
+export interface UsageReport {
+  total: UsageTokens;
+  unpriced: number;
+  models: { provider: string; kind: string; model: string; price?: UsagePrice; tokens: UsageTokens; purposes: Record<string, number> }[];
+  agents: { agentId: number; tokens: UsageTokens }[];
+}
+
 export interface ToolInfo {
   name: string;
   description: string;
-  effect: 'read' | 'write' | 'exec' | 'ask';
+  effect: 'read' | 'write' | 'exec' | 'ask' | 'contact';
   source: string; // built-in, channels, or memory
 }
 export interface McpTool {

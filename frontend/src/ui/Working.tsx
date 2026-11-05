@@ -3,10 +3,18 @@ import * as stylex from '@stylexjs/stylex';
 import { colors, breakpoints } from './theme/tokens.stylex.ts';
 import type { Agent } from '../types.ts';
 
-// Shown while an agent is running and no reply text has arrived yet, so the
-// owner can see the request is alive. Verbs rotate; seconds count up.
-const verbs = ['Thinking', 'Reading the thread', 'Considering', 'Drafting', 'Mulling it over', 'Connecting the dots', 'Working'];
+// Shown inside a running agent's card (not its header) while no reply text
+// has arrived yet, so the owner can see the request is alive. Each agent
+// starts at its own random phrase and walks the list from there, so cards
+// side by side do not say the same thing; seconds count up.
+const verbs = ['Thinking', 'Reading the thread', 'Considering', 'Drafting', 'Mulling it over', 'Connecting the dots', 'Working',
+  'Weighing options', 'Sketching a plan', 'Checking assumptions', 'Tracing the details', 'Piecing it together', 'Looking closer', 'Sorting it out'];
 const startedAt = new Map<number, number>(); // agent id -> first time seen running (this tab)
+const offsets = new Map<number, number>(); // agent id -> its random starting phrase
+const offsetOf = (id: number) => {
+  if (!offsets.has(id)) offsets.set(id, Math.floor(Math.random() * verbs.length));
+  return offsets.get(id)!;
+};
 
 export function useWorking(agent: Agent) {
   const running = agent.status === 'running';
@@ -20,13 +28,9 @@ export function useWorking(agent: Agent) {
   }, [running]);
   if (!running) return null;
   const seconds = Math.floor((Date.now() - (startedAt.get(agent.id) ?? Date.now())) / 1000);
-  return { verb: verbs[Math.floor(seconds / 3) % verbs.length], seconds };
+  return { verb: verbs[(offsetOf(agent.id) + Math.floor(seconds / 3)) % verbs.length], seconds };
 }
 
-export function WorkingLabel({ agent }: { agent: Agent }) {
-  const working = useWorking(agent);
-  return working ? <span data-working-label {...stylex.props(styles.word, styles.label)}>{working.verb}…</span> : null;
-}
 
 export function WorkingLine({ agent }: { agent: Agent }) {
   const working = useWorking(agent);
@@ -62,5 +66,5 @@ const styles = stylex.create({
   },
   label: { flexShrink: 0, marginBlock: 0, marginLeft: 4, marginRight: 8, fontSize: 10, whiteSpace: 'nowrap' },
   line: { display: 'flex', alignItems: 'baseline', gap: 8, paddingBlock: 6, fontSize: 11 },
-  time: { fontSize: 10, color: '#666666', fontVariantNumeric: 'tabular-nums' },
+  time: { fontSize: 10, color: colors.textHint, fontVariantNumeric: 'tabular-nums' },
 });

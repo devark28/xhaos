@@ -3,14 +3,14 @@ import type { Agent, Workspace } from './types.ts';
 
 export const initialWorkspaces = (): Workspace[] => hydrateDemoActivity([
   { id: 'studio', name: 'Xhaos studio', initials: 'XS', channel: 'product-dev', agents: [
-    { id: 11, title: 'Build the workspace foundation', status: 'running', role: 'Engineering', model: 'Claude Sonnet', time: '12m', progress: 64, message: 'Wiring workspace state into the application shell.', children: [
+    { id: 11, title: 'Build the workspace foundation', status: 'idle', role: 'Engineering', model: 'Claude Sonnet', time: '12m', progress: 64, message: 'Wiring workspace state into the application shell.', children: [
       { id: 14, title: 'Implement workspace persistence', status: 'running', role: 'Implementation', message: 'Adding workspace isolation and local storage.' },
       { id: 15, title: 'Review the storage boundary', status: 'waiting', role: 'Review', message: 'Requests permission to start a review subagent.' }
     ] },
     { id: 12, title: 'Explore the agent orchestration layer', status: 'waiting', role: 'Architecture', model: 'GPT', time: '8m', progress: 38, message: 'Ready to investigate a headless event stream. Approval needed.', children: [
       { id: 16, title: 'Compare event transport options', status: 'complete', role: 'Research', message: 'Transport comparison is ready for review.' }
     ] },
-    { id: 13, title: 'Design a calmer command center', status: 'running', role: 'Design', model: 'Claude Sonnet', time: '6m', progress: 42, message: 'Refining agent hierarchy and attention states.', children: [
+    { id: 13, title: 'Design a calmer command center', status: 'idle', role: 'Design', model: 'Claude Sonnet', time: '6m', progress: 42, message: 'Refining agent hierarchy and attention states.', children: [
       { id: 17, title: 'Audit keyboard navigation', status: 'running', role: 'Accessibility', message: 'Checking focus order and disclosure controls.' },
       { id: 18, title: 'Explore compact card layouts', status: 'waiting', role: 'Exploration', message: 'Requests permission to explore an alternative layout.' }
     ] },

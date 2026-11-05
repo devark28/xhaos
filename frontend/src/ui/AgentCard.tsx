@@ -1,5 +1,6 @@
-// An agent's card: a header row (ID, role, title, status, menu) and, when
-// open, its transcript and subagents. Subagents render the same way, nested.
+// An agent's card: a header row (ID, project, title, status, menu) and, when
+// open, its transcript, subagents, and a footer with the model. Subagents
+// render the same way, nested.
 import { memo, type KeyboardEvent, type MouseEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { hasPendingQuestions } from '../questions.ts';
@@ -8,7 +9,6 @@ import { Button, StatusDot } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { Transcript } from './Transcript.tsx';
 import { DecisionButtons, useNeedsDecision } from './Decisions.tsx';
-import { WorkingLabel } from './Working.tsx';
 import { clearClick, onAttachKey, onToggleClick } from './clicks.ts';
 import { useApp } from './state/store.ts';
 import { toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent } from './state/agents.ts';
@@ -31,15 +31,17 @@ const onRowClick = (event: MouseEvent, id: number) => onToggleClick(event, click
 const onRowKey = (event: KeyboardEvent, id: number) => onAttachKey(event, clickKey(id), () => toggleRecipient(id));
 
 function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; closed: boolean; nested: boolean; attached: boolean }) {
-  // The project name shows once there is more than one to tell apart.
-  const project = useApp(s => (s.projects.length > 1 ? s.projects.find(p => p.id === agent.projectId)?.name : undefined));
+  // The project is always named; the role and model are not (the model is
+  // in the footer of the open card).
+  const project = useApp(s => s.projects.find(p => p.id === agent.projectId)?.name);
   return (
     <button type="button" data-collapse={agent.id} data-agent-row-id={agent.id} aria-keyshortcuts="Alt+Enter" title="Click to open or close; double-click or Ctrl+click (Alt+Enter when focused) to attach to the composer" aria-expanded={!closed}
       aria-label={`${closed ? 'Expand' : 'Collapse'} agent ${agent.id}: ${agent.title}${attached ? ', attached to composer' : ''}`}
       onClick={event => onRowClick(event, agent.id)} onKeyDown={event => onRowKey(event, agent.id)}
       {...stylex.props(header.row, nested && header.rowNested)}>
       <span aria-hidden="true" {...stylex.props(header.id, nested && header.idNested, attached && header.idAttached)}>#{agent.id}</span>
-      <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{project && !nested ? `${project} · ` : ''}{agent.role || agent.modelLabel || ''}{agent.sample ? ' · sample' : ''}</span>
+      {/* The project only when there are several; the model lives in the footer. */}
+      {(project && !nested) || agent.sample ? <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{[!nested && project, agent.sample && 'sample'].filter(Boolean).join(' · ')}</span> : null}
       <span data-title {...stylex.props(header.title, nested && header.titleNested)}>{agent.title}</span>
     </button>
   );
@@ -105,7 +107,6 @@ function Header({ agent, closed, nested }: { agent: Agent; closed: boolean; nest
     <div data-agent-header={agent.id} data-attached={attached || undefined} {...stylex.props(header.root, nested && header.rootNested, attached && header.attached)}>
       {nested && <span aria-hidden="true" {...stylex.props(header.branch)} />}
       <HeaderButton agent={agent} closed={closed} nested={nested} attached={attached} />
-      <WorkingLabel agent={agent} />
       <SubagentChips agent={agent} />
       {!['idle', 'paused', 'terminated'].includes(agent.status) && <span {...stylex.props(header.status, nested && header.statusNested)}><Badge agent={agent} /></span>}
       <Disclosure agent={agent} closed={closed} />
@@ -140,6 +141,15 @@ function Child({ agent }: { agent: Agent }) {
   );
 }
 
+// The model, at the foot of an open card. Placement experiment: sample #9012
+// shows it on the right, every other card on the left.
+function Footer({ agent }: { agent: Agent }) {
+  const model = agent.modelLabel || agent.model;
+  if (!model) return null;
+  const right = agent.id === 9012;
+  return <div data-agent-footer={agent.id} data-side={right ? 'right' : 'left'} {...stylex.props(body.footer, right && body.footerRight)} title="Model">{model}</div>;
+}
+
 // Memoized: an agent object only changes when its own subtree does, so a
 // change elsewhere does not re-render this card.
 export const AgentCard = memo(function AgentCard({ agent }: { agent: Agent }) {
@@ -154,6 +164,7 @@ export const AgentCard = memo(function AgentCard({ agent }: { agent: Agent }) {
           <QuestionSummary agent={agent} />
           <Children agent={agent} nested={false} />
           {decision && <div data-agent-controls {...stylex.props(body.controls)}><DecisionButtons agent={agent} /></div>}
+          <Footer agent={agent} />
         </div>
       )}
     </article>
@@ -186,7 +197,7 @@ const header = stylex.create({
     fontFamily: 'inherit',
     fontSize: 'inherit',
     borderWidth: 0,
-    backgroundColor: { default: 'transparent', ':focus-visible': '#2b2b2b' },
+    backgroundColor: { default: 'transparent', ':focus-visible': colors.selected },
   },
   rowNested: { alignSelf: 'stretch', minHeight: 32, gap: 7, paddingBlock: 7, paddingRight: 8, borderRadius: 2, fontSize: 11 },
   id: {
@@ -202,7 +213,8 @@ const header = stylex.create({
   },
   idNested: { minWidth: 36, minHeight: 18, paddingInline: 7, fontSize: 9 },
   idAttached: { color: colors.textStrong },
-  role: { color: colors.textFaint, fontSize: { default: 10, [breakpoints.tiny]: 9 }, flexShrink: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  // The project keeps its name (up to 40% of the row); the title gives way first.
+  role: { color: colors.textFaint, fontSize: { default: 10, [breakpoints.tiny]: 9 }, flexShrink: 0, maxWidth: '40%', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   roleNested: { display: { default: null, [breakpoints.tiny]: 'none' } },
   title: { fontSize: { default: 12, [breakpoints.tiny]: 11 }, fontWeight: 450, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexGrow: 1, flexShrink: 1, flexBasis: 'auto', minWidth: 0 },
   titleNested: { fontSize: 11, fontWeight: 400, color: colors.textSoft },
@@ -257,12 +269,14 @@ const menu = stylex.create({
 });
 
 const body = stylex.create({
+  footer: { display: 'flex', fontSize: 10, color: colors.textGhost, paddingTop: 6, paddingInline: 2 },
+  footerRight: { justifyContent: 'flex-end' },
   card: { borderWidth: 1, borderStyle: 'solid', borderColor: colors.line, borderRadius: 4, backgroundColor: colors.card },
-  body: { borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: '#303030', padding: 10 },
+  body: { borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: colors.line, padding: 10 },
   children: { display: 'flex', flexDirection: 'column', gap: 6, borderLeftWidth: 1, borderLeftStyle: 'solid', borderLeftColor: colors.lineSoft, paddingTop: 1 },
   childrenTop: { marginTop: 10, marginLeft: 5 },
   childrenNested: { marginTop: 7, marginRight: 9, marginBottom: 9, marginLeft: 12 },
-  child: { position: 'relative', marginLeft: 12, borderWidth: 1, borderStyle: 'solid', borderColor: '#363636', backgroundColor: colors.raised, borderRadius: 3 },
+  child: { position: 'relative', marginLeft: 12, borderWidth: 1, borderStyle: 'solid', borderColor: colors.line, backgroundColor: colors.raised, borderRadius: 3 },
   childExtras: { paddingLeft: 9 },
   controls: { display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 8 },
   questions: {
