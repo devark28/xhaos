@@ -1,11 +1,11 @@
 // The side panel's contents. Every panel uses Shell, so they share the
 // heading and scrolling.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
 import { colors, fonts } from './theme/tokens.stylex.ts';
-import { Button, Chip, StatusDot } from './kit.tsx';
+import { Button, StatusDot } from './kit.tsx';
 import { Icon } from './Icon.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
@@ -15,6 +15,7 @@ import { UsagePanel, usageLine } from './Usage.tsx';
 import { AppearanceSettings } from './AppearanceSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
+import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { slashCommands } from './state/composer.ts';
@@ -93,20 +94,32 @@ function Memories({ editId }: { editId?: string }) {
   );
 }
 
-// Channels: a compact list of channels, then the chosen one: its subject
-// and actions in one row (Publish, Close), its members in one line, and its
-// messages as the main content.
+// Channels: an accordion, one channel open at a time (the panel is narrow
+// and channels keep receiving messages). A closed row shows the subject,
+// members, status and the latest message; a dot marks messages you have not
+// seen open. The most recently active channel comes first, closed ones last.
+const SEEN = 'xhaos-channels-seen';
+const readSeen = (): Record<string, number> => { try { return JSON.parse(localStorage.getItem(SEEN) || '{}'); } catch { return {}; } };
+const lastAt = (c: ChannelView) => c.messages.at(-1)?.timestamp || '';
+const plain = (text: string) => text.replace(/[*_`#>|]/g, '').replace(/\s+/g, ' ').trim();
+
 function Channels({ channelId }: { channelId?: string }) {
-  const w = useApp(s => workspaceOf(s)), channels = w.channels || [];
-  const current = channels.find(channel => channel.id === channelId) || channels[0];
-  const [issued, setIssued] = useState<{ id: string; passphrase: string; path: string } | null>(null);
+  const w = useApp(s => workspaceOf(s));
+  const channels = [...(w.channels || [])].sort((a, b) => Number(Boolean(a.closed)) - Number(Boolean(b.closed)) || lastAt(b).localeCompare(lastAt(a)) || Number(b.id) - Number(a.id));
+  const openId = channelId ?? (channels.length === 1 ? channels[0].id : '');
+  const [seen, setSeen] = useState(readSeen);
   const all = flatten(w.agents);
-  const name = (id: number | string) => {
-    if (typeof id === 'string' && id.startsWith('outside:')) return `${id.slice(8)} (outside)`;
-    return typeof id === 'number' || /^\d+$/.test(String(id)) ? `#${id}` : String(id);
-  };
   const title = (id: number | string) => all.find(agent => agent.id === Number(id))?.title || '';
-  if (!current) {
+  const name = (id: number | string) => (typeof id === 'string' && id.startsWith('outside:') ? `${id.slice(8)} (outside)` : `#${id}`);
+  const open = channels.find(c => c.id === openId);
+  const openCount = open?.messages.length ?? 0;
+  useEffect(() => {
+    if (!open || seen[open.id] === openCount) return;
+    const next = { ...readSeen(), [open.id]: openCount };
+    try { localStorage.setItem(SEEN, JSON.stringify(next)); } catch { /* private mode */ }
+    setSeen(next);
+  }, [open?.id, openCount]);
+  if (!channels.length) {
     return (
       <Shell title="Agent channels">
         <P>No agent channels yet.</P>
@@ -114,44 +127,71 @@ function Channels({ channelId }: { channelId?: string }) {
       </Shell>
     );
   }
-  const issue = async () => { const r = await publishChannel(current.id); if (r) setIssued({ id: current.id, ...r }); };
-  const fresh = issued?.id === current.id ? issued : null;
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-channel]')];
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    if (at < 0) return;
+    event.preventDefault();
+    rows[Math.max(0, Math.min(rows.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)))].focus();
+  };
   return (
     <Shell title="Agent channels">
-      {channels.length > 1 && (
-        <div role="tablist" aria-label="Channels" {...stylex.props(channel.list)}>
-          {channels.map(c => (
-            <button key={c.id} type="button" role="tab" aria-selected={c.id === current.id} data-channel={c.id} onClick={() => openPanel('channels', { channelId: c.id })} {...stylex.props(channel.item, c.id === current.id && channel.itemChosen)}>
-              <span {...stylex.props(channel.itemSubject)}>{c.subject}</span>
-              <span {...stylex.props(channel.itemMeta)}>{c.closed ? 'closed' : c.published ? 'published' : `${c.messages.length}`}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      <div data-channel-head={current.id} {...stylex.props(channel.head)}>
-        <div {...stylex.props(channel.headText)}>
-          <h3 {...stylex.props(channel.subject)}>{current.subject}</h3>
-          <div {...stylex.props(channel.members)}>
-            {current.participants.map((id, i) => {
-              const full = title(id), short = full.length > 22 ? `${full.slice(0, 21)}…` : full;
-              return <span key={id}>{i > 0 && ' · '}<a href="#" data-agent-link={id} title={full}>#{id}</a> <span {...stylex.props(channel.memberTitle)}>{short}</span></span>;
-            })}
-          </div>
+      <div data-channel-list onKeyDown={onKeyDown} {...stylex.props(channel.list)}>
+        {channels.map(c => {
+          const isOpen = c.id === openId, last = c.messages.at(-1);
+          const unread = !isOpen && c.messages.length > (seen[c.id] ?? 0);
+          return (
+            <section key={c.id} data-channel-row={c.id} data-open={isOpen || undefined} {...stylex.props(channel.row, isOpen && channel.rowOpen)}>
+              <button type="button" data-channel={c.id} aria-expanded={isOpen} aria-controls={`channel-body-${c.id}`}
+                onClick={() => openPanel('channels', { channelId: isOpen ? '' : c.id })} {...stylex.props(channel.summary)}>
+                <span {...stylex.props(channel.line)}>
+                  <span aria-hidden="true" {...stylex.props(channel.chevron, isOpen && channel.chevronOpen)}>›</span>
+                  <span {...stylex.props(channel.subject)}>{c.subject}</span>
+                  {unread && <span data-unread title="New messages" {...stylex.props(channel.dot)} />}
+                  {c.closed ? <span {...stylex.props(channel.tag)}>closed</span> : c.published && <span {...stylex.props(channel.tag, channel.tagOn)}>published</span>}
+                  <span {...stylex.props(channel.when)}>{last ? formatTime(last.timestamp) : ''}</span>
+                </span>
+                <span {...stylex.props(channel.sub)}>{c.participants.map(id => `#${id}`).join(' · ')}{last && <> — <span {...stylex.props(channel.preview)}>{name(last.writer)}: {plain(last.text).slice(0, 140)}</span></>}</span>
+              </button>
+              {isOpen && <ChannelBody c={c} title={title} name={name} />}
+            </section>
+          );
+        })}
+      </div>
+    </Shell>
+  );
+}
+
+function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | string): string; name(id: number | string): string }) {
+  const [issued, setIssued] = useState<{ passphrase: string; path: string } | null>(null);
+  const log = useRef<HTMLDivElement>(null);
+  // Start at the newest message, and follow new ones while at the bottom.
+  const pinned = useRef(true);
+  useLayoutEffect(() => { const el = log.current; if (el && pinned.current) el.scrollTop = el.scrollHeight; }, [c.messages.length]);
+  const issue = async () => { const r = await publishChannel(c.id); if (r) setIssued(r); };
+  return (
+    <div id={`channel-body-${c.id}`} data-channel-head={c.id} {...stylex.props(channel.body)}>
+      <div {...stylex.props(channel.bar)}>
+        <div {...stylex.props(channel.members)}>
+          {c.participants.map((id, i) => {
+            const full = title(id), short = full.length > 22 ? `${full.slice(0, 21)}…` : full;
+            return <span key={id}>{i > 0 && ' · '}<a href="#" data-agent-link={id} title={full}>#{id}</a> <span {...stylex.props(channel.memberTitle)}>{short}</span></span>;
+          })}
         </div>
         <div data-channel-actions {...stylex.props(channel.actions)}>
-          {current.closed ? <Chip>closed</Chip> : <>
-            {current.published
-              ? <><Chip>published</Chip>
-                  <Button data-reset-link={current.id} title="Issue a new passphrase; the old one stops working" onClick={issue}>Reset</Button>
-                  <Button data-unpublish={current.id} title="Take the channel off its link" onClick={() => { setIssued(null); void unpublishChannel(current.id); }}>Unpublish</Button></>
-              : <Button data-publish={current.id} title="Let programs outside Xhaos (a script, another Claude Code session) read this channel and message its agents, with a passphrase shown once" onClick={issue}>Publish</Button>}
-            <Button data-close-channel={current.id} title="Tell the members and refuse further messages" onClick={() => closeChannel(current.id)}>Close</Button>
+          {!c.closed && <>
+            {c.published
+              ? <><Button data-reset-link={c.id} title="Issue a new passphrase; the old one stops working" onClick={issue}>Reset</Button>
+                  <Button data-unpublish={c.id} title="Take the channel off its link" onClick={() => { setIssued(null); void unpublishChannel(c.id); }}>Unpublish</Button></>
+              : <Button data-publish={c.id} title="Let programs outside Xhaos (a script, another Claude Code session) read this channel and message its agents, with a passphrase shown once" onClick={issue}>Publish</Button>}
+            <Button data-close-channel={c.id} title="Tell the members and refuse further messages" onClick={() => closeChannel(c.id)}>Close</Button>
           </>}
         </div>
       </div>
-      {fresh && <ChannelSecret id={current.id} passphrase={fresh.passphrase} path={fresh.path} onDone={() => setIssued(null)} />}
-      <div data-channel-log {...stylex.props(channel.log)}>
-        {current.messages.length ? current.messages.map((message, index) => (
+      {issued && <ChannelSecret id={c.id} passphrase={issued.passphrase} path={issued.path} onDone={() => setIssued(null)} />}
+      <div ref={log} data-channel-log onScroll={e => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} {...stylex.props(channel.log)}>
+        {c.messages.length ? c.messages.map((message, index) => (
           <article key={index} {...stylex.props(channel.message)}>
             <div {...stylex.props(channel.meta)}>
               <span title={title(message.writer)}>{name(message.writer)}</span>
@@ -162,7 +202,7 @@ function Channels({ channelId }: { channelId?: string }) {
           </article>
         )) : <P muted>No messages yet.</P>}
       </div>
-    </Shell>
+    </div>
   );
 }
 
@@ -553,18 +593,26 @@ const memory = stylex.create({
 });
 
 const channel = stylex.create({
-  list: { display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 10, maxHeight: 132, overflow: 'auto', scrollbarWidth: 'thin' },
-  item: { display: 'flex', alignItems: 'baseline', gap: 8, paddingBlock: 4, paddingInline: 8, borderWidth: 0, borderRadius: 3, textAlign: 'left', fontFamily: 'inherit', fontSize: 11, color: { default: colors.textMuted, ':hover': colors.text }, backgroundColor: { default: 'transparent', ':hover': colors.hover }, cursor: 'pointer' },
-  itemChosen: { color: colors.textStrong, backgroundColor: colors.selected },
-  itemSubject: { flexGrow: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
-  itemMeta: { flexShrink: 0, fontSize: 9, color: colors.textGhost },
-  head: { display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint },
-  headText: { flexGrow: 1, minWidth: 0 },
-  subject: { margin: 0, fontSize: 12, fontWeight: 500, color: colors.textStrong, overflowWrap: 'anywhere' },
-  members: { marginTop: 3, fontSize: 10, color: colors.textFaint, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
+  list: { display: 'flex', flexDirection: 'column', gap: 4 },
+  row: { borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint, borderRadius: 5, backgroundColor: colors.sunken },
+  rowOpen: { borderColor: colors.line, backgroundColor: 'transparent' },
+  summary: { display: 'flex', flexDirection: 'column', gap: 2, width: '100%', paddingBlock: 6, paddingInline: 8, borderWidth: 0, borderRadius: 5, backgroundColor: { default: 'transparent', ':hover': colors.hover }, textAlign: 'left', fontFamily: 'inherit', color: 'inherit', cursor: 'pointer', outlineOffset: -1 },
+  line: { display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 },
+  chevron: { width: 8, flexShrink: 0, color: colors.textGhost, transitionProperty: 'transform', transitionDuration: '.12s' },
+  chevronOpen: { transform: 'rotate(90deg)' },
+  subject: { flexGrow: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 11.5, fontWeight: 500, color: colors.textStrong },
+  dot: { width: 6, height: 6, flexShrink: 0, borderRadius: '50%', backgroundColor: colors.brand },
+  tag: { flexShrink: 0, fontSize: 9, paddingInline: 5, paddingBlock: 1, borderRadius: 3, color: colors.textFaint, backgroundColor: colors.card },
+  tagOn: { color: colors.brand, backgroundColor: colors.brandSoft },
+  when: { flexShrink: 0, fontSize: 9, color: colors.textGhost },
+  sub: { paddingLeft: 15, fontSize: 10, color: colors.textFaint, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
+  preview: { color: colors.textGhost },
+  body: { paddingInline: 8, paddingBottom: 6 },
+  bar: { display: 'flex', alignItems: 'center', gap: 10, paddingBlock: 4, borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint },
+  members: { flexGrow: 1, minWidth: 0, fontSize: 10, color: colors.textFaint, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
   memberTitle: { color: colors.textGhost },
   actions: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 },
-  log: { paddingTop: 4 },
+  log: { maxHeight: '55vh', overflow: 'auto', scrollbarWidth: 'thin', paddingTop: 2 },
   message: { marginTop: 10, marginBottom: 14 },
   meta: { display: 'flex', gap: 8, fontSize: 9, color: colors.textGhost, marginBottom: 4 },
   time: { marginLeft: 'auto' },
