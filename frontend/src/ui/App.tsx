@@ -96,10 +96,10 @@ const page = stylex.create({
   // The page: the work column on the left and the side panel (30% of the
   // width) on the right. Narrow screens stack the panel below the work.
   main: {
-    height: '100dvh',
+    height: 'calc(100dvh / var(--x-zoom, 1))', // the app is zoomed by the text size setting
     display: 'grid',
     gridTemplateColumns: { default: 'minmax(0, 1fr) 30%', [breakpoints.tablet]: 'minmax(0, 1fr)' },
-    gridTemplateRows: { default: 'minmax(0, 1fr)', [breakpoints.tablet]: 'minmax(0, 1fr) 45dvh' },
+    gridTemplateRows: { default: 'minmax(0, 1fr)', [breakpoints.tablet]: 'minmax(0, 1fr) calc(45dvh / var(--x-zoom, 1))' },
     backgroundColor: colors.bg,
   },
   // A fixed-height command row, so the agents below never move when its

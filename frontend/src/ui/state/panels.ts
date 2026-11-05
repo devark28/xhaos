@@ -5,6 +5,7 @@ import { call, connected, refreshProviders } from './backend.ts';
 import { focusComposer, setDraft } from './composer.ts';
 import { refreshProjects } from './projects.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
+import { newId } from '../../ids.ts';
 
 export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { update(s => { s.panel = { kind, ...args }; }); }
 export function showMessageComposer() { update(s => { s.mode = 'message'; }); focusComposer(); }
@@ -31,6 +32,24 @@ export function setLayout(layout: Layout) { update(s => { s.layout = layout; });
 export function clearSearch() { update(s => { s.search = ''; }); }
 
 // ---- memories --------------------------------------------------------------
+// closeChannel closes an agent channel: its members are told, and nothing
+// more can be sent there.
+export async function closeChannel(id: string) {
+  try { await call('channel', 'Close', { workspaceId: get().active, channelId: Number(id) }); toast('Channel closed. Its agents can no longer send there.'); }
+  catch (error) { toast(`Could not close the channel: ${errorText(error)}`); }
+}
+
+// publishChannel puts a channel on its link with a new passphrase (on a
+// published channel: a reset). The passphrase comes back this once.
+export async function publishChannel(id: string): Promise<{ passphrase: string; path: string } | null> {
+  try { return await call('channel', 'Publish', { workspaceId: get().active, channelId: Number(id) }); }
+  catch (error) { toast(`Could not publish the channel: ${errorText(error)}`); return null; }
+}
+export async function unpublishChannel(id: string) {
+  try { await call('channel', 'Unpublish', { workspaceId: get().active, channelId: Number(id) }); toast('Unpublished. The passphrase no longer works.'); }
+  catch (error) { toast(`Could not unpublish the channel: ${errorText(error)}`); }
+}
+
 export async function saveMemory(editId: string | null, content: string) {
   if (connected()) {
     try { await call('memory', 'Save', { workspaceId: get().active, id: editId ? Number(editId) : 0, content }); }
@@ -41,7 +60,7 @@ export async function saveMemory(editId: string | null, content: string) {
   update(s => {
     const editing = s.memories.find(memory => memory.id === editId);
     if (editing) Object.assign(editing, { content, workspaceId: s.active, updatedAt: new Date().toISOString() });
-    else s.memories.unshift({ id: crypto.randomUUID(), content, workspaceId: s.active, source: 'owner', createdAt: new Date().toISOString() });
+    else s.memories.unshift({ id: newId(), content, workspaceId: s.active, source: 'owner', createdAt: new Date().toISOString() });
   });
   saveMemories(); openPanel('memories'); toast('Workspace memory saved in this browser.');
 }

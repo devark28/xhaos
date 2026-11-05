@@ -1,4 +1,5 @@
 import type { Attachment } from './types.ts';
+import { newId } from './ids.ts';
 
 interface StoredFile extends Attachment { blob: Blob }
 let connection: Promise<IDBDatabase> | undefined;
@@ -14,7 +15,7 @@ function database(): Promise<IDBDatabase> {
 export async function storeFiles(files: File[]): Promise<Attachment[]> {
   if (!files.length) return [];
   const db = await database();
-  const records: StoredFile[] = files.map(file => ({ id: crypto.randomUUID(), name: file.name, size: file.size, type: file.type, blob: file }));
+  const records: StoredFile[] = files.map(file => ({ id: newId(), name: file.name, size: file.size, type: file.type, blob: file }));
   await new Promise<void>((resolve, reject) => {
     const transaction = db.transaction('files', 'readwrite');
     transaction.oncomplete = () => resolve();

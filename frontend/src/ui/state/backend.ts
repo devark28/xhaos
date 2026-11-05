@@ -6,9 +6,17 @@ import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
 import { update, get, workspaceOf, toast, errorText, save } from './store.ts';
 import { refreshProjects } from './projects.ts';
-import type { Agent, BackendChannel, BackendEvent, Memory, Snapshot, Workspace } from '../../types.ts';
+import { installHashNavigation } from './location.ts';
+import { restoreDraft } from './composer.ts';
+import { applyAppearance, defaults as appearanceDefaults, loadAppearance, saveAppearance, type Appearance } from '../appearance.ts';
+import type { Agent, BackendChannel, BackendEvent, Memory, Snapshot, Workspace, UsageReport } from '../../types.ts';
 
 let backend: Backend | null = null;
+let syncing: { catchUp(): Promise<void> } | null = null;
+const saved = new Map<number, number>(); // agent -> replies saved (see the delta batching)
+// catchUp reads events the live stream may not have delivered yet (after an
+// action, so its result shows even when the stream lags).
+export const catchUp = () => syncing?.catchUp() ?? Promise.resolve();
 let synced = false; // a snapshot after the first one (a resync) reloads memories
 // call is the backend RPC; it throws when the page runs without the backend.
 export function call<T = any>(service: Parameters<Backend['call']>[0], method: string, ...args: unknown[]): Promise<T> {
@@ -56,6 +64,37 @@ export async function refreshChannels() {
   } catch { /* the Channels tab shows none */ }
 }
 
+// ---- appearance, kept on the server ---------------------------------------------
+// The browser's copy paints the first frame; the server's is the one that
+// counts, so every browser (and address) that signs in looks the same.
+export async function pushAppearance(a: Appearance) {
+  if (!connected()) return;
+  try { await call('prefs', 'Set', 'appearance', a); } catch { /* kept in this browser */ }
+}
+async function pullAppearance() {
+  try {
+    const stored = await call<Partial<Appearance> | null>('prefs', 'Get', 'appearance');
+    if (stored && typeof stored === 'object') {
+      const a = { ...appearanceDefaults, ...stored };
+      saveAppearance(a); applyAppearance(a);
+    } else {
+      const local = loadAppearance();
+      if (JSON.stringify(local) !== JSON.stringify(appearanceDefaults)) await pushAppearance(local); // first sync: this browser's choice
+    }
+  } catch { /* keep this browser's */ }
+}
+
+// ---- usage ---------------------------------------------------------------------
+// refreshUsage loads token use and cost; replies refresh it (at most every 2s).
+export async function refreshUsage() {
+  try { const report = await call<UsageReport>('usage', 'Usage', get().active); update(s => { s.usage = report; }); } catch { /* keep the last one */ }
+}
+let usageTimer: ReturnType<typeof setTimeout> | null = null;
+function usageSoon() {
+  if (usageTimer) return;
+  usageTimer = setTimeout(() => { usageTimer = null; void refreshUsage(); }, 2000);
+}
+
 // ---- memories ----------------------------------------------------------------
 interface BackendMemory { id: number; workspaceId: string; content: string; source: string; createdAt: string; updatedAt: string }
 const toMemory = (m: BackendMemory): Memory => ({ id: String(m.id), workspaceId: m.workspaceId, content: m.content, source: m.source, createdAt: m.createdAt, updatedAt: m.updatedAt });
@@ -101,6 +140,8 @@ function startPrototype() {
     s.ready = true;
   });
   save();
+  installHashNavigation();
+  restoreDraft();
 }
 
 // Served by the Go backend: render its state and follow its events.
@@ -116,27 +157,44 @@ async function startBackend(connection: Backend) {
     s.backendVersion = connection.status.version;
     s.ready = true;
   }); void refreshChannels(); if (synced) void refreshMemories(); synced = true; };
-  const onEvent = (event: BackendEvent) => update(s => {
+  const onEvent = (event: BackendEvent) => {
+    if (event.kind === 'agent.message' && event.data?.from !== 'owner') usageSoon();
+    if (event.kind === 'agent.message' && event.data?.from === 'agent') saved.set(event.agentId, (saved.get(event.agentId) || 0) + 1);
+    update(s => {
     if (applyChannelEvent(workspaceOf(s), event) || applyMemoryEvent(s, event)) return;
     const change = applyEvent(workspaceOf(s), event);
     if (change?.created) s.collapsed.add(change.agentId);
-  });
+  }); };
   const sync = createSync({ call: connection.call, events: connection.events, workspaceId: 'default', onSnapshot, onEvent, onError: () => toast('Lost sync with the backend; will retry.') });
   (globalThis as any).xhaos = { ...connection, sync }; // for console use
+  syncing = sync;
   try { update(s => { s.backendVersion = connection.status.version; }); await refreshProviders(); } catch { /* providers stay empty */ }
-  try { await refreshProjects(); } catch { /* projects stay empty */ }
   // Live reply text: apply at most once per frame while replies stream.
-  let pending: { workspaceId: string; agentId: number; text: string }[] = [];
+  // Each streamed piece belongs to the reply being written when it arrived;
+  // once that reply is saved, pieces still waiting for the next frame are
+  // dropped, or they would bring back the streamed draft beside it.
+  let pending: { delta: { workspaceId: string; agentId: number; text: string }; reply: number }[] = [];
   connection.events?.On?.(DELTA_EVENT_NAME, event => {
     if (!pending.length) requestAnimationFrame(() => {
       const batch = pending; pending = [];
-      update(s => { batch.forEach(delta => applyDelta(workspaceOf(s), delta)); });
+      update(s => { batch.forEach(({ delta, reply }) => { if ((saved.get(delta.agentId) || 0) === reply) applyDelta(workspaceOf(s), delta); }); });
     });
-    pending.push(event?.data ?? event);
+    const delta = event?.data ?? event;
+    pending.push({ delta, reply: saved.get(delta.agentId) || 0 });
   });
   await sync.start();
+  await pullAppearance();
+  installHashNavigation(); // the agents are loaded: #agents= links find their cards
+  // After the snapshot: until then the active workspace is the prototype's.
+  try { await refreshProjects(); } catch { /* projects stay empty */ }
+  restoreDraft(); // after agents and projects, so its attachments find them
+  // The stream reconnects by itself; catch up on what it missed meanwhile,
+  // and if it dropped because the session ended, show the sign-in screen.
+  connection.events?.onOpen?.(() => { void sync.catchUp(); });
+  connection.events?.onLost?.(() => { void fetch('/xhaos/auth').then(r => r.json()).then(a => { if (!a.signedIn) location.reload(); }).catch(() => {}); });
   await refreshChannels();
   await refreshMemories();
+  void refreshUsage();
   const resync = () => { if (document.visibilityState === 'visible') sync.catchUp(); };
   document.addEventListener('visibilitychange', resync);
   addEventListener('online', resync);
@@ -146,10 +204,19 @@ async function startBackend(connection: Backend) {
 
 // start connects to the backend when the page is served by it; otherwise
 // (npm run dev) it runs the local prototype on sample data.
-export function start() {
-  connectBackend().then(connection => (connection ? startBackend(connection) : startPrototype())).catch(error => {
-    // The runtime loaded but the backend failed: show that instead of mock data.
-    update(s => { s.workspaces = [{ id: 'default', name: 'Default', agents: [], channels: [] }]; s.active = 'default'; s.ready = true; });
-    toast(`Backend did not respond: ${errorText(error)}`);
-  });
+// A page served by the Xhaos server (served) never falls back to the
+// prototype: it retries the connection, then says what failed.
+export async function start(served = false) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < (served ? 4 : 1); attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 1500 * attempt));
+    try {
+      const connection = await connectBackend(undefined, undefined, undefined, served);
+      if (connection) return startBackend(connection);
+      if (!served) return startPrototype();
+    } catch (error) { lastError = error; console.error('xhaos: connect', error); }
+  }
+  // Show the failure instead of mock data, so nothing is "queued locally".
+  update(s => { s.workspaces = [{ id: 'default', name: 'Default', agents: [], channels: [] }]; s.active = 'default'; s.ready = true; });
+  toast(`Could not connect to the Xhaos server: ${errorText(lastError)}. Reload the page to try again.`);
 }

@@ -2,6 +2,7 @@
 // submitting does. The text lives in the <xhaos-input> element itself (it
 // owns its content); `draft` mirrors it so it survives remounts.
 import { resolveSubmit, takeMention } from '../../composer-target.ts';
+import { loadAppearance } from '../appearance.ts';
 import { pickerChoices } from '../../backend-view.ts';
 import { modelChoices, saveModelChoice } from '../../models.ts';
 import { activeAgents } from '../../model.ts';
@@ -19,7 +20,39 @@ let input: XhaosInput | null = null;
 let draft = '';
 export function registerInput(element: XhaosInput | null) { input = element; if (input) input.value = draft; }
 export const getDraft = () => draft;
-export function setDraft(value: string) { draft = value; if (input && input.value !== value) input.value = value; }
+export function setDraft(value: string) { draft = value; if (input && input.value !== value) input.value = value; keepDraft(); }
+
+// The unsent draft (text, attached agents and project) survives a reload, a
+// closed tab or a server restart: it is kept in this browser as you type and
+// cleared when sent. (Files waiting to be attached are not kept.)
+const DRAFT_KEY = 'xhaos-draft';
+let keepTimer: ReturnType<typeof setTimeout> | null = null;
+function writeDraft() {
+  try {
+    const s = get();
+    if (!draft.trim()) localStorage.removeItem(DRAFT_KEY);
+    else localStorage.setItem(DRAFT_KEY, JSON.stringify({ text: draft, agents: [...s.selected], project: s.attachedProject, at: Date.now() }));
+  } catch { /* storage unavailable: the draft lives in this page only */ }
+}
+function keepDraft() {
+  if (keepTimer) clearTimeout(keepTimer);
+  keepTimer = setTimeout(() => { keepTimer = null; writeDraft(); }, 250);
+}
+addEventListener('pagehide', () => { if (keepTimer) { clearTimeout(keepTimer); keepTimer = null; writeDraft(); } });
+
+// restoreDraft brings back a kept draft, once the agents are loaded (only
+// agents and projects that still exist are reattached).
+export function restoreDraft() {
+  let kept: { text?: string; agents?: number[]; project?: number | null } | null = null;
+  try { kept = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return; }
+  if (!kept?.text || draft.trim()) return;
+  const known = new Set(activeAgents(workspaceOf(get()).agents).filter(a => a.status !== 'terminated').map(a => a.id));
+  update(s => {
+    for (const id of kept!.agents || []) if (known.has(id)) s.selected.add(id);
+    if (kept!.project && s.projects.some(p => p.id === kept!.project)) s.attachedProject = kept!.project;
+  });
+  setDraft(kept.text);
+}
 export function focusComposer() { focusLater('#command'); }
 export function clearComposer() {
   setDraft('');
@@ -67,8 +100,9 @@ export const slashCommands: SlashCommand[] = [
 // agent, and matches the slash-command menu.
 export function onText(value: string) {
   draft = value;
+  keepDraft();
   const s = get();
-  const mention = takeMention(value, id => activeAgents(workspaceOf(s).agents).some(a => a.id === id && a.status !== 'terminated'));
+  const mention = loadAppearance().mentions === 'text' ? null : takeMention(value, id => activeAgents(workspaceOf(s).agents).some(a => a.id === id && a.status !== 'terminated'));
   if (mention) {
     update(d => { d.mode = 'message'; d.selected.add(mention.id); });
     setDraft(value = mention.text);

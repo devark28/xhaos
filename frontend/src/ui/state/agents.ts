@@ -7,15 +7,19 @@ import { idempotencyKey } from '../../server-client.ts';
 import { findModel } from '../../models.ts';
 import { activeAgents, flatten, transition, restoreAgent, terminateAgent as markTerminated } from '../../model.ts';
 import { update, get, workspace, workspaceOf, findAgent, findAgentIn, focusLater, toast, errorText, save } from './store.ts';
-import { call, connected, isSample } from './backend.ts';
+import { call, connected, isSample, catchUp } from './backend.ts';
 import { clearComposer, currentChoice, focusComposer } from './composer.ts';
 import { showProviders } from './panels.ts';
 import { projectName } from './projects.ts';
 import { projectConflict } from '../../composer-target.ts';
 import type { Agent, Attachment } from '../../types.ts';
 
+// Opening a card makes it the focus (the link's #agent=); closing it clears that.
 export function toggleAgent(id: number) {
-  update(s => { if (s.collapsed.has(id)) s.collapsed.delete(id); else s.collapsed.add(id); });
+  update(s => {
+    if (s.collapsed.has(id)) { s.collapsed.delete(id); s.focusAgent = id; }
+    else { s.collapsed.add(id); if (s.focusAgent === id) s.focusAgent = null; }
+  });
 }
 export function toggleCollapseAll() {
   update(s => {
@@ -36,7 +40,8 @@ export function detachRecipient(id: number) { update(s => { s.selected.delete(id
 export function revealAgent(id: number) {
   update(s => {
     agentPath(workspaceOf(s).agents, id).slice(0, -1).forEach(parentId => s.collapsed.delete(parentId));
-    if (s.collapsed.has(id)) s.collapsed.delete(id); else s.collapsed.add(id);
+    if (s.collapsed.has(id)) { s.collapsed.delete(id); s.focusAgent = id; }
+    else { s.collapsed.add(id); if (s.focusAgent === id) s.focusAgent = null; }
   });
   focusLater(`[data-collapse="${id}"]`);
 }
@@ -50,7 +55,12 @@ export async function decide(id: number, action: 'approve' | 'reject', callId?: 
     if (!calls.length) { toast(`#${id} has nothing waiting for a decision.`); return; }
     for (const callId of calls) {
       try { await call('agent', 'Decide', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentId: id, callId, allow: action === 'approve' }); }
-      catch (error) { toast(errorText(error)); return; }
+      catch (error) {
+        // Decided already (another click, tab or PC): show where it stands.
+        if (/already/i.test(errorText(error))) { void catchUp(); toast('That call was already decided; the card is now up to date.'); return; }
+        toast(errorText(error)); return;
+      }
+      void catchUp(); // the result shows even if the live stream lags
     }
     return;
   }

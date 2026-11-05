@@ -2,6 +2,8 @@
 // server, /wails/runtime.js exists and defines window.wails; under
 // `npm run dev` it does not, and the prototype keeps running on mock state.
 import type { BackendEvent, Snapshot } from './types.ts';
+import { newId } from './ids.ts';
+import { browserStream } from './shared-stream.ts';
 
 // Bound Go services, one per backend feature package.
 const services = {
@@ -17,12 +19,34 @@ const services = {
   channel: 'xhaos/app/channel.Owner',
   attachment: 'xhaos/app/attachment.Service',
   memory: 'xhaos/app/memory.Service',
+  usage: 'xhaos/app/usage.Service',
+  prefs: 'xhaos/app/prefs.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 
-// The parts of the Wails runtime the client uses.
-export interface WailsEvents { On(name: string, fn: (event: any) => void): () => void }
+// Live events: On subscribes to one event name; onOpen runs each time the
+// stream (re)connects, so the caller can catch up on anything it missed.
+export interface WailsEvents { On(name: string, fn: (event: any) => void): () => void; onOpen?(fn: () => void): void; onLost?(fn: () => void): void }
 interface WailsRuntime { Call: { ByName(name: string, ...args: unknown[]): Promise<any> }; Events: WailsEvents }
+
+// streamEvents follows /xhaos/events, the server's Server-Sent Events stream
+// (it needs the session cookie, unlike the Wails event socket). EventSource
+// reconnects by itself; onLost runs when a connection drops.
+export function streamEvents(url = '/xhaos/events'): WailsEvents {
+  const source = new EventSource(url);
+  const opened: (() => void)[] = [], lost: (() => void)[] = [];
+  source.onopen = () => opened.forEach(fn => fn());
+  source.onerror = () => lost.forEach(fn => fn());
+  return {
+    On(name, fn) {
+      const handle = (e: MessageEvent) => { try { fn({ data: JSON.parse(e.data) }); } catch { /* not JSON: ignore */ } };
+      source.addEventListener(name, handle as EventListener);
+      return () => source.removeEventListener(name, handle as EventListener);
+    },
+    onOpen: fn => { opened.push(fn); },
+    onLost: fn => { lost.push(fn); },
+  };
+}
 export type Call = (service: ServiceName, method: string, ...args: unknown[]) => Promise<any>;
 export interface Backend { status: { version: string }; call: Call; events: WailsEvents }
 export const DELTA_EVENT_NAME = 'xhaos:delta';
@@ -31,16 +55,26 @@ export const EVENT_NAME = 'xhaos:event';
 export async function connectBackend(
   load: () => Promise<unknown> = () => import('/wails/runtime.js' as string),
   scope: { wails?: WailsRuntime } = globalThis as { wails?: WailsRuntime },
+  // One stream per browser, shared by its tabs (shared-stream.ts); a tab of
+  // its own where BroadcastChannel or storage is missing.
+  events: () => WailsEvents | undefined = () => (typeof EventSource === 'undefined' ? undefined : browserStream('/xhaos/events', [EVENT_NAME, DELTA_EVENT_NAME], newId()) ?? streamEvents()),
+  required = false, // served by Xhaos: a missing runtime is an error, not prototype mode
 ): Promise<Backend | null> {
-  try { await load(); } catch { return null; }
+  try { await load(); } catch (error) {
+    if (required) throw new Error(`the Wails runtime did not load (${error instanceof Error ? error.message : String(error)})`);
+    return null;
+  }
   const wails = scope.wails;
-  if (!wails?.Call?.ByName) return null;
+  if (!wails?.Call?.ByName) {
+    if (required) throw new Error('the Wails runtime loaded without its call API');
+    return null;
+  }
   const call: Call = (service, method, ...args) => wails.Call.ByName(`${services[service]}.${method}`, ...args);
   const status = await call('health', 'Status');
-  return { status, call, events: wails.Events };
+  return { status, call, events: events() ?? wails.Events };
 }
 
-export const idempotencyKey = (): string => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+export const idempotencyKey = (): string => newId();
 
 // Keeps a workspace view in step with the backend. The snapshot is the state;
 // live events are applied strictly in seq order. Duplicates (seq <= current)

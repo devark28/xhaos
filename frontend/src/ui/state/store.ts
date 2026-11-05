@@ -10,14 +10,14 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
-import type { Agent, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace } from '../../types.ts';
+import type { Agent, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace, UsageReport } from '../../types.ts';
 
 enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
 export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation';
-export interface Panel { kind: PanelKind; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
+export interface Panel { kind: PanelKind; section?: string; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];
 export type Tools = (ToolCatalog & { error?: undefined }) | { error: string } | null;
@@ -31,6 +31,7 @@ export interface State {
   providers: Provider[];
   tools: Tools; // loaded when the tools panel opens
   mcpServers: McpServer[];
+  usage: UsageReport | null; // token use and cost, from the backend
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -39,6 +40,7 @@ export interface State {
   layout: Layout;
   search: string;
   collapsed: Set<number>;
+  focusAgent: number | null; // the card opened last (#agent= in the link)
   showSamples: boolean;
 
   mode: Mode;
@@ -74,6 +76,7 @@ function initial(): State {
     providers: [],
     tools: null,
     mcpServers: [],
+    usage: null,
     projects: [],
     attachedProject: null,
     files: {},
@@ -81,6 +84,7 @@ function initial(): State {
     layout: 'grid',
     search: '',
     collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),
+    focusAgent: null,
     showSamples: (() => { try { return localStorage.getItem('xhaos-samples') === 'on'; } catch { return false; } })(), // backend page only; off unless turned on
     mode: 'message',
     panel: { kind: 'questions' },

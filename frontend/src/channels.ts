@@ -1,5 +1,6 @@
 // Agent-side channel operations for the future backend adapter. The UI only observes.
 import type { Agent, Channel, ChannelMessage, Workspace } from './types.ts';
+import { newId } from './ids.ts';
 
 export function createChannel(workspace: Workspace, subject: string, participants: (number | string)[], creatorId: number): Channel {
   const name = subject.trim();
@@ -12,7 +13,7 @@ export function createChannel(workspace: Workspace, subject: string, participant
   if (!members.includes(creatorId)) throw new Error('The creator must be a participating agent.');
   workspace.channels ||= [];
   if (workspace.channels.some(channel => channel.subject.toLowerCase() === name.toLowerCase())) throw new Error('That subject already exists.');
-  const channel: Channel = { id: crypto.randomUUID(), subject: name, creatorId, participants: members, messages: [] };
+  const channel: Channel = { id: newId(), subject: name, creatorId, participants: members, messages: [] };
   workspace.channels.push(channel);
   return channel;
 }
@@ -21,7 +22,7 @@ export function appendAgentMessage(channel: Channel, writerId: number, text: str
   if (!channel.participants.includes(writerId)) throw new Error('Only a participating agent can publish here.');
   if (!text.trim()) throw new Error('A message needs content.');
   const message: ChannelMessage = {
-    id: crypto.randomUUID(),
+    id: newId(),
     timestamp: new Date().toISOString(),
     writer: writerId,
     readers: channel.participants.filter(id => id !== writerId),
