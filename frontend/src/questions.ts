@@ -1,9 +1,20 @@
-import type { Agent, Answer, QuestionBatch, Workspace } from './types.ts';
+import type { Agent, Answer, Question, QuestionBatch, Workspace } from './types.ts';
 
 export const hasPendingQuestions = (agent: Agent): boolean => agent.questionBatch?.status === 'pending';
 
 // answerQuestions validates the owner's answers, records them on the batch,
 // and adds them to the transcript as one owner message.
+// OWN marks "your own answer" as the chosen option in a draft. It is a
+// choice like the agent's options: on a single-answer question it replaces
+// them; the written text is only sent while it is chosen.
+export const OWN = '__own';
+export const ownChosen = (q: Question, a: Partial<Answer>) => !q.options?.length || (a.choices || []).includes(OWN) || (!(a.choices || []).length && Boolean((a.text || '').trim()));
+// finalAnswer is a draft as it is sent: the agent's options chosen, and the
+// text only when your own answer is the choice.
+export function finalAnswer(q: Question, a: Partial<Answer> = {}): Answer {
+  return { choices: (a.choices || []).filter(c => c !== OWN), text: ownChosen(q, a) ? String(a.text || '').trim() : '' };
+}
+
 export function answerQuestions(agent: Agent, batchId: string, answers: Record<string, Partial<Answer>>): Record<string, Answer> {
   const batch = agent.questionBatch;
   if (!batch || !hasPendingQuestions(agent) || batch.id !== batchId || agent.status === 'terminated') {
@@ -11,7 +22,7 @@ export function answerQuestions(agent: Agent, batchId: string, answers: Record<s
   }
   const validated: Record<string, Answer> = {};
   for (const question of batch.questions) {
-    const answer = answers[question.id] || {};
+    const answer = finalAnswer(question, answers[question.id]);
     const choices = [...new Set(answer.choices || [])];
     const text = String(answer.text || '').trim();
     const optionIds = new Set((question.options || []).map(option => option.id));

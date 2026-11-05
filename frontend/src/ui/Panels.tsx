@@ -93,71 +93,96 @@ function Memories({ editId }: { editId?: string }) {
   );
 }
 
+// Channels: a compact list of channels, then the chosen one: its subject
+// and actions in one row (Publish, Close), its members in one line, and its
+// messages as the main content.
 function Channels({ channelId }: { channelId?: string }) {
   const w = useApp(s => workspaceOf(s)), channels = w.channels || [];
   const current = channels.find(channel => channel.id === channelId) || channels[0];
-  const identity = (id: number | string) => {
-    const agent = flatten(w.agents).find(agent => agent.id === Number(id));
-    if (typeof id === 'string' && id.startsWith('outside:')) return `${id.slice(8)} (outside, via the link)`;
-    return agent ? `#${agent.id} ${agent.title}` : id === 'user' ? 'User (legacy preview message)' : String(id);
+  const [issued, setIssued] = useState<{ id: string; passphrase: string; path: string } | null>(null);
+  const all = flatten(w.agents);
+  const name = (id: number | string) => {
+    if (typeof id === 'string' && id.startsWith('outside:')) return `${id.slice(8)} (outside)`;
+    return typeof id === 'number' || /^\d+$/.test(String(id)) ? `#${id}` : String(id);
   };
+  const title = (id: number | string) => all.find(agent => agent.id === Number(id))?.title || '';
   if (!current) {
     return (
       <Shell title="Agent channels">
         <P>No agent channels yet.</P>
-        <P>Agents open channels to coordinate (across projects too) and spawned subagents get one with their parent. Their members and messages appear here as they happen.</P>
+        <P muted>Agents open channels to coordinate (across projects too), and every spawned subagent gets one with its parent. They appear here live.</P>
       </Shell>
     );
   }
+  const issue = async () => { const r = await publishChannel(current.id); if (r) setIssued({ id: current.id, ...r }); };
+  const fresh = issued?.id === current.id ? issued : null;
   return (
-    <Shell title="Agent channels" action={current.closed ? <Chip>closed</Chip> : <Button data-close-channel={current.id} onClick={() => closeChannel(current.id)}>Close channel</Button>}>
-      <div {...stylex.props(channel.tabs)}>
-        {channels.map(c => <Button key={c.id} data-channel={c.id} chosen={c.id === current.id} onClick={() => openPanel('channels', { channelId: c.id })} sx={channel.tab}># {c.subject}{c.closed ? ' (closed)' : ''}</Button>)}
+    <Shell title="Agent channels">
+      {channels.length > 1 && (
+        <div role="tablist" aria-label="Channels" {...stylex.props(channel.list)}>
+          {channels.map(c => (
+            <button key={c.id} type="button" role="tab" aria-selected={c.id === current.id} data-channel={c.id} onClick={() => openPanel('channels', { channelId: c.id })} {...stylex.props(channel.item, c.id === current.id && channel.itemChosen)}>
+              <span {...stylex.props(channel.itemSubject)}>{c.subject}</span>
+              <span {...stylex.props(channel.itemMeta)}>{c.closed ? 'closed' : c.published ? 'published' : `${c.messages.length}`}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div data-channel-head={current.id} {...stylex.props(channel.head)}>
+        <div {...stylex.props(channel.headText)}>
+          <h3 {...stylex.props(channel.subject)}>{current.subject}</h3>
+          <div {...stylex.props(channel.members)}>
+            {current.participants.map((id, i) => {
+              const full = title(id), short = full.length > 22 ? `${full.slice(0, 21)}…` : full;
+              return <span key={id}>{i > 0 && ' · '}<a href="#" data-agent-link={id} title={full}>#{id}</a> <span {...stylex.props(channel.memberTitle)}>{short}</span></span>;
+            })}
+          </div>
+        </div>
+        <div data-channel-actions {...stylex.props(channel.actions)}>
+          {current.closed ? <Chip>closed</Chip> : <>
+            {current.published
+              ? <><Chip>published</Chip>
+                  <Button data-reset-link={current.id} title="Issue a new passphrase; the old one stops working" onClick={issue}>Reset</Button>
+                  <Button data-unpublish={current.id} title="Take the channel off its link" onClick={() => { setIssued(null); void unpublishChannel(current.id); }}>Unpublish</Button></>
+              : <Button data-publish={current.id} title="Let programs outside Xhaos (a script, another Claude Code session) read this channel and message its agents, with a passphrase shown once" onClick={issue}>Publish</Button>}
+            <Button data-close-channel={current.id} title="Tell the members and refuse further messages" onClick={() => closeChannel(current.id)}>Close</Button>
+          </>}
+        </div>
       </div>
-      <div {...stylex.props(channel.members)}>{current.participants.map(id => <Chip key={id}>{identity(id)}</Chip>)}</div>
-      {!current.closed && <ChannelLink id={current.id} published={Boolean(current.published)} />}
-      <div {...stylex.props(channel.log)}>
+      {fresh && <ChannelSecret id={current.id} passphrase={fresh.passphrase} path={fresh.path} onDone={() => setIssued(null)} />}
+      <div data-channel-log {...stylex.props(channel.log)}>
         {current.messages.length ? current.messages.map((message, index) => (
           <article key={index} {...stylex.props(channel.message)}>
-            <div {...stylex.props(channel.meta)}>{identity(message.writer)} → {message.readers.map(identity).join(', ')} <time dateTime={message.timestamp} title={message.timestamp} {...stylex.props(channel.time)}>{formatTime(message.timestamp)}</time></div>
+            <div {...stylex.props(channel.meta)}>
+              <span title={title(message.writer)}>{name(message.writer)}</span>
+              <time dateTime={message.timestamp} title={message.timestamp} {...stylex.props(channel.time)}>{formatTime(message.timestamp)}</time>
+            </div>
             <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(message.text, { agentLinks: true }))} />
             <AttachedFiles files={message.attachments} />
           </article>
-        )) : <P muted>No agent messages in this channel yet.</P>}
+        )) : <P muted>No messages yet.</P>}
       </div>
-      <p {...stylex.props(memory.note, memory.noteAfter)}>Agents write here; you can close a channel. Top-level agents can talk to each other and to their own subagents; subagents only to their parent and siblings. Opening a channel outside an agent's own family (parent, siblings, subagents) waits for your approval.</p>
     </Shell>
   );
 }
 
-// ChannelLink publishes a channel: programs outside Xhaos (a script, another
-// Claude Code session) can then read it and send messages into it with the
-// passphrase, which is shown here once.
-function ChannelLink({ id, published }: { id: string; published: boolean }) {
-  const [shown, setShown] = useState<{ id: string; passphrase: string; path: string } | null>(null);
-  const issue = async () => { const r = await publishChannel(id); if (r) setShown({ id, ...r }); };
-  const fresh = shown?.id === id ? shown : null;
-  const url = fresh ? `${location.origin}${fresh.path}` : '';
-  const example = fresh ? `curl -s -X POST ${url} \\\n  -H 'Authorization: Bearer ${fresh.passphrase}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"from":"my script","body":"hello agents"}'\n\n# read it, waiting up to 30s for new messages:\ncurl -s '${url}?after=0&wait=30' -H 'Authorization: Bearer ${fresh.passphrase}'` : '';
+// ChannelSecret shows a just-issued passphrase, once, with how to use it.
+function ChannelSecret({ id, passphrase, path, onDone }: { id: string; passphrase: string; path: string; onDone(): void }) {
+  const url = `${location.origin}${path}`;
+  const example = `curl -s -X POST ${url} \\\n  -H 'Authorization: Bearer ${passphrase}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"from":"my script","body":"hello agents"}'\n\n# read it, waiting up to 30s for new messages:\ncurl -s '${url}?after=0&wait=30' -H 'Authorization: Bearer ${passphrase}'`;
   return (
-    <div data-channel-link={id} {...stylex.props(channel.link)}>
-      <div {...stylex.props(channel.linkRow)}>
-        {published ? <><Chip>published</Chip><Button data-reset-link={id} onClick={issue}>Reset passphrase</Button><Button data-unpublish={id} onClick={() => { setShown(null); void unpublishChannel(id); }}>Unpublish</Button></>
-          : <Button data-publish={id} onClick={issue}>Publish</Button>}
+    <div data-channel-link={id} {...stylex.props(channel.secretBox)}>
+      <P>Copy the passphrase now; it is not shown again.</P>
+      <div {...stylex.props(channel.secretRow)}>
+        <code data-passphrase {...stylex.props(channel.secret)}>{passphrase}</code>
+        <Button data-copy-passphrase onClick={() => {
+          // navigator.clipboard is missing on insecure origins (a LAN address).
+          if (!navigator.clipboard) { toast('This page cannot copy here (plain HTTP); select the passphrase and copy it.'); return; }
+          navigator.clipboard.writeText(passphrase).then(() => toast('Passphrase copied.'), () => toast('Copy failed; select the passphrase instead.'));
+        }}>Copy</Button>
+        <Button data-secret-done onClick={onDone}>Done</Button>
       </div>
-      {fresh ? <>
-        <P>Copy the passphrase now: it is not shown again (Reset gives a new one and stops this one).</P>
-        <div {...stylex.props(channel.linkRow)}>
-          <code data-passphrase {...stylex.props(channel.secret)}>{fresh.passphrase}</code>
-          <Button data-copy-passphrase onClick={() => {
-            // navigator.clipboard is missing on insecure origins (a LAN address).
-            if (!navigator.clipboard) { toast('This page cannot copy here (plain HTTP); select the passphrase and copy it.'); return; }
-            navigator.clipboard.writeText(fresh.passphrase).then(() => toast('Passphrase copied.'), () => toast('Copy failed; select the passphrase instead.'));
-          }}>Copy</Button>
-        </div>
-        <pre data-link-example {...stylex.props(channel.example)}>{example}</pre>
-      </> : published ? <P muted>Programs with the passphrase can read this channel and post into it; its agents see those messages as coming from outside.</P>
-        : <P muted>Publish to let a program outside Xhaos (a script, another Claude Code session) read this channel and send its agents messages, with a passphrase shown once.</P>}
+      <pre data-link-example {...stylex.props(channel.example)}>{example}</pre>
     </div>
   );
 }
@@ -528,16 +553,24 @@ const memory = stylex.create({
 });
 
 const channel = stylex.create({
-  tabs: { display: 'flex', gap: 7, flexWrap: 'wrap' },
-  tab: { paddingBlock: 5, paddingInline: 8 },
-  members: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBlock: 10 },
-  log: { maxHeight: 260, overflow: 'auto', scrollbarWidth: 'thin' },
-  message: { marginTop: 10, marginBottom: 16 },
-  meta: { fontSize: 9, color: colors.textGhost, marginBottom: 5 },
-  time: { marginLeft: 8 },
-  link: { marginBottom: 10, fontSize: 11 },
-  linkRow: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBlock: 6 },
-  secret: { fontFamily: fonts.mono, fontSize: 11, backgroundColor: colors.sunken, paddingBlock: 4, paddingInline: 6, borderRadius: 3, overflowWrap: 'anywhere', userSelect: 'all' },
+  list: { display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 10, maxHeight: 132, overflow: 'auto', scrollbarWidth: 'thin' },
+  item: { display: 'flex', alignItems: 'baseline', gap: 8, paddingBlock: 4, paddingInline: 8, borderWidth: 0, borderRadius: 3, textAlign: 'left', fontFamily: 'inherit', fontSize: 11, color: { default: colors.textMuted, ':hover': colors.text }, backgroundColor: { default: 'transparent', ':hover': colors.hover }, cursor: 'pointer' },
+  itemChosen: { color: colors.textStrong, backgroundColor: colors.selected },
+  itemSubject: { flexGrow: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
+  itemMeta: { flexShrink: 0, fontSize: 9, color: colors.textGhost },
+  head: { display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint },
+  headText: { flexGrow: 1, minWidth: 0 },
+  subject: { margin: 0, fontSize: 12, fontWeight: 500, color: colors.textStrong, overflowWrap: 'anywhere' },
+  members: { marginTop: 3, fontSize: 10, color: colors.textFaint, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
+  memberTitle: { color: colors.textGhost },
+  actions: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 },
+  log: { paddingTop: 4 },
+  message: { marginTop: 10, marginBottom: 14 },
+  meta: { display: 'flex', gap: 8, fontSize: 9, color: colors.textGhost, marginBottom: 4 },
+  time: { marginLeft: 'auto' },
+  secretBox: { marginBlock: 8, paddingBlock: 8, paddingInline: 10, borderRadius: 4, backgroundColor: colors.sunken, fontSize: 11 },
+  secretRow: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBlock: 6 },
+  secret: { fontFamily: fonts.mono, fontSize: 11, backgroundColor: colors.card, paddingBlock: 4, paddingInline: 6, borderRadius: 3, overflowWrap: 'anywhere', userSelect: 'all' },
   example: { fontFamily: fonts.mono, fontSize: 10, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: colors.textMuted, margin: 0 },
 });
 

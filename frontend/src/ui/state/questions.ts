@@ -1,5 +1,5 @@
 // Answering an agent's questions, one step at a time.
-import { answerQuestions } from '../../questions.ts';
+import { answerQuestions, finalAnswer } from '../../questions.ts';
 import { update, get, findAgentIn, pendingQuestions, focusLater, toast, errorText, save, questionStepKey, type State } from './store.ts';
 import { focusComposer } from './composer.ts';
 import { call, connected, isSample } from './backend.ts';
@@ -26,10 +26,7 @@ export function setAnswer(agentId: number, questionId: string, answer: Partial<A
 // once the server records them (the batch then clears itself).
 async function sendAnswers(agent: Agent) {
   const batch = agent.questionBatch!;
-  const answers = Object.fromEntries(batch.questions.map(q => {
-    const a = batch.draft?.[q.id] || {};
-    return [q.id, { choices: a.choices || [], text: a.text || '' }];
-  }));
+  const answers = Object.fromEntries(batch.questions.map(q => [q.id, finalAnswer(q, batch.draft?.[q.id])]));
   try {
     await call('agent', 'Answer', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentId: agent.id, callId: batch.id, answers });
     toast(`Answers sent to #${agent.id}.`);

@@ -1,72 +1,81 @@
 // Questions an agent asked, answered one at a time in the composer area.
-import { useState, type KeyboardEvent } from 'react';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button, Kbd, StatusDot } from './kit.tsx';
 import { activeAgents } from '../model.ts';
-import { hasPendingQuestions } from '../questions.ts';
+import { hasPendingQuestions, OWN, ownChosen, finalAnswer } from '../questions.ts';
 import { useApp, workspaceOf, afterCommit } from './state/store.ts';
 import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit, dismissQuestions } from './state/questions.ts';
-import type { Agent, Answer, Question as QuestionData, QuestionOption } from '../types.ts';
+import type { Agent, Answer, Question as QuestionData } from '../types.ts';
 
 const emptyAnswer: Answer = { choices: [], text: '' };
 const tabTitle = (q: QuestionData) => q.title || q.prompt.split(' ').slice(0, 4).join(' ');
-const answered = (a?: Partial<Answer>) => Boolean(a && ((a.choices || []).length || (a.text || '').trim()));
+const answered = (q: QuestionData, a?: Partial<Answer>) => { const f = finalAnswer(q, a); return Boolean(f.choices.length || f.text); };
 const draftOf = (agent: Agent, id: string): Answer => ({ ...emptyAnswer, ...agent.questionBatch?.draft?.[id] });
 
 function Mark({ square = false, pencil = false, chosen = false }) {
   return (
-    <span aria-hidden="true" {...stylex.props(styles.mark, square && styles.markSquare, pencil && styles.markPencil, chosen && styles.markChosen)}>
+    <span aria-hidden="true" {...stylex.props(styles.mark, square && styles.markSquare, pencil && !chosen && styles.markPencil, chosen && styles.markChosen)}>
       {chosen && <span {...stylex.props(styles.markDot, square && styles.markDotSquare)} />}
     </span>
   );
 }
 
-function Option({ question, option, answer, onPick }: { question: QuestionData; option: QuestionOption; answer: Answer; onPick(id: string): void }) {
-  const chosen = answer.choices.includes(option.id);
+// Choice is one row of a question: an agent's option, or your own answer.
+// Its input is visually hidden; ↑ ↓ move between rows, Space chooses.
+function Choice({ question, id, chosen, onPick, pencil = false, children }: { question: QuestionData; id: string; chosen: boolean; onPick(): void; pencil?: boolean; children: ReactNode }) {
   const [ring, setRing] = useState(false);
   return (
-    <label data-option={option.id} data-chosen={chosen || undefined} {...stylex.props(styles.option, chosen && styles.optionChosen, ring && styles.optionFocus)}>
-      <input type={question.multiple ? 'checkbox' : 'radio'} name={`choice:${question.id}`} value={option.id} checked={chosen} onChange={() => onPick(option.id)}
+    <label data-option={id} data-chosen={chosen || undefined} {...stylex.props(styles.option, chosen && styles.optionChosen, ring && styles.optionFocus)}>
+      <input data-choice-input type={question.multiple ? 'checkbox' : 'radio'} name={`choice:${question.id}`} value={id} checked={chosen} onChange={onPick}
         onFocus={event => setRing(event.currentTarget.matches(':focus-visible'))} onBlur={() => setRing(false)} {...stylex.props(styles.hiddenInput)} />
-      <Mark square={question.multiple} chosen={chosen} />
-      <span {...stylex.props(styles.optionText)}>
-        <span {...stylex.props(styles.optionLabel)}>{option.label}</span>
-        {option.description && <small {...stylex.props(styles.optionDescription)}>{option.description}</small>}
-      </span>
+      <Mark square={question.multiple} pencil={pencil} chosen={chosen} />
+      <span {...stylex.props(styles.optionText)}>{children}</span>
     </label>
   );
 }
 
 function Question({ agent, question }: { agent: Agent; question: QuestionData }) {
   const answer = draftOf(agent, question.id);
-  const [writing, setWriting] = useState(Boolean(answer.text));
   const hasOptions = Boolean(question.options?.length);
-  const pick = (id: string) => {
-    const choices = question.multiple
-      ? (answer.choices.includes(id) ? answer.choices.filter(c => c !== id) : [...answer.choices, id])
-      : [id];
-    setAnswer(agent.id, question.id, { ...answer, choices });
+  const own = ownChosen(question, answer);
+  const agentChoices = answer.choices.filter(c => c !== OWN);
+  const set = (choices: string[], text = answer.text) => setAnswer(agent.id, question.id, { choices, text });
+  const pick = (id: string) => set(question.multiple
+    ? (agentChoices.includes(id) ? agentChoices.filter(c => c !== id) : [...agentChoices, id]).concat(own ? [OWN] : [])
+    : [id]);
+  const focusText = () => afterCommit(() => document.querySelector<HTMLElement>('[data-answer-text]')?.focus({ preventScroll: true }));
+  const pickOwn = () => {
+    if (question.multiple) set(own ? agentChoices : [...agentChoices, OWN]);
+    else set([OWN]);
+    if (!own) focusText();
   };
   const fit = (el: HTMLTextAreaElement | null) => { if (!el) return; el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; };
+  const text = (
+    <textarea data-answer-text ref={fit} name={`text:${question.id}`} aria-label={`Your answer: ${question.prompt}`} rows={1} placeholder="Your answer…" value={answer.text}
+      onChange={event => { fit(event.target); set(question.multiple || !hasOptions ? (own ? answer.choices : [...agentChoices, OWN]) : [OWN], event.target.value); }}
+      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); document.querySelector<HTMLElement>(`[data-option="${OWN}"] input`)?.focus(); } }}
+      {...stylex.props(styles.text)} />
+  );
   return (
     <fieldset {...stylex.props(styles.question)}>
-      <legend {...stylex.props(styles.prompt)}>{question.prompt}{question.required === false && <span {...stylex.props(styles.optional)}>optional</span>}</legend>
-      {hasOptions && (
+      <legend {...stylex.props(styles.prompt)}>{question.prompt}{question.required === false && <span {...stylex.props(styles.optional)}>optional</span>}
+        {hasOptions && <span {...stylex.props(styles.optional)}>{question.multiple ? 'choose any' : 'choose one'}</span>}</legend>
+      {hasOptions ? (
         <div role={question.multiple ? 'group' : 'radiogroup'} aria-label={question.prompt} {...stylex.props(styles.options)}>
-          {question.options.map(option => <Option key={option.id} question={question} option={option} answer={answer} onPick={pick} />)}
+          {question.options.map(option => (
+            <Choice key={option.id} question={question} id={option.id} chosen={agentChoices.includes(option.id)} onPick={() => pick(option.id)}>
+              <span {...stylex.props(styles.optionLabel)}>{option.label}</span>
+              {option.description && <small {...stylex.props(styles.optionDescription)}>{option.description}</small>}
+            </Choice>
+          ))}
+          <Choice question={question} id={OWN} chosen={own} onPick={pickOwn} pencil>
+            <span {...stylex.props(styles.optionLabel, !own && styles.ownLabel)}>Your own answer</span>
+          </Choice>
+          {own && text}
         </div>
-      )}
-      {hasOptions && !writing && (
-        <button type="button" data-write-answer aria-expanded="false" {...stylex.props(styles.write)}
-          onClick={() => { setWriting(true); afterCommit(() => document.querySelector<HTMLElement>('[data-answer-text]')?.focus({ preventScroll: true })); }}>
-          <Mark pencil />Write your own answer…
-        </button>
-      )}
-      {(!hasOptions || writing) && (
-        <textarea data-answer-text ref={fit} name={`text:${question.id}`} aria-label={`Your answer: ${question.prompt}`} rows={1} placeholder="Your answer…" value={answer.text}
-          onChange={event => { fit(event.target); setAnswer(agent.id, question.id, { ...answer, text: event.target.value }); }} {...stylex.props(styles.text)} />
-      )}
+      ) : text}
     </fieldset>
   );
 }
@@ -76,11 +85,11 @@ function Review({ agent }: { agent: Agent }) {
   return (
     <div {...stylex.props(styles.review)}>
       {batch.questions.map((q, index) => {
-        const answer = draftOf(agent, q.id);
+        const answer = finalAnswer(q, draftOf(agent, q.id));
         const chosen = (q.options || []).filter(option => answer.choices.includes(option.id)).map(option => option.label);
         const text = [...chosen, answer.text].filter(Boolean).join(' · ');
         return (
-          <button type="button" key={q.id} onClick={() => setQuestionStep(agent, index)} {...stylex.props(styles.reviewRow)}>
+          <button type="button" key={q.id} data-review-row onClick={() => setQuestionStep(agent, index)} {...stylex.props(styles.reviewRow)}>
             <span {...stylex.props(styles.reviewTitle)}>{tabTitle(q)}</span>
             <p {...stylex.props(styles.reviewText, !text && styles.reviewMissing)}>{text || (q.required === false ? 'Skipped' : 'Not answered')}</p>
           </button>
@@ -101,9 +110,23 @@ export function QuestionInbox() {
   const step = questionStepIn({ questionSteps: steps }, agent);
   const question = batch.questions[step];
   const others = pending.filter(a => a.id !== agent.id);
+  // ← → move between questions from anywhere but the text box (radio
+  // buttons would otherwise take the arrows); ↑ ↓ move between choices
+  // without choosing; Space chooses; Enter goes on.
   const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
-    if (event.target === event.currentTarget && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    const target = event.target as HTMLElement;
+    const inText = target.tagName === 'TEXTAREA';
+    if (!inText && !event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
       event.preventDefault(); setQuestionStep(agent, step + (event.key === 'ArrowRight' ? 1 : -1)); return;
+    }
+    if (!inText && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      const inputs = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-choice-input], [data-review-row]')];
+      if (!inputs.length) return;
+      event.preventDefault();
+      const at = inputs.indexOf(target);
+      const next = at < 0 ? (event.key === 'ArrowDown' ? 0 : inputs.length - 1) : Math.max(0, Math.min(inputs.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)));
+      inputs[next].focus();
+      return;
     }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && (event.target as HTMLElement).tagName !== 'BUTTON') { event.preventDefault(); advanceOrSubmit(agent); }
   };
@@ -126,8 +149,9 @@ export function QuestionInbox() {
           <Button onClick={() => setQuestionAgent(others[0].id)} sx={styles.next}>{others.length} more waiting →</Button>
         )}
       </div>
-      <div role="tablist" aria-label="Questions" {...stylex.props(styles.tabs)}>
-        {batch.questions.map((q, index) => tab(index, tabTitle(q), answered(batch.draft?.[q.id])))}
+      <div role="tablist" aria-label="Questions" {...stylex.props(styles.tabs)}
+        onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setQuestionStep(agent, step + (event.key === 'ArrowRight' ? 1 : -1)); } }}>
+        {batch.questions.map((q, index) => tab(index, tabTitle(q), answered(q, batch.draft?.[q.id])))}
         {tab(batch.questions.length, 'Review')}
       </div>
       <form tabIndex={0} aria-label={question ? `Question ${step + 1} of ${batch.questions.length}` : 'Review answers'}
@@ -137,7 +161,7 @@ export function QuestionInbox() {
       </form>
       <div aria-hidden="true" {...stylex.props(styles.hints)}>
         {question
-          ? <><Kbd>Enter</Kbd> next <Kbd>←</Kbd><Kbd>→</Kbd> questions <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line</>
+          ? <><Kbd>↑</Kbd><Kbd>↓</Kbd> choices <Kbd>Space</Kbd> choose <Kbd>Enter</Kbd> next <Kbd>←</Kbd><Kbd>→</Kbd> questions <Kbd>Esc</Kbd> leave text</>
           : <><Kbd>Enter</Kbd> send answers to #{agent.id}</>}
       </div>
     </div>
@@ -203,6 +227,7 @@ const styles = stylex.create({
   markDotSquare: { borderRadius: 1 },
   optionText: { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 10, rowGap: 1, minWidth: 0 },
   optionLabel: { fontSize: 12, color: colors.text },
+  ownLabel: { color: colors.textFaint },
   optionDescription: { fontSize: 11, lineHeight: 1.45, color: colors.textFaint },
   write: {
     borderWidth: 1,
