@@ -33,6 +33,7 @@ export interface State {
   mcpServers: McpServer[];
   usage: UsageReport | null; // token use and cost, from the backend
   secretsVersion: number; // bumped by secret.changed, so the Secrets section reloads
+  dangerAgent: number | null; // the agent the dangerously-allow dialog is open for
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -79,6 +80,7 @@ function initial(): State {
     mcpServers: [],
     usage: null,
     secretsVersion: 0,
+    dangerAgent: null,
     projects: [],
     attachedProject: null,
     files: {},

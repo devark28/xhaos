@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { DangerDialog } from './Danger.tsx';
 import * as stylex from '@stylexjs/stylex';
 import { activeAgents } from '../model.ts';
 import { watchStickyColumns } from '../sticky-columns.ts';
@@ -87,6 +88,7 @@ export function App() {
         <AgentsSection />
       </div>
       <SidePanel />
+      <DangerDialog />
       <Toast />
     </main>
   );

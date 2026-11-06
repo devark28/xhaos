@@ -20,6 +20,7 @@ import (
 	"xhaos/app/attachment"
 
 	"xhaos/app/agent"
+	"xhaos/app/danger"
 	"xhaos/app/egress"
 	"xhaos/app/llm"
 	"xhaos/app/policy"
@@ -140,6 +141,14 @@ func (r *Runner) prepare(root, ws string, a agent.Agent, c llm.ToolCall) (tool.C
 	}
 	call.Preview = use.Preview
 	return call, nil
+}
+
+// lockBreak says why a call breaks a dangerously allowed agent's git lock.
+func lockBreak(a agent.Agent, call tool.Call) string {
+	if call.Name != "bash" || a.Danger == nil {
+		return ""
+	}
+	return danger.CheckCommand(call.Summary, a.Danger.Branch)
 }
 
 // sealed runs a bash call that holds secrets: values as environment
@@ -498,12 +507,22 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			waiting = true
 		default:
 			verdict, reason := a.Policy.Gate(call.Effect, call.Commit)
+			by := "policy"
+			// Dangerously allow: what would ask runs, except secrets and
+			// channels outside the family; git stays on its locked branch.
+			if a.DangerActive(time.Now()) {
+				if why := lockBreak(a, call); why != "" {
+					verdict, reason = policy.Deny, why
+				} else if verdict == policy.Ask && call.Effect != policy.EffectSecret && call.Effect != policy.EffectContact {
+					verdict, reason, by = policy.Allow, "", "danger"
+				}
+			}
 			d.Reason = reason
 			switch verdict {
 			case policy.Allow:
-				d.State, d.By = agent.ToolAllowed, "policy"
+				d.State, d.By = agent.ToolAllowed, by
 			case policy.Deny:
-				d.State, d.By = agent.ToolDenied, "policy"
+				d.State, d.By = agent.ToolDenied, by
 			default:
 				d.State = agent.ToolPending
 				waiting = true

@@ -39,7 +39,8 @@ const (
 	EventMessage = "agent.message"
 	EventStatus  = "agent.status"
 	EventTool    = "agent.tool"
-	EventTitle   = "agent.title" // a better title, written by the model
+	EventTitle   = "agent.title"  // a better title, written by the model
+	EventDanger  = "agent.danger" // dangerously allow turned on (data: Danger) or off (data: null)
 )
 
 // Message authors.
@@ -77,7 +78,20 @@ type Agent struct {
 	Model       string        `json:"model,omitempty"`
 	Policy      policy.Policy `json:"policy"`
 	CreatedAt   time.Time     `json:"createdAt"`
+	// Danger: the owner turned on "dangerously allow" (package danger).
+	Danger *Danger `json:"danger,omitempty"`
 }
+
+// Danger is "dangerously allow": until Until, the agent's calls that would
+// ask run without asking (secrets and channels outside its family still
+// ask), and git is locked to Branch.
+type Danger struct {
+	Until  time.Time `json:"until"`
+	Branch string    `json:"branch,omitempty"`
+}
+
+// Active reports whether a's danger mode is on at now.
+func (a Agent) DangerActive(now time.Time) bool { return a.Danger != nil && now.Before(a.Danger.Until) }
 
 // MessageData is the payload of an agent.message event.
 type MessageData struct {
@@ -221,6 +235,11 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 	}
 	if err := addColumn(db, "agents", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
+	}
+	for _, col := range [][2]string{{"danger_until", "TEXT NOT NULL DEFAULT ''"}, {"danger_branch", "TEXT NOT NULL DEFAULT ''"}} {
+		if err := addColumn(db, "agents", col[0], col[1]); err != nil {
+			return nil, fmt.Errorf("migrate agents: %w", err)
+		}
 	}
 	// 1: the title is the prompt's first line, for the model to replace.
 	if err := addColumn(db, "agents", "title_auto", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -674,14 +693,17 @@ func (s *Service) emit(events []eventlog.Event) {
 	}
 }
 
-const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0) FROM agents`
+const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch FROM agents`
 
 func scan(r interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
-	var at string
+	var at, dangerUntil, dangerBranch string
 	err := r.Scan(&a.ID, &a.WorkspaceID, &a.ParentID, &a.Title, &a.Role, &a.Status, &a.Provider, &a.Model,
-		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID)
+		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch)
 	a.CreatedAt = sqlitedb.ParseStamp(at)
+	if dangerUntil != "" {
+		a.Danger = &Danger{Until: sqlitedb.ParseStamp(dangerUntil), Branch: dangerBranch}
+	}
 	return a, err
 }
 
@@ -799,6 +821,21 @@ func (st *Store) SetTitle(workspaceID string, id int64, title string) error {
 			return eventlog.Event{}, errSkip
 		}
 		return eventlog.Append(tx, workspaceID, id, EventTitle, TitleData{Title: title}, at)
+	})
+}
+
+// SetDanger turns dangerously allow on (d) or off (nil), recording it in the
+// agent's history.
+func (st *Store) SetDanger(workspaceID string, id int64, d *Danger) error {
+	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		until, branch := "", ""
+		if d != nil {
+			until, branch = sqlitedb.Stamp(d.Until), d.Branch
+		}
+		if _, err := tx.Exec(`UPDATE agents SET danger_until = ?, danger_branch = ? WHERE workspace_id = ? AND id = ?`, until, branch, workspaceID, id); err != nil {
+			return eventlog.Event{}, err
+		}
+		return eventlog.Append(tx, workspaceID, id, EventDanger, d, at)
 	})
 }
 

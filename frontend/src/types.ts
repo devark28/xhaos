@@ -57,8 +57,12 @@ export interface QuestionBatch {
   draft?: Record<string, Partial<Answer>>;
 }
 
+// Dangerously allow (package danger): until when, and the branch git is locked to.
+export interface Danger { until: string; branch?: string }
+
 export interface Agent {
   id: number;
+  danger?: Danger;
   parentId?: number;
   projectId?: number;
   title: string;
@@ -157,6 +161,7 @@ export interface BackendAgent {
   model?: string;
   policy: unknown;
   createdAt: string;
+  danger?: Danger;
 }
 
 export interface BackendEvent {

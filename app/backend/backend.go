@@ -21,6 +21,7 @@ import (
 	"xhaos/app/usage"
 
 	"xhaos/app/agent"
+	"xhaos/app/danger"
 	"xhaos/app/egress"
 	"xhaos/app/eventlog"
 	"xhaos/app/idempotency"
@@ -74,6 +75,7 @@ type Services struct {
 	Usage      *usage.Service
 	Prefs      *prefs.Service
 	Secrets    *secret.Service
+	Danger     *danger.Service
 	mcp        *mcp.Manager
 	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
@@ -188,8 +190,19 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	runner.Secrets, runner.Egress = secret.NewSealer(secrets), out
 	runner.Extras = append(runner.Extras, secret.NewTools(secrets))
+	risky := danger.NewService(store, store.Get)
+	risky.Root = func(a agent.Agent) (string, error) {
+		if a.ProjectID == 0 || runner.ProjectRoot == nil {
+			return "", nil
+		}
+		return runner.ProjectRoot(a.WorkspaceID, a.ProjectID)
+	}
+	if vault != nil {
+		risky.Verify = vault.Verify
+	}
 	catalog := tool.NewService()
 	runner.Sandbox = sandbox.Config{Mode: opts.Sandbox, Cache: filepath.Join(dataDir, "sandbox")}
+	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
 		return append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
@@ -253,6 +266,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,
+		Danger:     risky,
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,

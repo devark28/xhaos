@@ -25,6 +25,7 @@ import (
 	"xhaos/app/backend"
 	"xhaos/app/btw"
 	"xhaos/app/channel"
+	"xhaos/app/danger"
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
 	"xhaos/app/llm/openai"
@@ -1247,6 +1248,103 @@ python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM)" 2>/
 		if strings.Contains(raw, "tok_abcdef") {
 			t.Fatalf("the value reached the log: %s", raw)
 		}
+	}
+}
+
+// Dangerously allow: it takes the passphrase; calls that would ask run, git
+// is locked to the agent's branch (moved off main), secrets still ask, and
+// once it expires the agent asks again.
+func TestDangerouslyAllow(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		c := exec.Command("git", append([]string{"-C", root, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644)
+	git("add", ".")
+	git("commit", "-qm", "init")
+	turn := 0
+	h := setupIn(t, root, func(tn llm.Turn) (llm.Result, error) {
+		last := tn.Messages[len(tn.Messages)-1]
+		if len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		turn++
+		return llm.Result{Calls: []llm.ToolCall{
+			tc(fmt.Sprintf("w%d", turn), "write_file", map[string]any{"path": "notes.md", "content": "hello"}),
+			tc(fmt.Sprintf("r%d", turn), "bash", map[string]any{"command": "echo ran"}),
+			tc(fmt.Sprintf("g%d", turn), "bash", map[string]any{"command": "git checkout main"}),
+			tc(fmt.Sprintf("p%d", turn), "bash", map[string]any{"command": "git push --force origin HEAD"}),
+			tc(fmt.Sprintf("s%d", turn), "bash", map[string]any{"command": "echo $TOKEN", "secrets": []string{"TOKEN"}}),
+		}, StopReason: "tool_use"}, nil
+	})
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Danger.Verify = func(p string) error {
+		if p != "right" {
+			return errors.New("wrong passphrase")
+		}
+		return nil
+	}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "Fix login", Provider: "f", Model: "m1"})
+	h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "TOKEN", Value: "tok-123456"})
+	h.s.Secrets.Grant(secret.GrantRequest{WorkspaceID: ws, Name: "TOKEN", AgentID: a.ID, Mode: secret.Ask})
+	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "nope", Minutes: 60}); err == nil {
+		t.Fatal("turned on with a wrong passphrase")
+	}
+	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 7}); err == nil {
+		t.Fatal("accepted an odd duration")
+	}
+	on, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("xhaos/%d-fix-login", a.ID)
+	if on.Danger == nil || on.Danger.Branch != want || time.Until(on.Danger.Until) < 59*time.Minute {
+		t.Fatalf("danger = %+v", on.Danger)
+	}
+	if b, _ := danger.CurrentBranch(root); b != want {
+		t.Fatalf("the project is on %q, not moved off main", b)
+	}
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m1", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "go"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	st := h.tools(t, a.ID)
+	if st["w1"].State != agent.ToolAllowed || st["w1"].By != "danger" {
+		t.Errorf("the write should be allowed by danger mode: %+v", st["w1"])
+	}
+	if st["g1"].State != agent.ToolDenied || !strings.Contains(st["g1"].Reason, "locked to branch "+want) {
+		t.Errorf("switching to main = %+v", st["g1"])
+	}
+	if st["p1"].State != agent.ToolDenied || !strings.Contains(st["p1"].Reason, "--force") {
+		t.Errorf("force push = %+v", st["p1"])
+	}
+	if st["s1"].State != agent.ToolPending {
+		t.Errorf("a secret should still ask: %+v", st["s1"])
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d1", WorkspaceID: ws, AgentID: a.ID, CallID: "s1", Allow: false})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	st = h.tools(t, a.ID)
+	if st["w1"].State != agent.ToolDone || st["r1"].State != agent.ToolDone || !strings.Contains(st["r1"].Output, "ran") {
+		t.Fatalf("allowed calls did not run: %+v %+v", st["w1"], st["r1"])
+	}
+	// Expired: the same calls ask again.
+	agent.NewStore(h.s.DB(), nil).SetDanger(ws, a.ID, &agent.Danger{Until: time.Now().Add(-time.Minute), Branch: want})
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m2", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "again"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	st = h.tools(t, a.ID)
+	if st["w2"].State != agent.ToolPending || st["w2"].By == "danger" {
+		t.Fatalf("after expiry: %+v %+v", st["w2"], st["r2"])
+	}
+	off, _ := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Off: true})
+	if off.Danger != nil {
+		t.Fatalf("still on: %+v", off.Danger)
+	}
+	var n int
+	h.s.DB().QueryRow(`SELECT COUNT(*) FROM events WHERE kind = ? AND agent_id = ?`, agent.EventDanger, a.ID).Scan(&n)
+	if n != 3 { // on, the expiry set by this test, off
+		t.Fatalf("history has %d danger events, want 3", n)
 	}
 }
 

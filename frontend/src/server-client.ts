@@ -22,6 +22,7 @@ const services = {
   usage: 'xhaos/app/usage.Service',
   prefs: 'xhaos/app/prefs.Service',
   secret: 'xhaos/app/secret.Service',
+  danger: 'xhaos/app/danger.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

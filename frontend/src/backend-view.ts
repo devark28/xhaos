@@ -17,6 +17,7 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
     model: agent.model,
     modelLabel: modelLabel(agent.provider, agent.model),
     policy: agent.policy,
+    danger: agent.danger || undefined,
     archivedAt: agent.status === 'terminated' ? agent.createdAt : undefined,
     activity: [],
     children: [],
@@ -164,6 +165,12 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
     if (byId.has(event.data.id)) return null;
     place(view, byId, node(event.data));
     return { tree: true, created: true, agentId: event.data.id };
+  }
+  if (event.kind === 'agent.danger') { // dangerously allow turned on (data) or off (null)
+    const agent = byId.get(event.agentId);
+    if (!agent) return null;
+    agent.danger = event.data || undefined;
+    return { tree: true, agentId: agent.id };
   }
   if (event.kind === 'agent.title') { // the model's title replaces the prompt's first line
     const agent = byId.get(event.agentId);

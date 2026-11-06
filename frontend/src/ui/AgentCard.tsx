@@ -14,6 +14,7 @@ import { useApp } from './state/store.ts';
 import { toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent } from './state/agents.ts';
 import { showQuestions } from './state/panels.ts';
 import type { Agent } from '../types.ts';
+import { DangerBadge, dangerLeft, dangerOff, openDanger } from './Danger.tsx';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 
@@ -43,6 +44,7 @@ function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; close
       {/* The project only when there are several; the model lives in the footer. */}
       {(project && !nested) || agent.sample ? <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{[!nested && project, agent.sample && 'sample'].filter(Boolean).join(' · ')}</span> : null}
       <span data-title {...stylex.props(header.title, nested && header.titleNested)}>{agent.title}</span>
+      <DangerBadge agent={agent} />
     </button>
   );
 }
@@ -84,6 +86,9 @@ function AgentMenu({ agent, attached }: { agent: Agent; attached: boolean }) {
       <div {...stylex.props(menu.items)}>
         <Button variant="menu" data-menu-target={agent.id} onClick={event => { close(event); toggleRecipient(agent.id); }}>{attached ? 'Detach from' : 'Attach to'} composer</Button>
         {backend && !agent.sample && agent.status === 'running' && <Button variant="menu" data-stop={agent.id} onClick={event => { close(event); stopAgent(agent.id); }}>Stop</Button>}
+        {backend && !agent.sample && agent.status !== 'terminated' && (dangerLeft(agent) > 0
+          ? <Button variant="menu" data-danger-off={agent.id} onClick={event => { close(event); void dangerOff(agent.id); }}>Turn off dangerously allow</Button>
+          : <Button variant="menu" data-danger={agent.id} onClick={event => { close(event); openDanger(agent.id); }}>Dangerously allow…</Button>)}
         <Button variant="menu" data-terminate={agent.id} onClick={event => { close(event); terminateAgent(agent.id); }}>Terminate agent</Button>
       </div>
     </details>

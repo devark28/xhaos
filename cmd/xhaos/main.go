@@ -149,5 +149,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Usage),
 		application.NewService(s.Prefs),
 		application.NewService(s.Secrets),
+		application.NewService(s.Danger),
 	}
 }
