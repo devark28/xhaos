@@ -35,6 +35,8 @@ export interface State {
   secretsVersion: number; // bumped by secret.changed, so the Secrets section reloads
   skillsVersion: number; // bumped by skill.changed
   dangerAgent: number | null; // the agent the dangerously-allow dialog is open for
+  // On phones one view shows at a time: the agents, or the open panel.
+  mobileView: 'agents' | 'panel';
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -83,6 +85,7 @@ function initial(): State {
     secretsVersion: 0,
     skillsVersion: 0,
     dangerAgent: null,
+    mobileView: 'agents',
     projects: [],
     attachedProject: null,
     files: {},

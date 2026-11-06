@@ -12,6 +12,7 @@ import { useApp, workspaceOf, flushAfterCommit } from './state/store.ts';
 import { toggleCollapseAll, notifyAttention } from './state/agents.ts';
 import { setLayout, clearSearch } from './state/panels.ts';
 import { SidePanel } from './SidePanel.tsx';
+import { useNarrow } from './narrow.ts';
 
 // The bar above the agents: search context, expand/collapse all, columns.
 function AgentsToolbar() {
@@ -19,14 +20,17 @@ function AgentsToolbar() {
   const collapsed = useApp(s => s.collapsed);
   const layout = useApp(s => s.layout);
   const search = useApp(s => s.search);
+  const narrow = useNarrow();
   return (
     <div data-agents-toolbar {...stylex.props(board.toolbar)}>
       {search && <span {...stylex.props(board.search)}>Search: {search}<Button variant="icon" id="clear-search" aria-label="Clear search" onClick={clearSearch}><Icon name="close" size={12} /></Button></span>}
       <div {...stylex.props(board.tools)}>
         <Button id="collapse-all" onClick={toggleCollapseAll}>{agents.every(a => collapsed.has(a.id)) ? 'Expand' : 'Collapse'} all</Button>
-        <Button variant="icon" data-layout="list" aria-label="One column" chosen={layout === 'list'} onClick={() => setLayout('list')}><Icon name="list" size={14} /></Button>
-        <Button variant="icon" data-layout="grid" aria-label="Two columns" chosen={layout === 'grid'} onClick={() => setLayout('grid')}><Icon name="grid" size={14} /></Button>
-        <Button variant="icon" data-layout="three" aria-label="Three columns" chosen={layout === 'three'} onClick={() => setLayout('three')}><Icon name="columns" size={14} /></Button>
+        {!narrow && <>{/* a phone shows one column */}
+          <Button variant="icon" data-layout="list" aria-label="One column" chosen={layout === 'list'} onClick={() => setLayout('list')}><Icon name="list" size={14} /></Button>
+          <Button variant="icon" data-layout="grid" aria-label="Two columns" chosen={layout === 'grid'} onClick={() => setLayout('grid')}><Icon name="grid" size={14} /></Button>
+          <Button variant="icon" data-layout="three" aria-label="Three columns" chosen={layout === 'three'} onClick={() => setLayout('three')}><Icon name="columns" size={14} /></Button>
+        </>}
       </div>
     </div>
   );
@@ -35,7 +39,8 @@ function AgentsToolbar() {
 function AgentsSection() {
   const scroller = useRef<HTMLElement>(null);
   const search = useApp(s => s.search);
-  const layout = useApp(s => s.layout);
+  const narrow = useNarrow();
+  const layout = useApp(s => (narrow ? 'list' : s.layout));
   const drawing = useApp(s => s.mode === 'draw');
   const query = search.toLowerCase();
   const agents = useApp(s => workspaceOf(s).agents).filter(a => !a.archivedAt && activeAgents([a]).some(x => `${x.title} ${x.id}`.toLowerCase().includes(query)));
@@ -78,10 +83,12 @@ export function App() {
   const agents = useApp(s => workspaceOf(s).agents);
   useLayoutEffect(() => { flushAfterCommit(); }, [commits]);
   useEffect(() => { if (ready) notifyAttention(); }, [ready, agents]);
+  const narrow = useNarrow();
+  const view = useApp(s => s.mobileView);
   if (!ready) return <Toast />;
   return (
-    <main {...stylex.props(page.main)}>
-      <div {...stylex.props(page.left, drawing && page.drawing)}>
+    <main data-mobile-view={narrow ? view : undefined} {...stylex.props(page.main, narrow && page.phone)}>
+      <div {...stylex.props(page.left, drawing && !narrow && page.drawing, narrow && page.phoneLeft, narrow && view === 'panel' && page.gone)}>
         <section id="command-center" aria-label="Command center" {...stylex.props(page.command, drawing && page.clip)}>
           <ComposerArea />
         </section>
@@ -108,11 +115,22 @@ const page = stylex.create({
   // content changes; drawing gives the sketch pad the whole column.
   left: { minWidth: 0, minHeight: 0, display: 'grid', gridTemplateRows: 'max(170px, 26dvh) minmax(0, 1fr)' },
   drawing: { gridTemplateRows: 'minmax(0, 1fr) 0', overflow: 'hidden' },
+  // Phones: the agents and the open panel share one cell, one at a time,
+  // above the navigation bar (SidePanel).
+  phone: {
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    gridTemplateRows: 'minmax(0, 1fr)',
+    gridTemplateAreas: '"view"',
+    paddingBottom: 'calc(56px + env(safe-area-inset-bottom))',
+    boxSizing: 'border-box',
+  },
+  phoneLeft: { gridArea: 'view', gridTemplateRows: 'max(150px, 22dvh) minmax(0, 1fr)' },
+  gone: { display: 'none' },
   command: { display: 'flex', flexDirection: 'column', minHeight: 0, paddingTop: 8, position: 'relative', zIndex: 5 },
   clip: { overflow: 'hidden' },
   toast: {
     position: 'fixed',
-    bottom: 20,
+    bottom: { default: 20, [breakpoints.narrow]: 76 }, // above a phone's navigation bar
     left: '50%',
     transform: 'translateX(-50%)',
     zIndex: 40,

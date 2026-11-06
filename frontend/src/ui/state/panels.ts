@@ -7,8 +7,12 @@ import { focusComposer, setDraft } from './composer.ts';
 import { refreshProjects } from './projects.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
 import { newId } from '../../ids.ts';
+import { isNarrow } from '../narrow.ts';
 
-export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { update(s => { s.panel = { kind, ...args }; }); }
+// Opening a panel shows it; on a phone that means switching to it.
+export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { update(s => { s.panel = { kind, ...args }; if (isNarrow()) s.mobileView = 'panel'; }); }
+// showAgentsView goes back to the agents (phones; a no-op elsewhere).
+export function showAgentsView() { update(s => { s.mobileView = 'agents'; }); }
 export function showMessageComposer() { update(s => { s.mode = 'message'; }); focusComposer(); }
 export function showDraw() { update(s => { s.mode = 'draw'; }); }
 // selectPanel shows a tab's panel in the side panel (which is always open).
@@ -26,6 +30,7 @@ export function showQuestions(id: number | null) {
   update(s => {
     if (!pending.some(agent => agent.id === s.questionAgentId)) s.questionAgentId = id;
     s.panel = { kind: 'questions' };
+    if (isNarrow()) s.mobileView = 'panel';
   });
   focusLater('[data-questions-agent]');
 }

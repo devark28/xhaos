@@ -1,7 +1,7 @@
 // Questions an agent asked, answered one at a time in the composer area.
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { colors } from './theme/tokens.stylex.ts';
+import { colors, breakpoints } from './theme/tokens.stylex.ts';
 import { Button, Kbd, StatusDot } from './kit.tsx';
 import { activeAgents } from '../model.ts';
 import { hasPendingQuestions, OWN, ownChosen, finalAnswer } from '../questions.ts';
@@ -257,5 +257,6 @@ const styles = stylex.create({
     color: colors.textStrong,
   },
   reviewMissing: { color: colors.warn },
-  hints: { display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, fontSize: 10, color: colors.textHint },
+  hints: { display: { default: 'flex', [breakpoints.narrow]: 'none' }, // no keyboard on a phone
+    alignItems: 'center', gap: 5, flexShrink: 0, fontSize: 10, color: colors.textHint },
 });

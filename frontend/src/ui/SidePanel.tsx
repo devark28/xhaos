@@ -8,7 +8,8 @@ import { Icon } from './Icon.tsx';
 import { Panel } from './Panels.tsx';
 import { UsageTotal } from './Usage.tsx';
 import { useApp, pendingQuestionsIn, type PanelKind } from './state/store.ts';
-import { selectPanel } from './state/panels.ts';
+import { selectPanel, showAgentsView } from './state/panels.ts';
+import { useNarrow } from './narrow.ts';
 import type { IconName } from './icons.ts';
 
 // Each tab keeps the element ID its old ribbon button had.
@@ -24,23 +25,29 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
 export function SidePanel() {
   const kind = useApp(s => s.panel.kind);
   const pending = useApp(s => pendingQuestionsIn(s).length);
+  const narrow = useNarrow();
+  const view = useApp(s => s.mobileView);
+  const agentsView = narrow && view === 'agents';
   return (
-    <aside id="side" aria-label="Side panel" {...stylex.props(side.root)}>
-      <nav aria-label="Panels" {...stylex.props(side.tabs)}>
-        <UsageTotal />
+    <aside id="side" aria-label="Side panel" {...stylex.props(side.root, narrow && side.phone, agentsView && side.phoneHidden)}>
+      {/* On a phone the tabs are a navigation bar at the bottom, with the agents first. */}
+      <nav aria-label="Panels" {...stylex.props(side.tabs, narrow && side.phoneNav)}>
+        {narrow
+          ? <Button variant="icon" id="show-agents" aria-label="Agents" title="Agents" aria-pressed={agentsView} chosen={agentsView} onClick={showAgentsView} sx={[side.tab, side.phoneTab]}><Icon name="list" size={18} /></Button>
+          : <UsageTotal />}
         {tabs.map(tab => {
-          const chosen = kind === tab.kind || Boolean(tab.also?.includes(kind));
+          const chosen = !agentsView && (kind === tab.kind || Boolean(tab.also?.includes(kind)));
           const waiting = tab.kind === 'questions' && pending > 0;
           return (
             <Button key={tab.kind} variant="icon" id={tab.id} aria-label={waiting ? `${tab.label} · ${pending} waiting` : tab.label} title={tab.label}
-              aria-pressed={chosen} chosen={chosen} onClick={() => selectPanel(tab.kind)} sx={[side.tab, waiting && side.attention]}>
-              <Icon name={tab.icon} size={15} />
+              aria-pressed={chosen} chosen={chosen} onClick={() => selectPanel(tab.kind)} sx={[side.tab, narrow && side.phoneTab, waiting && side.attention]}>
+              <Icon name={tab.icon} size={narrow ? 18 : 15} />
               {waiting && <span {...stylex.props(side.badge)}><StatusDot status="waiting" size={6} />{pending}</span>}
             </Button>
           );
         })}
       </nav>
-      <Panel />
+      {!agentsView && <Panel />}
     </aside>
   );
 }
@@ -60,6 +67,16 @@ const side = stylex.create({
   tabs: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, height: 44, flexShrink: 0, paddingInline: 10 },
   tab: { position: 'relative', width: 30, height: 30, padding: 0 },
   attention: { color: colors.brand },
+  phone: { gridArea: 'view', borderTopWidth: 0, borderLeftWidth: 0 },
+  // Showing the agents: the panel takes no space; its bar stays.
+  phoneHidden: { display: 'contents' },
+  phoneNav: {
+    position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30,
+    height: 'calc(56px + env(safe-area-inset-bottom))', paddingBottom: 'env(safe-area-inset-bottom)', paddingInline: 6,
+    justifyContent: 'space-around', gap: 0,
+    borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: colors.lineFaint, backgroundColor: colors.bg,
+  },
+  phoneTab: { width: 48, height: 44 },
   badge: {
     position: 'absolute',
     top: 0,

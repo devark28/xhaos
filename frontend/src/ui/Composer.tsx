@@ -20,6 +20,7 @@ import { detachRecipient } from './state/agents.ts';
 import { detachProject } from './state/projects.ts';
 import { showMessageComposer, showDraw, dictate } from './state/panels.ts';
 import type { XhaosInput } from '../rich-input.ts';
+import { useNarrow } from './narrow.ts';
 
 // JSX knows <xhaos-input> (defined in rich-input.ts).
 declare module 'react' {
@@ -213,13 +214,14 @@ function DrawingPane() {
 }
 
 export function ComposerArea() {
-  const mode = useApp(s => s.mode);
+  const narrow = useNarrow(); // a phone has no Draw tab: the canvas needs room and a pointer
+  const mode = useApp(s => (narrow ? 'message' : s.mode));
   return (
     <div id="composer-area" {...stylex.props(area.root)}>
       <div {...stylex.props(area.switches)}>
         <a href="/" aria-label="Xhaos home" title="xhaos" {...stylex.props(area.brand)}>x<span {...stylex.props(area.brandTail)}>h</span></a>
         <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, mode === 'message' && area.switchChosen]}>Message</Button>
-        <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>
+        {!narrow && <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>}
       </div>
       <BtwAside />
       <ComposerForm />

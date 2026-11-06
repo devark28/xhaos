@@ -63,6 +63,7 @@ export function openAgents(ids: number[]) {
     const keep = new Set(known.flatMap(k => agentPath(workspaceOf(s).agents, k)));
     for (const a of flatten(workspaceOf(s).agents)) { if (keep.has(a.id)) s.collapsed.delete(a.id); else s.collapsed.add(a.id); }
     s.focusAgent = id;
+    s.mobileView = 'agents';
   });
   flash(id);
   return true;
@@ -75,6 +76,7 @@ export function showAgent(id: number) {
   update(s => {
     agentPath(workspaceOf(s).agents, id).forEach(k => s.collapsed.delete(k));
     s.focusAgent = id;
+    s.mobileView = 'agents';
   });
   flash(id);
 }
@@ -91,15 +93,19 @@ function flash(id: number) {
 
 let applying = false;
 
-// applyHash moves the page to the place in the hash.
-export function applyHash(hash = location.hash) {
+// applyHash moves the page to the place in the hash. On first load a phone
+// stays on the agents (the link always names a panel); following a link
+// later shows its panel.
+export function applyHash(hash = location.hash, initial = false) {
   const place = parseHash(hash);
+  const view = get().mobileView;
   applying = true;
   try {
     if (place.panel === 'settings') openPanel('settings', place.section ? { section: place.section } : {});
     else if (place.panel === 'channels') openPanel('channels', place.channel ? { channelId: place.channel } : {});
     else if (place.panel) selectPanel(place.panel);
     if (place.agents) openAgents(place.agents);
+    if (initial) update(s => { s.mobileView = view; });
   } finally { applying = false; }
 }
 
@@ -107,7 +113,7 @@ export function applyHash(hash = location.hash) {
 // are loaded, so an #agent link finds its card.
 let installed = false;
 export function installHashNavigation() {
-  applyHash();
+  applyHash(location.hash, true);
   if (installed) return;
   installed = true;
   addEventListener('hashchange', () => applyHash());

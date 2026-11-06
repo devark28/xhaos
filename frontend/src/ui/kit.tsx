@@ -47,12 +47,13 @@ const buttons = stylex.create({
     fontSize: 10,
     whiteSpace: 'nowrap',
     borderRadius: 3,
-    paddingBlock: 3,
-    paddingInline: 7,
+    // Big enough to tap on a phone.
+    paddingBlock: { default: 3, [breakpoints.narrow]: 9 },
+    paddingInline: { default: 7, [breakpoints.narrow]: 16 },
     color: colors.onLight,
     backgroundColor: { default: colors.brand, ':hover': colors.brandStrong },
   },
-  deny: { marginInline: 6, fontSize: 10, color: colors.textMuted, padding: 3 },
+  deny: { marginInline: 6, fontSize: 10, color: colors.textMuted, paddingBlock: { default: 3, [breakpoints.narrow]: 9 }, paddingInline: { default: 3, [breakpoints.narrow]: 14 } },
   send: {
     width: 28,
     height: 28,
