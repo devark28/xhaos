@@ -128,7 +128,11 @@ func CheckCommand(command, branch string) string {
 // git (a project's git config could run commands). "" when root is not a
 // git repository; an error when HEAD is detached.
 func CurrentBranch(root string) (string, error) {
-	head, err := os.ReadFile(filepath.Join(root, ".git", "HEAD"))
+	dirs := sandbox.GitDirs(root) // .git, or where a submodule's .git file points
+	if len(dirs) == 0 {
+		return "", nil
+	}
+	head, err := os.ReadFile(filepath.Join(dirs[0], "HEAD"))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}

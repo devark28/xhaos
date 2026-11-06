@@ -136,6 +136,32 @@ func NewService(db *sql.DB, agents *agent.Service, store *agent.Store, publish e
 
 // ---- membership rules ----------------------------------------------------------
 
+// descendant returns agent id when it is one of a's subagents (at any
+// depth) and still running; anyone else is refused.
+func (s *Service) descendant(a agent.Agent, id int64) (agent.Agent, error) {
+	snap, err := s.agents.Snapshot(a.WorkspaceID)
+	if err != nil {
+		return agent.Agent{}, err
+	}
+	byID := map[int64]agent.Agent{}
+	for _, x := range snap.Agents {
+		byID[x.ID] = x
+	}
+	target, ok := byID[id]
+	if !ok {
+		return agent.Agent{}, fmt.Errorf("there is no agent #%d", id)
+	}
+	for p := target.ParentID; p != 0; p = byID[p].ParentID {
+		if p == a.ID {
+			if target.Status == agent.StatusTerminated {
+				return agent.Agent{}, fmt.Errorf("subagent #%d is already terminated", id)
+			}
+			return target, nil
+		}
+	}
+	return agent.Agent{}, fmt.Errorf("agent #%d is not one of your subagents; you can only terminate your own", id)
+}
+
 // mayInclude reports whether creator may put member in a channel.
 func mayInclude(creator, member agent.Agent) bool {
 	if member.Status == agent.StatusTerminated {
@@ -632,6 +658,8 @@ var effects = map[string]string{
 	"channel_create": tool.Read, "channel_send": tool.Read,
 	// A new agent spends tokens and can act: gated like a file write.
 	"spawn_agent": tool.Write,
+	// Ending its own subagents (and theirs) only stops work it started.
+	"subagent_terminate": tool.Read,
 }
 
 func (t *Tools) Owns(name string) bool { _, ok := effects[name]; return ok }
@@ -659,6 +687,8 @@ func (t *Tools) Specs(string) []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"channel": integer, "limit": integer}, Required: []string{"channel"}}},
 		{Name: "models_list", Description: "List the models a subagent can use: those configured for your provider, cheapest first, with prices.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
+		{Name: "subagent_terminate", Description: "End one of your own subagents (and its subagents) that is no longer needed, e.g. when its task is done or went wrong. Only your subagents, never other agents.",
+			Schema: llm.ToolSchema{Properties: map[string]any{"agent": map[string]any{"type": "integer", "description": "The subagent's ID."}}, Required: []string{"agent"}}},
 		{Name: "spawn_agent", Description: "Start a subagent on a focused task. It works in your project with at most your permissions, and gets a channel with you; its final answer arrives in that channel. Use it to split independent work; keep the task self-contained. Choose its model with cost in mind: prefer the cheapest model (see models_list) that can do the task well, and keep larger models for hard reasoning.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"task": str, "title": map[string]any{"type": "string", "description": "A short title for its card."}, "model": map[string]any{"type": "string", "description": "A model from models_list. Default: your own model."}}, Required: []string{"task"}}},
 	}
@@ -673,6 +703,7 @@ type input struct {
 	Task    string  `json:"task"`
 	Title   string  `json:"title"`
 	Model   string  `json:"model"`
+	Agent   int64   `json:"agent"`
 }
 
 func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, error) {
@@ -701,6 +732,12 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 		call.Summary = fmt.Sprintf("channel #%d: %s", in.Channel, firstLine(in.Message))
 	case "channel_read":
 		call.Summary = fmt.Sprintf("channel #%d", in.Channel)
+	case "subagent_terminate":
+		target, err := t.s.descendant(a, in.Agent)
+		if err != nil {
+			return call, err
+		}
+		call.Summary = fmt.Sprintf("#%d %s", target.ID, target.Title)
 	case "spawn_agent":
 		if strings.TrimSpace(in.Task) == "" {
 			return call, errors.New("spawn_agent needs a task")
@@ -807,6 +844,15 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		return tool.Clip(strings.TrimSpace(b.String())), nil
 	case "spawn_agent":
 		return s.spawn(a, in.Task, in.Title, in.Model)
+	case "subagent_terminate":
+		target, err := s.descendant(a, in.Agent)
+		if err != nil {
+			return "", err
+		}
+		if _, err := s.agents.Terminate(agent.ControlRequest{IdempotencyKey: fmt.Sprintf("subagent-terminate-%d-%d-%d", a.ID, target.ID, s.now().UnixNano()), WorkspaceID: a.WorkspaceID, AgentID: target.ID}); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Terminated subagent #%d (%s) and its subagents.", target.ID, target.Title), nil
 	case "models_list":
 		return s.modelsList(a)
 	}

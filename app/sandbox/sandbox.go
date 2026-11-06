@@ -213,10 +213,7 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	// The project and the shared cache become read-only; only the scratch
 	// folder, devices and the project's .git stay writable.
 	p.Read = append(p.Read, root, c.Cache)
-	p.Write = []string{scratch, "/dev"}
-	if fi, err := os.Stat(filepath.Join(root, ".git")); err == nil && fi.IsDir() {
-		p.Write = append(p.Write, filepath.Join(root, ".git"))
-	}
+	p.Write = append([]string{scratch, "/dev"}, GitDirs(root)...)
 	p.Port, p.DenyUDP = s.ProxyPort, true
 	over := map[string]string{
 		"HOME": filepath.Join(scratch, "home"), "TMPDIR": filepath.Join(scratch, "tmp"),
@@ -281,6 +278,8 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 		Read:  []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/proc", "/sys", "/snap", "/nix", "/run/systemd/resolve", "/var/lib/ca-certificates"},
 		Write: []string{root, c.Cache, tmp, "/dev"},
 	}
+	// A submodule's or worktree's git data can live outside the project.
+	p.Write = append(p.Write, GitDirs(root)...)
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
 	// never the home folder itself or ~/.local (that holds Xhaos's data).

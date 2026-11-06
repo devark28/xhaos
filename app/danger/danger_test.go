@@ -79,3 +79,17 @@ func TestCurrentBranch(t *testing.T) {
 		t.Fatalf("slug = %q", slug("Fix the Login page!! (urgent) and more words to cut"))
 	}
 }
+
+// A submodule's .git is a file: the branch comes from where it points.
+func TestCurrentBranchInASubmodule(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	gitdir := filepath.Join(dir, ".git", "modules", "sub")
+	os.MkdirAll(sub, 0o755)
+	os.MkdirAll(gitdir, 0o755)
+	os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../.git/modules/sub\n"), 0o644)
+	os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/uvc\n"), 0o644)
+	if b, err := CurrentBranch(sub); b != "feature/uvc" || err != nil {
+		t.Fatalf("branch = %q %v", b, err)
+	}
+}

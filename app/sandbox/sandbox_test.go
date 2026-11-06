@@ -150,3 +150,47 @@ func TestModes(t *testing.T) {
 		t.Errorf("auto status = %+v", s)
 	}
 }
+
+// A submodule's (and a worktree's) .git is a file pointing into the parent
+// repository: git must work in the sandbox, the parent's files must not.
+func TestGitSubmodulesAndWorktrees(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	dir := t.TempDir()
+	git := func(in string, args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always"}, args...)...)
+		c.Dir = in
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	lib, parent := filepath.Join(dir, "lib"), filepath.Join(dir, "parent")
+	for _, d := range []string{lib, parent} {
+		os.MkdirAll(d, 0o755)
+		git(d, "init", "-q", "-b", "main")
+		os.WriteFile(filepath.Join(d, "README"), []byte(d), 0o644)
+		git(d, "add", ".")
+		git(d, "commit", "-qm", "init")
+	}
+	os.WriteFile(filepath.Join(parent, "parent-secret.txt"), []byte("TOP SECRET"), 0o644)
+	git(parent, "submodule", "add", "-q", lib, "sub")
+	git(parent, "worktree", "add", "-q", filepath.Join(dir, "wt"), "-b", "feature")
+	c := Config{Mode: Auto, Cache: filepath.Join(dir, "cache")}
+	for _, root := range []string{filepath.Join(parent, "sub"), filepath.Join(dir, "wt")} {
+		if fi, _ := os.Stat(filepath.Join(root, ".git")); fi == nil || fi.IsDir() {
+			t.Fatalf("%s: .git should be a file", root)
+		}
+		out, err := run(t, c, root, "git status --short && echo x > new.txt && git add new.txt && git -c user.email=t@t -c user.name=t commit -qm sandboxed && git log --oneline -1")
+		if err != nil || !strings.Contains(out, "sandboxed") {
+			t.Errorf("%s: git in the sandbox = %v %q", root, err, out)
+		}
+		if out, err := run(t, c, root, "cat "+filepath.Join(parent, "parent-secret.txt")); err == nil || strings.Contains(out, "TOP SECRET") {
+			t.Errorf("%s: read the parent repository's files: %q", root, out)
+		}
+	}
+	if dirs := GitDirs(filepath.Join(dir, "wt")); len(dirs) != 2 || dirs[1] != filepath.Join(parent, ".git") {
+		t.Errorf("worktree git dirs = %v", dirs)
+	}
+}

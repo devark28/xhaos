@@ -1387,6 +1387,65 @@ func TestSkills(t *testing.T) {
 	}
 }
 
+// subagent_terminate: an agent ends its own subagents (and theirs), never
+// another agent's, a sibling, or itself.
+func TestSubagentTerminate(t *testing.T) {
+	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	mk := func(key string, parent int64) agent.Agent {
+		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: key, ParentID: parent, Provider: "f", Model: "m1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	p, other := mk("parent", 0), mk("other", 0)
+	child := mk("child", p.ID)
+	grand := mk("grandchild", child.ID)
+	foreign := mk("foreign-child", other.ID)
+	tools := h.s.Channels.Tools()
+	try := func(caller agent.Agent, target int64) (string, error) {
+		c, err := tools.Prepare(ws, caller, tc("t", "subagent_terminate", map[string]any{"agent": target}))
+		if err != nil {
+			return "", err
+		}
+		if c.Effect != tool.Read {
+			t.Fatalf("effect = %s", c.Effect)
+		}
+		return tools.Execute(context.Background(), ws, caller, c)
+	}
+	for _, bad := range []struct {
+		caller agent.Agent
+		target int64
+	}{{p, foreign.ID}, {p, other.ID}, {p, p.ID}, {child, p.ID}, {other, child.ID}} {
+		if _, err := try(bad.caller, bad.target); err == nil || !strings.Contains(err.Error(), "not one of your subagents") {
+			t.Errorf("#%d ending #%d = %v", bad.caller.ID, bad.target, err)
+		}
+	}
+	if out, err := try(p, grand.ID); err != nil || !strings.Contains(out, "Terminated subagent") {
+		t.Fatalf("ending a grandchild = %q %v", out, err)
+	}
+	if out, err := try(p, child.ID); err != nil {
+		t.Fatalf("ending its child = %q %v", out, err)
+	}
+	if _, err := try(p, child.ID); err == nil || !strings.Contains(err.Error(), "already terminated") {
+		t.Fatalf("again = %v", err)
+	}
+	snap, _ := h.s.Agents.Snapshot(ws)
+	for _, a := range snap.Agents {
+		want := agent.StatusTerminated
+		if a.ID == p.ID || a.ID == other.ID || a.ID == foreign.ID {
+			want = a.Status
+			if a.Status == agent.StatusTerminated {
+				t.Errorf("#%d was terminated", a.ID)
+			}
+		}
+		if a.Status != want {
+			t.Errorf("#%d status %s", a.ID, a.Status)
+		}
+	}
+}
+
 // Dangerously allow: it takes the passphrase; calls that would ask run, git
 // is locked to the agent's branch (moved off main), secrets still ask, and
 // once it expires the agent asks again.
