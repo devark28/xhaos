@@ -35,6 +35,7 @@ import (
 	"xhaos/app/secretbox"
 	"xhaos/app/skill"
 	"xhaos/app/sqlitedb"
+	"xhaos/app/web"
 	"xhaos/app/workspace"
 )
 
@@ -78,6 +79,7 @@ type Services struct {
 	Secrets    *secret.Service
 	Danger     *danger.Service
 	Skills     *skill.Service
+	Web        *web.Service
 	mcp        *mcp.Manager
 	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
@@ -152,6 +154,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if err := skill.Migrate(db); err != nil {
 		return nil, fmt.Errorf("migrate skill: %w", err)
 	}
+	if err := web.Migrate(db); err != nil {
+		return nil, fmt.Errorf("migrate web: %w", err)
+	}
 	// Root, when given, is registered as a project. Nothing is registered
 	// implicitly: a server started from a home folder or an empty VPS must
 	// not turn that folder into a project.
@@ -201,6 +206,8 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	runner.Skills = skills
 	runner.Extras = append(runner.Extras, skill.NewTools(skills))
+	webs := web.NewService(db, box)
+	runner.Extras = append(runner.Extras, web.NewTools(webs))
 	risky := danger.NewService(store, store.Get)
 	risky.Root = func(a agent.Agent) (string, error) {
 		if a.ProjectID == 0 || runner.ProjectRoot == nil {
@@ -216,7 +223,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), memory.NewTools(memories).Catalog()...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -279,6 +286,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Secrets:    secrets,
 		Danger:     risky,
 		Skills:     skills,
+		Web:        webs,
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,

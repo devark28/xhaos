@@ -15,6 +15,7 @@ import { UsagePanel, usageLine } from './Usage.tsx';
 import { AppearanceSettings, DeveloperSettings } from './AppearanceSettings.tsx';
 import { Secrets } from './Secrets.tsx';
 import { Skills } from './Skills.tsx';
+import { WebSettings } from './WebSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import type { Channel as ChannelView } from '../types.ts';
@@ -65,33 +66,40 @@ function Memories({ editId }: { editId?: string }) {
     saveMemory(editId === 'new' ? null : editId || null, content);
   };
   const add = !open && <Button id="add-memory" onClick={() => openPanel('memories', { editId: 'new' })}>＋ Add memory</Button>;
+  // The form sits where its result goes: a new memory at the top (newest
+  // first), an edited one in its own place, so a long list never has you
+  // scroll between the box and what it changes.
+  const form = (
+    <form id="memory-form" data-memory-form={editId} onSubmit={submit} {...stylex.props(memory.form)}
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); openPanel('memories'); requestAnimationFrame(() => document.getElementById('add-memory')?.focus({ preventScroll: true })); }
+        else if (event.target === input.current && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.requestSubmit(); }
+      }}>
+      <textarea key={editId || 'none'} id="memory-text" ref={input} rows={1} aria-label="Workspace memory" placeholder="A preference, project convention, or decision" defaultValue={editing?.content || ''} onInput={fit} {...stylex.props(memory.text)} />
+      <div {...stylex.props(memory.formActions)}>
+        <span {...stylex.props(memory.scope)}>{editId === 'new' ? 'New · workspace' : 'Editing'}</span>
+        <Button id="cancel-memory" onClick={() => openPanel('memories')} sx={memory.pushRight}>Cancel</Button>
+        <Button type="submit" id="save-memory">Save</Button>
+      </div>
+    </form>
+  );
+  const backend = useApp(s => s.backendVersion !== null);
   return (
     <Shell title="Workspace memories" action={add}>
       <p {...stylex.props(memory.note)}>Every agent in this workspace sees these in its prompt (first line as an index; full text on request). Agents can add them too, with your approval under manual review.</p>
+      {editId === 'new' && form}
       <div {...stylex.props(memory.list)}>
-        {visible.length ? visible.map(item => (
-          <article key={item.id} {...stylex.props(memory.row)}>
+        {visible.length ? visible.map(item => item.id === editId ? <div key={item.id}>{form}</div> : (
+          <article key={item.id} data-memory={item.id} {...stylex.props(memory.row)}>
             <div {...stylex.props(memory.content)}><div className="markdown-body" dangerouslySetInnerHTML={html(markdown(item.content))} />{/^agent /.test(item.source || '') && <small data-memory-source {...stylex.props(shell.muted)}>from {item.source}</small>}</div>
             <div {...stylex.props(memory.actions)}>
               <Button data-edit-memory={item.id} onClick={() => openPanel('memories', { editId: item.id })} sx={memory.small}>Edit</Button>
               <Button data-delete-memory={item.id} onClick={() => deleteMemory(item.id)} sx={memory.small}>Delete</Button>
             </div>
           </article>
-        )) : <p {...stylex.props(memory.empty)}>No saved memories for this workspace.</p>}
+        )) : editId !== 'new' && <p {...stylex.props(memory.empty)}>No saved memories for this workspace.</p>}
       </div>
-      <form id="memory-form" hidden={!open} onSubmit={submit}
-        onKeyDown={event => {
-          if (event.key === 'Escape') { event.preventDefault(); openPanel('memories'); requestAnimationFrame(() => document.getElementById('add-memory')?.focus({ preventScroll: true })); }
-          else if (event.target === input.current && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.requestSubmit(); }
-        }}>
-        <textarea key={editId || 'none'} id="memory-text" ref={input} rows={1} aria-label="Workspace memory" placeholder="A preference, project convention, or decision" defaultValue={editing?.content || ''} onInput={fit} {...stylex.props(memory.text)} />
-        <div {...stylex.props(memory.formActions)}>
-          <span {...stylex.props(memory.scope)}>Workspace</span>
-          <Button id="cancel-memory" onClick={() => openPanel('memories')} sx={memory.pushRight}>Cancel</Button>
-          <Button type="submit" id="save-memory">Save</Button>
-        </div>
-      </form>
-      <p {...stylex.props(memory.note, memory.noteAfter)}>Saved in this browser only. Backend storage and retrieval are planned.</p>
+      {!backend && <p {...stylex.props(memory.note, memory.noteAfter)}>Prototype mode: saved in this browser only.</p>}
     </Shell>
   );
 }
@@ -399,6 +407,11 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
     setOpen(o => (o.has(focus) ? o : new Set([...o, focus])));
     requestAnimationFrame(() => document.querySelector(`[data-settings-section="${focus}"]`)?.scrollIntoView({ block: 'nearest' }));
   }, [focus, request]); // each request to show a section expands it, even the one already in the link
+  // The tool list loads whenever Tools is open, however it was opened (a
+  // link or a reload included), not only when its header is clicked.
+  const toolsOpen = open.has('tools');
+  const catalogLoaded = useApp(s => s.tools !== null);
+  useEffect(() => { if (toolsOpen && !catalogLoaded && version) void showTools(false); }, [toolsOpen, catalogLoaded, version]);
   const toggle = (id: SectionId) => {
     const next = new Set(open);
     if (next.has(id)) next.delete(id); else { next.add(id); if (id === 'tools') showTools(false); }
@@ -475,6 +488,7 @@ const effectNotes: Record<string, string> = {
   read: 'runs at once',
   write: 'asks under manual review; runs under auto',
   exec: 'read-only commands run at once; git add, commit and switch run under auto; anything else always asks',
+  net: 'reaches the web: asks under manual review; runs under auto, read-only agents too',
 };
 function Tools() {
   const catalog = useApp(s => s.tools);
@@ -485,6 +499,8 @@ function Tools() {
         : !catalog ? <P muted>Loading…</P>
         : catalog.error !== undefined ? <P>Could not load tools: {catalog.error}</P>
         : <>
+          <h3 {...stylex.props(tools.subheading, tools.first)}>Web</h3>
+          <WebSettings />
           {catalog.sandbox && (
             <div data-sandbox={catalog.sandbox.active ? 'on' : 'off'} {...stylex.props(tools.sandbox, !catalog.sandbox.active && tools.sandboxOff)}>
               <strong>{catalog.sandbox.active ? `Commands are sandboxed (Landlock v${catalog.sandbox.abi})` : 'Commands are not sandboxed'}</strong>
@@ -575,6 +591,7 @@ const shell = stylex.create({
 });
 
 const memory = stylex.create({
+  form: { marginBlock: 8 },
   note: { fontSize: 10, color: colors.textFaint, marginTop: 0, marginInline: 0, marginBottom: 8 },
   noteAfter: { marginTop: 8 },
   list: { display: 'flex', flexDirection: 'column', gap: 1 },

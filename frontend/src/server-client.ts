@@ -24,6 +24,7 @@ const services = {
   secret: 'xhaos/app/secret.Service',
   danger: 'xhaos/app/danger.Service',
   skill: 'xhaos/app/skill.Service',
+  web: 'xhaos/app/web.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

@@ -202,5 +202,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Secrets),
 		application.NewService(s.Danger),
 		application.NewService(s.Skills),
+		application.NewService(s.Web),
 	}
 }

@@ -32,6 +32,8 @@ const (
 	Exec  = policy.EffectExec  // runs a shell command (can do anything the server user can)
 	// Contact opens a channel to agents outside the caller's family.
 	Contact = policy.EffectContact
+	// Net reaches the web (package web).
+	Net = policy.EffectNet
 )
 
 const (

@@ -71,6 +71,11 @@ const (
 	// asks, whatever the agent's policy, unless the owner trusted every
 	// secret it uses for this agent (then it is gated as a plain command).
 	EffectSecret = "secret"
+	// EffectNet reaches the web (web_fetch, web_search): nothing changes
+	// here, but a URL can carry data out and a page can carry instructions
+	// in. It runs under auto review, read-only agents included, and asks
+	// under manual review.
+	EffectNet = "net"
 )
 
 // Gate decides what happens to a tool call with the given effect. commit
@@ -85,6 +90,12 @@ func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 	}
 	if effect == EffectContact {
 		return Ask, "opening a channel to agents outside its own family needs your approval"
+	}
+	if effect == EffectNet {
+		if p.Review == "auto" {
+			return Allow, ""
+		}
+		return Ask, "web access needs review"
 	}
 	if effect == EffectSecret {
 		return Ask, "commands that use secrets need your approval"
