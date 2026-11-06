@@ -131,7 +131,7 @@ function applyMemoryEvent(s: { memories: Memory[] }, event: BackendEvent): boole
 }
 
 export async function refreshProviders() {
-  const providers = await call('provider', 'Providers');
+  const providers = await call('provider', 'Providers', get().active);
   update(s => { s.providers = providers; });
 }
 
@@ -148,8 +148,9 @@ function startPrototype() {
 }
 
 // Served by the Go backend: render its state and follow its events.
-async function startBackend(connection: Backend) {
+async function startBackend(connection: Backend, workspaceId: string) {
   backend = connection;
+  update(s => { s.active = workspaceId; });
   prototypeWorkspaces = structuredClone(get().workspaces);
   const onSnapshot = (snapshot: Snapshot) => { update(s => {
     const view = viewFromSnapshot(snapshot);
@@ -170,7 +171,7 @@ async function startBackend(connection: Backend) {
     const change = applyEvent(workspaceOf(s), event);
     if (change?.created) s.collapsed.add(change.agentId);
   }); };
-  const sync = createSync({ call: connection.call, events: connection.events, workspaceId: 'default', onSnapshot, onEvent, onError: () => toast('Lost sync with the backend; will retry.') });
+  const sync = createSync({ call: connection.call, events: connection.events, workspaceId, onSnapshot, onEvent, onError: () => toast('Lost sync with the backend; will retry.') });
   (globalThis as any).xhaos = { ...connection, sync }; // for console use
   syncing = sync;
   try { update(s => { s.backendVersion = connection.status.version; }); await refreshProviders(); } catch { /* providers stay empty */ }
@@ -211,17 +212,20 @@ async function startBackend(connection: Backend) {
 // (npm run dev) it runs the local prototype on sample data.
 // A page served by the Xhaos server (served) never falls back to the
 // prototype: it retries the connection, then says what failed.
-export async function start(served = false) {
+// start connects to the server for the signed-in workspace (the session's:
+// the server refuses calls about any other).
+export async function start(served = false, workspaceId = 'default', workspaceName = '') {
+  update(s => { s.workspaceName = workspaceName; });
   let lastError: unknown = null;
   for (let attempt = 0; attempt < (served ? 4 : 1); attempt++) {
     if (attempt) await new Promise(r => setTimeout(r, 1500 * attempt));
     try {
       const connection = await connectBackend(undefined, undefined, undefined, served);
-      if (connection) return startBackend(connection);
+      if (connection) return startBackend(connection, workspaceId);
       if (!served) return startPrototype();
     } catch (error) { lastError = error; console.error('xhaos: connect', error); }
   }
   // Show the failure instead of mock data, so nothing is "queued locally".
-  update(s => { s.workspaces = [{ id: 'default', name: 'Default', agents: [], channels: [] }]; s.active = 'default'; s.ready = true; });
+  update(s => { s.workspaces = [{ id: workspaceId, name: workspaceName || 'Default', agents: [], channels: [] }]; s.active = workspaceId; s.ready = true; });
   toast(`Could not connect to the Xhaos server: ${errorText(lastError)}. Reload the page to try again.`);
 }

@@ -37,6 +37,7 @@ export interface State {
   dangerAgent: number | null; // the agent the dangerously-allow dialog is open for
   // On phones one view shows at a time: the agents, or the open panel.
   mobileView: 'agents' | 'panel';
+  workspaceName: string; // the signed-in workspace, shown in the header
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -86,6 +87,7 @@ function initial(): State {
     skillsVersion: 0,
     dangerAgent: null,
     mobileView: 'agents',
+    workspaceName: '',
     projects: [],
     attachedProject: null,
     files: {},

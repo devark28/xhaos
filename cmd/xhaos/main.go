@@ -105,12 +105,14 @@ func main() {
 		Version:    version,
 		Passphrase: true,
 		Sandbox:    *sandboxMode,
-		Publish:    func(e eventlog.Event) { hub.Publish(EventName, e) },
-		Notify:     func(d run.Delta) { hub.PublishLossy(DeltaEventName, d) },
+		Publish:    func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
+		Notify:     func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	// A stream carries only its session's workspace.
+	hub.Workspace = func(r *http.Request) string { return auth.WorkspaceOf(r.Context()) }
 	guarded := http.NewServeMux()
 	guarded.Handle("/xhaos/events", hub)
 
@@ -143,11 +145,10 @@ func main() {
 		port = "5180"
 	}
 	log.Printf("xhaos %s: http://%s:%s (db %s, page %s)", version, host, port, *dbPath, from)
-	switch services.Vault.State() {
-	case auth.StateSetup:
+	if cards := services.Vault.Cards(); len(cards) == 1 && cards[0].State == auth.StateSetup {
 		log.Printf("no passphrase yet: open the page to set one (it encrypts API keys and signs browsers in)")
-	case auth.StateLocked:
-		log.Printf("locked: agents resume once you sign in with the passphrase")
+	} else {
+		log.Printf("%d workspace(s), locked: each one's agents resume once someone signs in to it", len(cards))
 	}
 	if err := wailsApp.Run(); err != nil {
 		log.Fatal(err)

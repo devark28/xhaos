@@ -110,7 +110,7 @@ func TestVaultNeverShowsValues(t *testing.T) {
 
 func TestGrantsAndPassphrase(t *testing.T) {
 	s := open(t)
-	s.Secrets.Verify = func(p string) error {
+	s.Secrets.Verify = func(_, p string) error {
 		if p != "right passphrase" {
 			return errors.New("wrong passphrase")
 		}

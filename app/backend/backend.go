@@ -123,12 +123,15 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	keyFile := filepath.Join(dataDir, "secret.key")
 	var vault *auth.Vault
-	var box *secretbox.Box
+	var box *secretbox.Keyring // one key per workspace
 	var err error
 	if opts.Passphrase {
 		vault, box, err = auth.Open(db, keyFile)
 	} else {
-		box, err = secretbox.Open(keyFile)
+		var shared *secretbox.Box
+		if shared, err = secretbox.Open(keyFile); err == nil {
+			box = secretbox.Shared(shared)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -227,8 +230,8 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
-	channels.Models = func(id string) ([]string, error) {
-		list, err := provider.NewService(providers).Providers() // no secrets read
+	channels.Models = func(ws, id string) ([]string, error) {
+		list, err := providers.List(ws) // no secrets read
 		if err != nil {
 			return nil, err
 		}
@@ -249,11 +252,12 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		p, err := project.Get(db, workspaceID, projectID)
 		return p.Path, err
 	}
-	// Both need the secrets: with a passphrase they wait for the first sign-in.
-	ready := func() {
-		tools.Start() // connect enabled MCP servers in the background
+	// Both need a workspace's secrets: with passphrases, each workspace
+	// starts when someone first signs in to it.
+	ready := func(ws string) {
+		tools.Start(ws) // connect its enabled MCP servers in the background
 		if !opts.DisableRuns {
-			runner.Resume()
+			runner.Resume(ws)
 		}
 	}
 	if !opts.DisableRuns {
@@ -264,8 +268,10 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if vault != nil {
 		vault.OnUnlock = ready
 		vault.Ready() // the older key file: unlocked already
-	} else {
-		ready()
+	} else if list, err := workspace.NewService(db).Workspaces(); err == nil {
+		for _, w := range list {
+			ready(w.ID)
+		}
 	}
 	return &Services{
 		db:         db,

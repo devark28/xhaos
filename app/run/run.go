@@ -315,14 +315,18 @@ func (r *Runner) rootFor(a agent.Agent) (string, error) {
 }
 
 // Resume continues agents left running by a previous server process.
-func (r *Runner) Resume() {
+// Resume continues a workspace's agents left running by a previous server
+// process (once its key is available: they need its provider keys).
+func (r *Runner) Resume(ws string) {
 	agents, err := r.agents.Running()
 	if err != nil {
 		slog.Error("run: resume", "err", err)
 		return
 	}
 	for _, a := range agents {
-		r.Kick(a.WorkspaceID, a.ID)
+		if a.WorkspaceID == ws {
+			r.Kick(a.WorkspaceID, a.ID)
+		}
 	}
 }
 
@@ -462,7 +466,7 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 				fail("No model is selected for this agent. Add a provider in Settings → Providers, then create the agent with a model.")
 				return
 			}
-			p, c, err := r.providers.Credentials(a.Provider)
+			p, c, err := r.providers.Credentials(ws, a.Provider)
 			if err != nil {
 				fail(fmt.Sprintf("Cannot use provider %q: %v. Check Settings → Providers.", a.Provider, err))
 				return

@@ -138,7 +138,7 @@ type conn struct {
 // Manager holds the live sessions. It is the runner's source of MCP tools.
 type Manager struct {
 	db     *sql.DB
-	box    *secretbox.Box
+	keys   *secretbox.Keyring
 	client *sdk.Client
 	mu     sync.Mutex
 	conns  map[key]*conn
@@ -146,10 +146,10 @@ type Manager struct {
 	connectTimeout time.Duration
 }
 
-func NewManager(db *sql.DB, box *secretbox.Box, version string) *Manager {
+func NewManager(db *sql.DB, keys *secretbox.Keyring, version string) *Manager {
 	return &Manager{
 		db:             db,
-		box:            box,
+		keys:           keys,
 		client:         sdk.NewClient(&sdk.Implementation{Name: "xhaos", Version: version}, nil),
 		conns:          map[key]*conn{},
 		connectTimeout: 30 * time.Second,
@@ -157,8 +157,10 @@ func NewManager(db *sql.DB, box *secretbox.Box, version string) *Manager {
 }
 
 // Start connects every enabled server in the background.
-func (m *Manager) Start() {
-	rows, err := m.db.Query(selectServer + ` WHERE enabled = 1`)
+// Start connects a workspace's enabled servers (once its key is available:
+// their secrets are sealed with it).
+func (m *Manager) Start(ws string) {
+	rows, err := m.db.Query(selectServer+` WHERE enabled = 1 AND workspace_id = ?`, ws)
 	if err != nil {
 		slog.Error("mcp: list servers", "err", err)
 		return
@@ -197,7 +199,7 @@ func (m *Manager) load(ws, id string) (Server, secrets, error) {
 	}
 	var sec secrets
 	if sealed != "" {
-		plain, err := m.box.Unseal(sealed)
+		plain, err := m.keys.Box(ws).Unseal(sealed)
 		if err != nil {
 			return s, sec, err
 		}
@@ -555,7 +557,7 @@ func (s *Service) Save(req SaveRequest) (Server, error) {
 	sealed := ""
 	if len(sec.Env) > 0 || len(sec.Headers) > 0 {
 		plain, _ := json.Marshal(sec)
-		if sealed, err = s.m.box.Seal(string(plain)); err != nil {
+		if sealed, err = s.m.keys.Box(req.WorkspaceID).Seal(string(plain)); err != nil {
 			return Server{}, err
 		}
 	}

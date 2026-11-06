@@ -165,6 +165,7 @@ export async function saveProvider(form: ProviderForm): Promise<boolean> {
   const models = form.models.split(/[\s,]+/).map(m => m.trim()).filter(Boolean);
   try {
     await call('provider', 'Save', {
+      workspaceId: get().active,
       // Anthropic's form has no URL field: keep a saved custom endpoint.
       id: form.id.trim(), kind: form.kind, name: form.name.trim() || existing?.name || form.id.trim(),
       baseUrl: form.baseUrl.trim() || (form.kind === 'anthropic' ? existing?.baseUrl || '' : ''),
@@ -177,11 +178,11 @@ export async function saveProvider(form: ProviderForm): Promise<boolean> {
 }
 export async function testProvider(id: string) {
   openPanel('providers', { message: '', testing: id });
-  try { const result = await call<{ message: string }>('provider', 'Test', id); showProviders(result.message); }
+  try { const result = await call<{ message: string }>('provider', 'Test', get().active, id); showProviders(result.message); }
   catch (error) { showProviders(`Test failed: ${errorText(error)}`); }
 }
 export async function removeProvider(id: string) {
-  try { await call('provider', 'Delete', id); await refreshProviders(); showProviders('Removed.'); }
+  try { await call('provider', 'Delete', get().active, id); await refreshProviders(); showProviders('Removed.'); }
   catch (error) { showProviders(`Remove failed: ${errorText(error)}`); }
 }
 

@@ -112,19 +112,19 @@ type Grant struct {
 // through Tools and Sealer, which take the acting agent.
 type Service struct {
 	db      *sql.DB
-	box     *secretbox.Box
+	keys    *secretbox.Keyring
 	publish eventlog.Publisher
-	// Verify checks the owner's passphrase (auth.Vault.Verify); nil skips
+	// Verify checks a workspace's passphrase (auth.Vault.Verify); nil skips
 	// the check (tests without a passphrase).
-	Verify func(pass string) error
+	Verify func(workspaceID, pass string) error
 	now    func() time.Time
 }
 
-func NewService(db *sql.DB, box *secretbox.Box, publish eventlog.Publisher) *Service {
+func NewService(db *sql.DB, keys *secretbox.Keyring, publish eventlog.Publisher) *Service {
 	if publish == nil {
 		publish = func(eventlog.Event) {}
 	}
-	return &Service{db: db, box: box, publish: publish, now: time.Now}
+	return &Service{db: db, keys: keys, publish: publish, now: time.Now}
 }
 
 var (
@@ -325,7 +325,7 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 			return View{}, fmt.Errorf("%w: a new secret needs a value", apperr.Invalid)
 		}
 	} else {
-		sealed, err := s.box.Seal(req.Value)
+		sealed, err := s.keys.Box(req.WorkspaceID).Seal(req.Value)
 		if err != nil {
 			return View{}, err
 		}
@@ -392,7 +392,7 @@ type RevealRequest struct {
 // Reveal returns a secret's value, after checking the passphrase again.
 func (s *Service) Reveal(req RevealRequest) (string, error) {
 	if s.Verify != nil {
-		if err := s.Verify(req.Passphrase); err != nil {
+		if err := s.Verify(req.WorkspaceID, req.Passphrase); err != nil {
 			return "", fmt.Errorf("%w: %v", apperr.Invalid, err)
 		}
 	}
@@ -424,7 +424,7 @@ func (s *Service) Grant(req GrantRequest) (View, error) {
 		}
 	case Ask, Trusted:
 		if req.Mode == Trusted && s.Verify != nil {
-			if err := s.Verify(req.Passphrase); err != nil {
+			if err := s.Verify(req.WorkspaceID, req.Passphrase); err != nil {
 				return View{}, fmt.Errorf("%w: trusting a secret to an agent needs your passphrase: %v", apperr.Invalid, err)
 			}
 		}
@@ -454,7 +454,7 @@ func (s *Service) values(ws string, names []string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := s.box.Unseal(sealed)
+		v, err := s.keys.Box(ws).Unseal(sealed)
 		if err != nil {
 			return nil, fmt.Errorf("cannot open secret %s: %w", name, err)
 		}

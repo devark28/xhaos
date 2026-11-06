@@ -128,3 +128,39 @@ func (b *Box) Unseal(sealed string) (string, error) {
 	}
 	return string(plain), nil
 }
+
+// Lock forgets the key: values cannot be read or sealed until Unlock.
+func (b *Box) Lock() {
+	b.mu.Lock()
+	b.aead = nil
+	b.mu.Unlock()
+}
+
+// Keyring holds one box per workspace: each workspace's data key is its
+// own, unwrapped by its own passphrase.
+type Keyring struct {
+	mu     sync.Mutex
+	boxes  map[string]*Box
+	shared *Box
+}
+
+func NewKeyring() *Keyring { return &Keyring{boxes: map[string]*Box{}} }
+
+// Shared is a keyring whose every workspace uses one box (servers without
+// passphrases: tests, and the older key file before a passphrase is set).
+func Shared(b *Box) *Keyring { return &Keyring{boxes: map[string]*Box{}, shared: b} }
+
+// Box returns a workspace's box (locked until its key is given).
+func (k *Keyring) Box(workspaceID string) *Box {
+	if k.shared != nil {
+		return k.shared
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	b, ok := k.boxes[workspaceID]
+	if !ok {
+		b = Locked()
+		k.boxes[workspaceID] = b
+	}
+	return b
+}

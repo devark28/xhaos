@@ -150,8 +150,8 @@ func CurrentBranch(root string) (string, error) {
 type Service struct {
 	store *agent.Store
 	get   func(ws string, id int64) (agent.Agent, error)
-	// Verify checks the owner's passphrase; nil skips it (tests).
-	Verify func(pass string) error
+	// Verify checks a workspace's passphrase; nil skips it (tests).
+	Verify func(workspaceID, pass string) error
 	// Root is the agent's project folder; Sandbox runs git there.
 	Root    func(a agent.Agent) (string, error)
 	Sandbox sandbox.Config
@@ -190,7 +190,7 @@ func (s *Service) Set(req Request) (agent.Agent, error) {
 		return agent.Agent{}, fmt.Errorf("%w: choose 15, 60 or 240 minutes", apperr.Invalid)
 	}
 	if s.Verify != nil {
-		if err := s.Verify(req.Passphrase); err != nil {
+		if err := s.Verify(req.WorkspaceID, req.Passphrase); err != nil {
 			return agent.Agent{}, fmt.Errorf("%w: dangerously allow needs your passphrase: %v", apperr.Invalid, err)
 		}
 	}

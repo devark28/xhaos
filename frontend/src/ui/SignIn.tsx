@@ -6,7 +6,16 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 
-export interface AuthState { state: 'setup' | 'locked' | 'unlocked'; signedIn: boolean; minLength: number }
+export interface WorkspaceCard { id: string; name: string; state: 'setup' | 'locked' | 'unlocked' }
+export interface AuthState {
+  setup: boolean; // the server has no passphrase yet (first run)
+  workspaces: WorkspaceCard[];
+  signedIn: boolean;
+  workspace?: string; // the session's workspace
+  workspaceName?: string;
+  state: 'setup' | 'locked' | 'unlocked';
+  minLength: number;
+}
 
 // authState asks the server whether this browser is signed in; null when
 // there is no Xhaos server (npm run dev), so the prototype runs as before.
@@ -32,50 +41,143 @@ export async function authPost(path: string, body: Record<string, string>): Prom
   } finally { clearTimeout(timer); }
 }
 
+// The picker: one card per workspace, like profiles. Choosing one asks for
+// its passphrase (each workspace has its own, and its own keys); New
+// workspace makes one, with the passphrase of an existing workspace to
+// prove you may. The first run sets up the first workspace instead.
 export function SignIn({ auth }: { auth: AuthState }) {
-  const setup = auth.state === 'setup';
-  const [pass, setPass] = useState(''), [again, setAgain] = useState('');
+  const [picked, setPicked] = useState<WorkspaceCard | 'new' | null>(null);
+  if (auth.setup) return <Page><Setup auth={auth} /></Page>;
+  if (picked === 'new') return <Page><Create auth={auth} back={() => setPicked(null)} /></Page>;
+  if (picked) return <Page><Enter auth={auth} card={picked} back={() => setPicked(null)} /></Page>;
+  return (
+    <Page wide>
+      <h1 {...stylex.props(s.heading)}>Which workspace?</h1>
+      <div data-workspace-cards {...stylex.props(s.cards)}>
+        {auth.workspaces.map(w => (
+          <button key={w.id} type="button" data-workspace-card={w.id} onClick={() => setPicked(w)} {...stylex.props(s.tile)}>
+            <span aria-hidden="true" {...stylex.props(s.initial)}>{w.name.trim().slice(0, 1).toUpperCase() || '?'}</span>
+            <span {...stylex.props(s.tileName)}>{w.name}</span>
+            {w.state === 'locked' && <small {...stylex.props(s.tileState)}>locked</small>}
+          </button>
+        ))}
+        <button type="button" data-workspace-new onClick={() => setPicked('new')} {...stylex.props(s.tile, s.tileNew)}>
+          <span aria-hidden="true" {...stylex.props(s.initial, s.initialNew)}>+</span>
+          <span {...stylex.props(s.tileName)}>New workspace</span>
+        </button>
+      </div>
+    </Page>
+  );
+}
+
+function Page({ children, wide = false }: { children: React.ReactNode; wide?: boolean }) {
+  return <main id="sign-in" {...stylex.props(s.page)}><div {...stylex.props(s.frame, wide && s.frameWide)}>{children}</div></main>;
+}
+
+function useSubmit(run: () => Promise<string | null>) {
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (setup && pass.length < auth.minLength) return setError(`Use at least ${auth.minLength} characters.`);
-    if (setup && pass !== again) return setError('The two passphrases differ.');
     if (busy) return; // one attempt at a time
     setBusy(true); setError('');
-    const failed = await authPost(setup ? 'setup' : 'signin', { passphrase: pass });
+    const failed = await run();
     setBusy(false);
-    if (failed) { setError(failed[0].toUpperCase() + failed.slice(1) + '.'); return; }
+    if (failed) { setError(failed[0].toUpperCase() + failed.slice(1) + (/[.!?]$/.test(failed) ? '' : '.')); return; }
     location.reload();
   };
+  return { error, setError, busy, submit };
+}
+
+// Enter: the passphrase of one workspace. The workspace's name is the
+// form's username, so a password manager keeps one entry per workspace.
+function Enter({ auth, card, back }: { auth: AuthState; card: WorkspaceCard; back?: () => void }) {
+  const [pass, setPass] = useState('');
+  const { error, busy, submit } = useSubmit(() => authPost('signin', { workspace: card.id, passphrase: pass }));
   return (
-    <main id="sign-in" {...stylex.props(s.page)}>
-      <form onSubmit={submit} {...stylex.props(s.card)}>
-        <h1 {...stylex.props(s.title)}>Xhaos</h1>
-        <p {...stylex.props(s.text)}>
-          {setup
-            ? 'Set a passphrase. It signs browsers in and encrypts your API keys and MCP secrets; the server keeps only a wrapped key. There is no recovery: if you lose it, you re-enter your keys.'
-            : auth.state === 'locked'
-              ? 'The server restarted, so your API keys are locked. Sign in to unlock them; waiting agents then resume.'
-              : 'Sign in with the passphrase.'}
-        </p>
-        {/* A username lets password managers file the passphrase under Xhaos. */}
-        <input type="text" name="username" value="xhaos" autoComplete="username" readOnly hidden />
-        <input id="passphrase" type="password" autoFocus value={pass} onChange={e => setPass(e.target.value)} placeholder="Passphrase"
-          autoComplete={setup ? 'new-password' : 'current-password'} {...stylex.props(s.input)} />
-        {setup && <input id="passphrase-again" type="password" value={again} onChange={e => setAgain(e.target.value)} placeholder="Passphrase again" autoComplete="new-password" {...stylex.props(s.input)} />}
-        {error && <p id="sign-in-error" role="alert" {...stylex.props(s.error)}>{error}</p>}
-        <Button id="sign-in-submit" type="submit" variant="allow" disabled={busy} sx={s.submit}>{busy ? 'Checking…' : setup ? 'Set passphrase' : 'Sign in'}</Button>
-      </form>
-    </main>
+    <form onSubmit={submit} data-sign-in-form={card.id} {...stylex.props(s.card)}>
+      <h1 {...stylex.props(s.title)}>{card.name}</h1>
+      <p {...stylex.props(s.text)}>{card.state === 'locked'
+        ? 'This workspace is locked since the server started: its keys are encrypted until someone signs in, and its agents wait. Sign in to unlock it.'
+        : 'Sign in with this workspace\'s passphrase.'}</p>
+      <input type="text" name="username" value={card.name} autoComplete="username" readOnly {...stylex.props(s.hiddenField)} aria-hidden="true" tabIndex={-1} />
+      <input id="passphrase" type="password" name="password" autoFocus value={pass} onChange={e => setPass(e.target.value)} placeholder="Passphrase" autoComplete="current-password" {...stylex.props(s.input)} />
+      {error && <p id="sign-in-error" role="alert" {...stylex.props(s.error)}>{error}</p>}
+      <div {...stylex.props(s.actions)}>
+        {back && <Button type="button" id="sign-in-back" onClick={back}>Other workspaces</Button>}
+        <Button id="sign-in-submit" type="submit" variant="allow" disabled={busy || !pass}>{busy ? 'Checking…' : 'Sign in'}</Button>
+      </div>
+    </form>
+  );
+}
+
+// Setup: the first run names the first workspace and sets its passphrase.
+function Setup({ auth }: { auth: AuthState }) {
+  const [name, setName] = useState(auth.workspaces[0]?.name === 'Default' ? '' : auth.workspaces[0]?.name || ''), [pass, setPass] = useState(''), [again, setAgain] = useState('');
+  const { error, setError, busy, submit } = useSubmit(async () => {
+    if (pass.length < auth.minLength) return `use at least ${auth.minLength} characters`;
+    if (pass !== again) return 'the two passphrases differ';
+    return authPost('setup', { name: name.trim() || 'Default', passphrase: pass });
+  });
+  void setError;
+  return (
+    <form onSubmit={submit} {...stylex.props(s.card)}>
+      <h1 {...stylex.props(s.title)}>Xhaos</h1>
+      <p {...stylex.props(s.text)}>Name your first workspace and set its passphrase. The passphrase signs browsers in to it and encrypts its API keys and secrets; the server keeps only a wrapped key. There is no recovery: if you lose it, you re-enter that workspace's keys.</p>
+      <input id="workspace-name" value={name} onChange={e => setName(e.target.value)} placeholder="Workspace name (e.g. Personal)" autoComplete="username" {...stylex.props(s.input)} />
+      <input id="passphrase" type="password" autoFocus value={pass} onChange={e => setPass(e.target.value)} placeholder="Passphrase" autoComplete="new-password" {...stylex.props(s.input)} />
+      <input id="passphrase-again" type="password" value={again} onChange={e => setAgain(e.target.value)} placeholder="Passphrase again" autoComplete="new-password" {...stylex.props(s.input)} />
+      {error && <p id="sign-in-error" role="alert" {...stylex.props(s.error)}>{error}</p>}
+      <div {...stylex.props(s.actions)}><Button id="sign-in-submit" type="submit" variant="allow" disabled={busy}>{busy ? 'Checking…' : 'Set passphrase'}</Button></div>
+    </form>
+  );
+}
+
+// Create: a new workspace, its own passphrase, and the passphrase of an
+// existing workspace (so a stranger who reaches the page cannot make one).
+function Create({ auth, back }: { auth: AuthState; back: () => void }) {
+  const [name, setName] = useState(''), [pass, setPass] = useState(''), [again, setAgain] = useState(''), [authorizer, setAuthorizer] = useState('');
+  const { error, busy, submit } = useSubmit(async () => {
+    if (!name.trim()) return 'give the workspace a name';
+    if (pass.length < auth.minLength) return `use at least ${auth.minLength} characters`;
+    if (pass !== again) return 'the two passphrases differ';
+    return authPost('create', { name: name.trim(), passphrase: pass, authorizer });
+  });
+  return (
+    <form onSubmit={submit} data-create-workspace {...stylex.props(s.card)}>
+      <h1 {...stylex.props(s.title)}>New workspace</h1>
+      <p {...stylex.props(s.text)}>It gets its own passphrase, its own keys (models, MCP, secrets) and its own agents, projects and channels.</p>
+      <input id="workspace-name" value={name} onChange={e => setName(e.target.value)} placeholder="Name" autoComplete="username" autoFocus {...stylex.props(s.input)} />
+      <input id="new-passphrase" type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Its passphrase" autoComplete="new-password" {...stylex.props(s.input)} />
+      <input id="new-passphrase-again" type="password" value={again} onChange={e => setAgain(e.target.value)} placeholder="Its passphrase again" autoComplete="new-password" {...stylex.props(s.input)} />
+      <label htmlFor="authorizer" {...stylex.props(s.text)}>To show you may: the passphrase of any existing workspace.</label>
+      <input id="authorizer" type="password" value={authorizer} onChange={e => setAuthorizer(e.target.value)} placeholder="An existing workspace's passphrase" autoComplete="off" {...stylex.props(s.input)} />
+      {error && <p id="sign-in-error" role="alert" {...stylex.props(s.error)}>{error}</p>}
+      <div {...stylex.props(s.actions)}>
+        <Button type="button" id="sign-in-back" onClick={back}>Cancel</Button>
+        <Button id="create-submit" type="submit" variant="allow" disabled={busy}>{busy ? 'Creating…' : 'Create workspace'}</Button>
+      </div>
+    </form>
   );
 }
 
 const s = stylex.create({
   page: { minHeight: '100vh', display: 'grid', placeItems: 'center', backgroundColor: colors.bg, color: colors.text, paddingInline: 16 },
+  frame: { width: '100%', maxWidth: 360 },
+  frameWide: { maxWidth: 720 },
+  heading: { margin: 0, marginBottom: 20, textAlign: 'center', fontSize: 18, fontWeight: 500, color: colors.textStrong },
+  cards: { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 16 },
+  tile: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: 128, paddingBlock: 18, paddingInline: 10, borderWidth: 1, borderStyle: 'solid', borderColor: { default: colors.lineFaint, ':hover': colors.brandLine, ':focus-visible': colors.brand }, borderRadius: 8, backgroundColor: { default: colors.card, ':hover': colors.hover }, color: colors.text, cursor: 'pointer', fontFamily: 'inherit', outline: 'none' },
+  tileNew: { borderStyle: 'dashed' },
+  initial: { display: 'grid', placeItems: 'center', width: 56, height: 56, borderRadius: 10, backgroundColor: colors.brandSoft, color: colors.brand, fontSize: 24, fontWeight: 600 },
+  initialNew: { backgroundColor: 'transparent', color: colors.textFaint, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.lineStrong },
+  tileName: { maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12 },
+  tileState: { fontSize: 9.5, color: colors.textGhost },
+  actions: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
+  // Present for password managers (the workspace is the username), not shown.
+  hiddenField: { position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' },
   card: { width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 10, backgroundColor: colors.card, borderRadius: 6, padding: 24, fontSize: 12 },
   title: { margin: 0, fontSize: 16, color: colors.textStrong, fontWeight: 600 },
   text: { margin: 0, color: colors.textMuted, lineHeight: 1.5 },
   input: { backgroundColor: colors.sunken, borderWidth: 1, borderStyle: 'solid', borderColor: colors.line, borderRadius: 3, color: colors.text, paddingBlock: 8, paddingInline: 10, fontSize: 12, fontFamily: 'inherit' },
   error: { margin: 0, color: colors.waiting },
-  submit: { alignSelf: 'flex-end' },
 });

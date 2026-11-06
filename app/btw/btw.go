@@ -68,7 +68,7 @@ func (s *Service) Ask(req AskRequest) (Answer, error) {
 	if err != nil {
 		return Answer{}, err
 	}
-	p, creds, err := s.providers.Credentials(req.Provider)
+	p, creds, err := s.providers.Credentials(req.WorkspaceID, req.Provider)
 	if err != nil {
 		return Answer{}, err
 	}

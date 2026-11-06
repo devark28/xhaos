@@ -145,7 +145,7 @@ func TestTurnStreamsReplyAndReplaysHistory(t *testing.T) {
 	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
 		return llm.Result{Text: "reply " + turn.Messages[len(turn.Messages)-1].Text, StopReason: "end_turn", Raw: []byte(`{"native":true}`)}, nil
 	})
-	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
+	if _, err := h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "first", Provider: "f", Model: "m1"})
@@ -190,7 +190,7 @@ func TestFailuresBecomeSystemNotesAndAttention(t *testing.T) {
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "hi"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 	// Provider fails.
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Prompt: "hi", Provider: "f", Model: "m1"})
 	h.waitStatus(t, b.ID, agent.StatusAttention)
 	got := strings.Join(transcript(t, h), "\n")
@@ -211,7 +211,7 @@ func TestMessageDuringTurnGetsItsOwnTurnInOrder(t *testing.T) {
 		}
 		return llm.Result{Text: "re: " + turn.Messages[len(turn.Messages)-1].Text, StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "one", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusRunning)
 	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "two"})
@@ -312,7 +312,7 @@ func TestToolsWaitForTheOwnerUnderManualReview(t *testing.T) {
 			tc("x", "bash", map[string]any{"command": "touch c.txt"}),
 		},
 	))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 
@@ -371,7 +371,7 @@ func TestPolicyDecidesWithoutTheOwner(t *testing.T) {
 		tc("w", "write_file", map[string]any{"path": "b.txt", "content": "x"}),
 		tc("bad", "read_file", map[string]any{"path": "../../etc/passwd"}),
 	}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	ro := policy.Policy{Access: "ro", Review: "manual", Commit: "blocked"}
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &ro})
 	h.waitStatus(t, a.ID, agent.StatusComplete)
@@ -416,7 +416,7 @@ func TestStopKillsARunningCommandAndPauses(t *testing.T) {
 		tc("s", "bash", map[string]any{"command": "sleep 20; touch late.txt"}),
 		tc("n", "write_file", map[string]any{"path": "never.txt", "content": "x"}),
 	}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto})
 	// sleep is not a read-only command: even under auto review it asks.
@@ -463,7 +463,7 @@ func TestStopKillsARunningCommandAndPauses(t *testing.T) {
 func TestTerminateDeniesWaitingCallsAndEndsSubagents(t *testing.T) {
 	root := t.TempDir()
 	h := setupIn(t, root, toolModel([]llm.ToolCall{tc("w", "write_file", map[string]any{"path": "b.txt", "content": "x"})}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 	child, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "c", WorkspaceID: ws, ParentID: a.ID, Title: "child"})
@@ -493,7 +493,7 @@ func TestBtwAnswersWithoutTouchingAnyAgent(t *testing.T) {
 	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
 		return llm.Result{Text: "answer", StopReason: "end_turn"}, nil
 	})
-	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
+	if _, err := h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "fix the parser", Provider: "f", Model: "m1"})
@@ -536,7 +536,7 @@ func TestAgentsWorkInTheirProject(t *testing.T) {
 	os.WriteFile(filepath.Join(other, "src", "a.go"), []byte("package a\n"), 0o644)
 	os.Symlink(root, filepath.Join(other, "escape"))
 	h := setupIn(t, root, toolModel([]llm.ToolCall{tc("w", "write_file", map[string]any{"path": "note.txt", "content": "hi\n"})}))
-	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
+	if _, err := h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -643,7 +643,7 @@ func TestOpenAICompatibleAgentUsesTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.Providers.Save(provider.SaveRequest{ID: "local", Kind: "openai", BaseURL: srv.URL, Models: []string{"m"}}); err != nil {
+	if _, err := s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "local", Kind: "openai", BaseURL: srv.URL, Models: []string{"m"}}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "what is here?", Provider: "local", Model: "m"})
@@ -690,7 +690,7 @@ func TestMCPCallsPassTheGate(t *testing.T) {
 	srv := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
 	t.Cleanup(srv.Close)
 	h := setup(t, toolModel([]llm.ToolCall{tc("m", "mcp__srv__echo", map[string]any{"text": "hi"})}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	if got, err := h.s.MCP.Save(mcp.SaveRequest{WorkspaceID: ws, ID: "srv", Transport: "http", URL: srv.URL, Trust: mcp.TrustAsk, Enabled: true}); err != nil || got.Status != "connected" {
 		t.Fatalf("mcp save = %+v, %v", got, err)
 	}
@@ -736,7 +736,7 @@ func TestAskUserWaitsForAnswers(t *testing.T) {
 		map[string]any{"prompt": "Anything else?", "required": false},
 	}})
 	h := setup(t, toolModel([]llm.ToolCall{ask}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "allowed"}
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
@@ -770,7 +770,7 @@ func TestAskUserWaitsForAnswers(t *testing.T) {
 
 func TestDismissedQuestionsTellTheModel(t *testing.T) {
 	h := setup(t, toolModel([]llm.ToolCall{tc("q", "ask_user", map[string]any{"questions": []any{map[string]any{"prompt": "Proceed?"}}})}))
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "q", Allow: false})
@@ -793,7 +793,7 @@ func TestCompactionKeepsTheRequestWithinBudget(t *testing.T) {
 		last := turn.Messages[len(turn.Messages)-1].Text
 		return llm.Result{Text: "re: " + last, StopReason: "end_turn", InputTokens: 900}, nil
 	})
-	if _, err := h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}, ContextTokens: 1000}); err != nil {
+	if _, err := h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}, ContextTokens: 1000}); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "first", Provider: "f", Model: "m1"})
@@ -843,7 +843,7 @@ func TestTooLongErrorCompactsAndRetries(t *testing.T) {
 		}
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "first", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusComplete)
 	h.mu.Lock()
@@ -861,7 +861,7 @@ func TestChannelsFollowTheFamilyRule(t *testing.T) {
 	h := setup(t, func(turn llm.Turn) (llm.Result, error) {
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	other, _ := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: t.TempDir()})
 	mk := func(key, title string, parent, proj int64) agent.Agent {
 		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: title, ParentID: parent, ProjectID: proj, Provider: "f", Model: "m1"})
@@ -919,7 +919,7 @@ func TestChannelsFollowTheFamilyRule(t *testing.T) {
 
 func TestChannelBurstLimit(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
 	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
 	c, _ := h.s.Channels.Create(a, "chatty", []int64{b.ID}, "")
@@ -938,7 +938,7 @@ func TestChannelBurstLimit(t *testing.T) {
 // the channel back; a reset or unpublish locks the old passphrase out.
 func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
 	h := setup(t, func(turn llm.Turn) (llm.Result, error) { return llm.Result{Text: "on it", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
 	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
 	c, _ := h.s.Channels.Create(a, "ops", []int64{b.ID}, "")
@@ -1052,7 +1052,7 @@ func TestSpawnedSubagentReportsBack(t *testing.T) {
 		}
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
 	parent, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "p", WorkspaceID: ws, Prompt: "split the work", Provider: "f", Model: "m1", Policy: &auto})
 	deadline := time.Now().Add(5 * time.Second)
@@ -1092,7 +1092,7 @@ func TestSpawnedSubagentReportsBack(t *testing.T) {
 // the bytes live on disk, not in the event log.
 func TestAttachmentsReachTheModel(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "seen", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	notes, err := h.s.Files.Upload(attachment.UploadRequest{WorkspaceID: ws, Name: "notes.md", Data: []byte("# Plan\nship it")})
 	if err != nil {
 		t.Fatal(err)
@@ -1156,7 +1156,7 @@ func TestSandboxedCommands(t *testing.T) {
 	var dbFile string
 	h.s.DB().QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&dbFile)
 	dataDir = filepath.Dir(dbFile)
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, Allow: true, CallID: "in"})
@@ -1219,7 +1219,7 @@ python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM)" 2>/
 		host, _, _ := net.SplitHostPort(addr)
 		return d.DialContext(ctx, network, net.JoinHostPort(host, port))
 	}
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "MY_TOKEN", Value: "tok_abcdef123456", Hosts: []string{"api.allowed.test"}})
 	h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "OTHER", Value: "other-value"})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
@@ -1307,7 +1307,7 @@ func TestSSHKeySecret(t *testing.T) {
 	p.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return d.DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", port))
 	}
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	if _, err := h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "BOX_KEY", Kind: secret.KindSSH, Value: string(key), Hosts: []string{me.Username + "@box.test"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1363,7 +1363,7 @@ func TestSkills(t *testing.T) {
 	if _, err := h.s.Skills.Upload(skill.UploadRequest{WorkspaceID: ws, Data: buf.Bytes()}); err != nil {
 		t.Fatal(err)
 	}
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "notes", Provider: "f", Model: "m1", Policy: &auto})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
@@ -1391,7 +1391,7 @@ func TestSkills(t *testing.T) {
 // another agent's, a sibling, or itself.
 func TestSubagentTerminate(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	mk := func(key string, parent int64) agent.Agent {
 		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: key, ParentID: parent, Provider: "f", Model: "m1"})
 		if err != nil {
@@ -1462,7 +1462,7 @@ func TestWebTools(t *testing.T) {
 		return llm.Result{Calls: []llm.ToolCall{tc("f", "web_fetch", map[string]any{"url": srv.URL + "/notes"})}, StopReason: "tool_use"}, nil
 	})
 	h.s.Web.AllowPrivate = true // the test page is on this machine
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	manual, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "m", WorkspaceID: ws, Prompt: "read", Provider: "f", Model: "m1"})
 	h.waitStatus(t, manual.ID, agent.StatusAttention)
 	if st := h.tools(t, manual.ID)["f"]; st.State != agent.ToolPending || st.Effect != policy.EffectNet {
@@ -1507,8 +1507,8 @@ func TestDangerouslyAllow(t *testing.T) {
 			tc(fmt.Sprintf("s%d", turn), "bash", map[string]any{"command": "echo $TOKEN", "secrets": []string{"TOKEN"}}),
 		}, StopReason: "tool_use"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
-	h.s.Danger.Verify = func(p string) error {
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Danger.Verify = func(_, p string) error {
 		if p != "right" {
 			return errors.New("wrong passphrase")
 		}
@@ -1592,7 +1592,7 @@ func TestLargeAttachmentsAreReadInParts(t *testing.T) {
 		}
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	// 150,000 characters, some of them multi-byte, marked every 10.
 	var b strings.Builder
 	for i := 0; i < 15_000; i++ {
@@ -1637,7 +1637,7 @@ func TestMemoriesReachEveryAgent(t *testing.T) {
 		}
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	if _, err := h.s.Memories.Save(memory.SaveRequest{WorkspaceID: ws, Content: "The user prefers short replies.\nDetails: no preamble."}); err != nil {
 		t.Fatal(err)
 	}
@@ -1689,7 +1689,7 @@ func TestSpawnLimitsAndPausedRecipients(t *testing.T) {
 		}
 		return llm.Result{Text: "ok", StopReason: "end_turn"}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	mk := func(key string, parent int64) agent.Agent {
 		a, err := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: key, WorkspaceID: ws, Title: key, ParentID: parent, Provider: "f", Model: "m1"})
 		if err != nil {
@@ -1745,7 +1745,7 @@ const maxChildrenForTest = 8
 // /btw also sees channels and memories, and skips compaction summaries.
 func TestBtwDigestIncludesChannelsAndMemories(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "answer", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	h.s.Memories.Save(memory.SaveRequest{WorkspaceID: ws, Content: "Release on Fridays"})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
 	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "b", Provider: "f", Model: "m1"})
@@ -1783,7 +1783,7 @@ func TestChannelOutsideTheFamilyWaitsForTheOwner(t *testing.T) {
 			tc("c", "channel_create", map[string]any{"subject": "api shape", "members": []int64{target.Load()}, "message": "I own the client; which fields does /orders return?"}),
 		}}, nil
 	})
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	other, _ := h.s.Projects.Add(project.AddRequest{WorkspaceID: ws, Path: t.TempDir()})
 	b, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "b", WorkspaceID: ws, Title: "billing api", ProjectID: other.ID, Provider: "f", Model: "m1"})
 	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "bm", WorkspaceID: ws, AgentIDs: []int64{b.ID}, Body: "Add pagination to /orders"})
@@ -1846,7 +1846,7 @@ func TestSimulatedAgentsSplitAndTalk(t *testing.T) {
 		return sim.Adapter{}.Stream(context.Background(), llm.Credentials{}, turn, func(string) {})
 	})
 	h.fake.titles = true
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
 	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
 	lastSaid := func(id int64) string {
 		snap, _ := h.s.Agents.Snapshot(ws)
@@ -1918,8 +1918,9 @@ func TestSimulatedAgentsSplitAndTalk(t *testing.T) {
 	}
 }
 
-// With a passphrase, a restarted server is locked: agents left running wait
-// until someone signs in, then resume with the decrypted key.
+// With passphrases, a restarted server is locked: each workspace's agents
+// left running wait until someone signs in to that workspace, then resume
+// with its key; another workspace stays locked.
 func TestLockedServerResumesAgentsAfterSignIn(t *testing.T) {
 	dir, root := t.TempDir(), t.TempDir()
 	f := &patient{block: true}
@@ -1931,10 +1932,25 @@ func TestLockedServerResumesAgentsAfterSignIn(t *testing.T) {
 		return s
 	}
 	s := open()
-	if _, err := s.Vault.Setup("a long enough passphrase"); err != nil {
+	if _, err := s.Vault.Setup("Home", "a long enough passphrase"); err != nil {
 		t.Fatal(err)
 	}
-	s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "sk-x", Models: []string{"m1"}})
+	other, _, err := s.Vault.Create("Client", "another long passphrase", "a long enough passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Vault.Create("Stranger", "a third long passphrase", "not anyone's passphrase"); err == nil {
+		t.Fatal("created a workspace without an existing workspace's passphrase")
+	}
+	s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "sk-x", Models: []string{"m1"}})
+	if _, err := s.Providers.Save(provider.SaveRequest{WorkspaceID: other.ID, ID: "f", Kind: "fake", APIKey: "sk-client", Models: []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	// The same provider ID in two workspaces: two providers, each its own key.
+	if list, _ := s.Providers.Providers(other.ID); len(list) != 1 || list[0].KeyHint != "…ient" {
+		t.Fatalf("the client workspace's providers = %+v", list)
+	}
+	s.Projects.Add(project.AddRequest{WorkspaceID: other.ID, Path: root})
 	a, _ := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1"})
 	deadline := time.Now().Add(3 * time.Second)
 	for f.count() == 0 && time.Now().Before(deadline) {
@@ -1948,17 +1964,28 @@ func TestLockedServerResumesAgentsAfterSignIn(t *testing.T) {
 
 	s = open()
 	defer s.Close()
-	if s.Vault.State() != "locked" {
-		t.Fatalf("state %s", s.Vault.State())
+	if s.Vault.State(ws) != "locked" || s.Vault.State(other.ID) != "locked" {
+		t.Fatalf("states %s %s", s.Vault.State(ws), s.Vault.State(other.ID))
 	}
-	if r, _ := s.Providers.Test("f"); r.OK || !strings.Contains(r.Message, "locked") {
+	if r, _ := s.Providers.Test(ws, "f"); r.OK || !strings.Contains(r.Message, "locked") {
 		t.Fatalf("provider test while locked: %+v", r)
 	}
 	time.Sleep(200 * time.Millisecond)
 	if f.count() != before {
 		t.Fatal("an agent ran before sign-in")
 	}
-	if _, err := s.Vault.SignIn("a long enough passphrase"); err != nil {
+	// Signing in to the client workspace does not unlock this one.
+	if _, err := s.Vault.SignIn(other.ID, "a long enough passphrase"); err == nil {
+		t.Fatal("one workspace's passphrase opened another")
+	}
+	if _, err := s.Vault.SignIn(other.ID, "another long passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if s.Vault.State(ws) != "locked" || f.count() != before {
+		t.Fatal("signing in to another workspace resumed this one")
+	}
+	if _, err := s.Vault.SignIn(ws, "a long enough passphrase"); err != nil {
 		t.Fatal(err)
 	}
 	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
@@ -2004,7 +2031,7 @@ func (p *patient) Stream(ctx context.Context, _ llm.Credentials, t llm.Turn, _ f
 // parent's provider; models_list shows them cheapest first.
 func TestSpawnChoosesAConfiguredModel(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })
-	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"big", "small", "unpriced"}})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"big", "small", "unpriced"}})
 	h.s.Usage.SetPrice(usage.Price{Model: "big", Input: 5, Output: 25})
 	h.s.Usage.SetPrice(usage.Price{Model: "small", Input: 0.1, Output: 0.5})
 	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "parent", Provider: "f", Model: "big"})

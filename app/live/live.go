@@ -22,24 +22,33 @@ type message struct {
 	data []byte
 }
 
-type Hub struct {
-	mu      sync.Mutex
-	clients map[chan message]struct{}
+// A client is one page's stream, for one workspace.
+type client struct {
+	ch        chan message
+	workspace string
 }
 
-func NewHub() *Hub { return &Hub{clients: map[chan message]struct{}{}} }
+type Hub struct {
+	mu      sync.Mutex
+	clients map[*client]struct{}
+	// Workspace says which workspace a request's session is in; a stream
+	// gets only that workspace's messages. Nil: every message (tests).
+	Workspace func(*http.Request) string
+}
 
-// Publish sends data, as JSON, to every connected client under name. A
+func NewHub() *Hub { return &Hub{clients: map[*client]struct{}{}} }
+
+// Publish sends data, as JSON, to the clients of workspace ws under name. A
 // client too far behind is dropped: it reconnects and catches up from the
 // event log, so no committed event is lost to it.
-func (h *Hub) Publish(name string, data any) { h.send(name, data, false) }
+func (h *Hub) Publish(ws, name string, data any) { h.send(ws, name, data, false) }
 
 // PublishLossy sends data that may be skipped (streamed reply text): a
 // client whose queue is full misses this message but stays connected. The
 // saved reply replaces the streamed text anyway.
-func (h *Hub) PublishLossy(name string, data any) { h.send(name, data, true) }
+func (h *Hub) PublishLossy(ws, name string, data any) { h.send(ws, name, data, true) }
 
-func (h *Hub) send(name string, data any, lossy bool) {
+func (h *Hub) send(ws, name string, data any, lossy bool) {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -47,14 +56,17 @@ func (h *Hub) send(name string, data any, lossy bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.clients {
+		if c.workspace != "" && c.workspace != ws {
+			continue
+		}
 		select {
-		case c <- message{name, raw}:
+		case c.ch <- message{name, raw}:
 		default:
 			if lossy {
 				continue
 			}
 			delete(h.clients, c)
-			close(c)
+			close(c.ch)
 		}
 	}
 }
@@ -71,13 +83,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	c := &client{ch: make(chan message, buffer)}
+	if h.Workspace != nil {
+		if c.workspace = h.Workspace(r); c.workspace == "" {
+			http.Error(w, "no workspace", http.StatusUnauthorized)
+			return
+		}
+	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{}) // a stream outlives the server's write timeout
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	c := make(chan message, buffer)
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
@@ -85,7 +103,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		if _, ok := h.clients[c]; ok {
 			delete(h.clients, c)
-			close(c)
+			close(c.ch)
 		}
 		h.mu.Unlock()
 	}()
@@ -101,7 +119,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
 				return
 			}
-		case m, ok := <-c:
+		case m, ok := <-c.ch:
 			if !ok {
 				return
 			}

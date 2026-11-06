@@ -6,7 +6,7 @@ import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button, Info } from './kit.tsx';
 import { call } from './state/backend.ts';
-import { toast, errorText } from './state/store.ts';
+import { toast, errorText, get } from './state/store.ts';
 
 interface Settings { backend: 'off' | 'duckduckgo' | 'brave' | 'searxng'; baseUrl: string; hasKey: boolean }
 
@@ -15,18 +15,18 @@ export function WebSettings() {
   const [backend, setBackend] = useState<Settings['backend']>('duckduckgo'), [baseUrl, setBaseUrl] = useState(''), [key, setKey] = useState('');
   const [note, setNote] = useState('');
   const load = async () => {
-    try { const s = await call<Settings>('web', 'Settings'); setSt(s); setBackend(s.backend); setBaseUrl(s.baseUrl); }
+    try { const s = await call<Settings>('web', 'Settings', get().active); setSt(s); setBackend(s.backend); setBaseUrl(s.baseUrl); }
     catch (error) { setNote(errorText(error)); }
   };
   useEffect(() => { void load(); }, []);
   const save = async () => {
-    try { const s = await call<Settings>('web', 'Save', { backend, baseUrl, apiKey: key }); setSt(s); setKey(''); setNote('Saved.'); }
+    try { const s = await call<Settings>('web', 'Save', { workspaceId: get().active, backend, baseUrl, apiKey: key }); setSt(s); setKey(''); setNote('Saved.'); }
     catch (error) { toast(errorText(error)); }
   };
   const test = async () => {
     setNote('Searching…');
     try {
-      const r = await call<{ title: string; url: string }[]>('web', 'Test', 'xhaos agent harness');
+      const r = await call<{ title: string; url: string }[]>('web', 'Test', get().active, 'xhaos agent harness');
       setNote(r.length ? `${r.length} results, first: ${r[0].title} (${r[0].url})` : 'The search worked but found nothing.');
     } catch (error) { setNote(`Search failed: ${errorText(error)}`); }
   };

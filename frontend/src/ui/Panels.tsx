@@ -462,7 +462,7 @@ function Security() {
     if (!failed) { setOld(''); setNext(''); }
   };
   return <>
-    <P muted>The passphrase signs browsers in and wraps the key that encrypts API keys and MCP secrets. After a server restart, agents wait until someone signs in.</P>
+    <P muted>This workspace's passphrase signs browsers in to it and wraps the key that encrypts its API keys, MCP secrets and secrets. After a server restart, its agents wait until someone signs in to it.</P>
     <div {...stylex.props(provider.grid)}>
       <label htmlFor="passphrase-old" {...stylex.props(provider.fieldLabel)}>Current</label>
       <input id="passphrase-old" type="password" autoComplete="current-password" value={old} onChange={e => setOld(e.target.value)} {...stylex.props(provider.input)} />
@@ -470,7 +470,11 @@ function Security() {
       <input id="passphrase-new" type="password" autoComplete="new-password" value={next} onChange={e => setNext(e.target.value)} {...stylex.props(provider.input)} />
     </div>
     <div {...stylex.props(provider.formActions)}>
-      <Button id="sign-out" onClick={async () => { await authPost('signout', {}); location.reload(); }}>Sign out</Button>
+      <Button id="lock-workspace" title="Forget this workspace's key and sign every browser out of it: its agents pause until someone signs in again" onClick={async () => {
+        if (!confirm('Lock this workspace? Its agents stop until someone signs in to it again, and every browser is signed out of it.')) return;
+        await authPost('lock', {}); location.href = '/';
+      }}>Lock workspace</Button>
+      <Button id="sign-out" title="Sign this browser out (the logo does the same)" onClick={async () => { await authPost('signout', {}); location.href = '/'; }}>Sign out</Button>
       <Button id="passphrase-change" onClick={change}>Change passphrase</Button>
     </div>
     {note && <p id="passphrase-note" {...stylex.props(provider.message)}>{note}</p>}
@@ -594,8 +598,8 @@ const memory = stylex.create({
   form: { marginBlock: 8 },
   note: { fontSize: 10, color: colors.textFaint, marginTop: 0, marginInline: 0, marginBottom: 8 },
   noteAfter: { marginTop: 8 },
-  list: { display: 'flex', flexDirection: 'column', gap: 1 },
-  row: { position: 'relative', paddingBlock: 8, paddingLeft: 7, paddingRight: 88, borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.line, backgroundColor: colors.sunken, minHeight: 40 },
+  list: { display: 'flex', flexDirection: 'column', gap: 8 },
+  row: { position: 'relative', paddingBlock: 10, paddingLeft: 10, paddingRight: 88, borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.line, borderRadius: 3, backgroundColor: colors.sunken, minHeight: 40 },
   content: { fontSize: 11, color: colors.text, lineHeight: 1.45 },
   actions: { position: 'absolute', right: 5, top: 5, display: 'flex', gap: 4 },
   small: { fontSize: 9 },

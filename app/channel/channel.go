@@ -122,7 +122,7 @@ type Service struct {
 	// Models lists the models configured for a provider (its key), and
 	// Price prices one (USD per million input and output tokens; ok false
 	// when unknown). spawn_agent may choose among them.
-	Models func(providerID string) ([]string, error)
+	Models func(workspaceID, providerID string) ([]string, error)
 	Price  func(model string) (input, output float64, ok bool)
 	now    func() time.Time
 }
@@ -866,7 +866,7 @@ func (s *Service) choices(parent agent.Agent) ([]string, error) {
 	if s.Models == nil {
 		return []string{parent.Model}, nil
 	}
-	models, err := s.Models(parent.Provider)
+	models, err := s.Models(parent.WorkspaceID, parent.Provider)
 	if err != nil {
 		return nil, err
 	}

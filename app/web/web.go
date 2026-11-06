@@ -19,14 +19,29 @@ import (
 )
 
 const schema = `
-CREATE TABLE IF NOT EXISTS web_settings (
-	id       INTEGER PRIMARY KEY CHECK (id = 1),
-	backend  TEXT NOT NULL,
-	base_url TEXT NOT NULL DEFAULT '',
-	api_key  TEXT NOT NULL DEFAULT '' -- sealed with the data key
+CREATE TABLE IF NOT EXISTS web_search (
+	workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+	backend      TEXT NOT NULL,
+	base_url     TEXT NOT NULL DEFAULT '',
+	api_key      TEXT NOT NULL DEFAULT '' -- sealed with the workspace's key
 );`
 
-func Migrate(db *sql.DB) error { _, err := db.Exec(schema); return err }
+// Migrate creates the per-workspace settings, moving the server-wide ones
+// of an earlier version to the first workspace.
+func Migrate(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	var old int
+	if db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'web_settings'`).Scan(&old); old > 0 {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO web_search (workspace_id, backend, base_url, api_key) SELECT 'default', backend, base_url, api_key FROM web_settings WHERE id = 1`); err != nil {
+			return err
+		}
+		_, err := db.Exec(`DROP TABLE web_settings`)
+		return err
+	}
+	return nil
+}
 
 // Settings are the search backend, as the page sees them (never the key).
 type Settings struct {
@@ -37,19 +52,19 @@ type Settings struct {
 
 // Service is the owner's API: which search backend agents use.
 type Service struct {
-	db  *sql.DB
-	box *secretbox.Box
+	db   *sql.DB
+	keys *secretbox.Keyring
 	// AllowPrivate lets tests fetch from 127.0.0.1.
 	AllowPrivate bool
 }
 
-func NewService(db *sql.DB, box *secretbox.Box) *Service { return &Service{db: db, box: box} }
+func NewService(db *sql.DB, keys *secretbox.Keyring) *Service { return &Service{db: db, keys: keys} }
 
-// Settings returns the search settings (DuckDuckGo until changed).
-func (s *Service) Settings() (Settings, error) {
+// Settings returns a workspace's search settings (DuckDuckGo until changed).
+func (s *Service) Settings(workspaceID string) (Settings, error) {
 	st := Settings{Backend: DuckDuckGo}
 	var key string
-	err := s.db.QueryRow(`SELECT backend, base_url, api_key FROM web_settings WHERE id = 1`).Scan(&st.Backend, &st.BaseURL, &key)
+	err := s.db.QueryRow(`SELECT backend, base_url, api_key FROM web_search WHERE workspace_id = ?`, workspaceID).Scan(&st.Backend, &st.BaseURL, &key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, nil
 	}
@@ -58,9 +73,10 @@ func (s *Service) Settings() (Settings, error) {
 }
 
 type SaveRequest struct {
-	Backend string `json:"backend"`
-	BaseURL string `json:"baseUrl"`
-	APIKey  string `json:"apiKey"` // empty keeps the saved key
+	WorkspaceID string `json:"workspaceId"`
+	Backend     string `json:"backend"`
+	BaseURL     string `json:"baseUrl"`
+	APIKey      string `json:"apiKey"` // empty keeps the saved key
 }
 
 func (s *Service) Save(req SaveRequest) (Settings, error) {
@@ -74,37 +90,37 @@ func (s *Service) Save(req SaveRequest) (Settings, error) {
 		return Settings{}, fmt.Errorf("%w: SearXNG needs its address, like https://search.example.com", apperr.Invalid)
 	}
 	var sealed string
-	_ = s.db.QueryRow(`SELECT api_key FROM web_settings WHERE id = 1`).Scan(&sealed)
+	_ = s.db.QueryRow(`SELECT api_key FROM web_search WHERE workspace_id = ?`, req.WorkspaceID).Scan(&sealed)
 	if req.APIKey != "" {
 		var err error
-		if sealed, err = s.box.Seal(strings.TrimSpace(req.APIKey)); err != nil {
+		if sealed, err = s.keys.Box(req.WorkspaceID).Seal(strings.TrimSpace(req.APIKey)); err != nil {
 			return Settings{}, err
 		}
 	}
-	if _, err := s.db.Exec(`INSERT INTO web_settings (id, backend, base_url, api_key) VALUES (1, ?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET backend = excluded.backend, base_url = excluded.base_url, api_key = excluded.api_key`, req.Backend, base, sealed); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO web_search (workspace_id, backend, base_url, api_key) VALUES (?, ?, ?, ?)
+		ON CONFLICT (workspace_id) DO UPDATE SET backend = excluded.backend, base_url = excluded.base_url, api_key = excluded.api_key`, req.WorkspaceID, req.Backend, base, sealed); err != nil {
 		return Settings{}, err
 	}
-	return s.Settings()
+	return s.Settings(req.WorkspaceID)
 }
 
-// Test runs a search with the saved settings (for the Settings page).
-func (s *Service) Test(query string) ([]Result, error) {
+// Test runs a search with a workspace's saved settings (Settings page).
+func (s *Service) Test(workspaceID, query string) ([]Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return s.search(ctx, query, 5)
+	return s.search(ctx, workspaceID, query, 5)
 }
 
-func (s *Service) search(ctx context.Context, query string, count int) ([]Result, error) {
-	st, err := s.Settings()
+func (s *Service) search(ctx context.Context, ws, query string, count int) ([]Result, error) {
+	st, err := s.Settings(ws)
 	if err != nil {
 		return nil, err
 	}
 	key := ""
 	if st.HasKey {
 		var sealed string
-		_ = s.db.QueryRow(`SELECT api_key FROM web_settings WHERE id = 1`).Scan(&sealed)
-		if key, err = s.box.Unseal(sealed); err != nil {
+		_ = s.db.QueryRow(`SELECT api_key FROM web_search WHERE workspace_id = ?`, ws).Scan(&sealed)
+		if key, err = s.keys.Box(ws).Unseal(sealed); err != nil {
 			return nil, err
 		}
 	}
@@ -190,7 +206,7 @@ func (t *Tools) Prepare(_ string, _ agent.Agent, c llm.ToolCall) (tool.Call, err
 	return call, nil
 }
 
-func (t *Tools) Execute(ctx context.Context, _ string, a agent.Agent, call tool.Call) (string, error) {
+func (t *Tools) Execute(ctx context.Context, ws string, a agent.Agent, call tool.Call) (string, error) {
 	var in input
 	_ = json.Unmarshal(call.Args, &in)
 	if call.Name == "web_search" {
@@ -198,7 +214,7 @@ func (t *Tools) Execute(ctx context.Context, _ string, a agent.Agent, call tool.
 		if count == 0 {
 			count = 8
 		}
-		results, err := t.s.search(ctx, strings.TrimSpace(in.Query), count)
+		results, err := t.s.search(ctx, ws, strings.TrimSpace(in.Query), count)
 		if err != nil {
 			return "", err
 		}

@@ -74,3 +74,18 @@ func (s *Service) Workspaces() ([]Workspace, error) {
 	}
 	return out, rows.Err()
 }
+
+// Create adds a workspace (package auth gives it its passphrase).
+func Create(db *sql.DB, id, name string) (Workspace, error) {
+	at := time.Now()
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)`, id, name, sqlitedb.Stamp(at)); err != nil {
+		return Workspace{}, err
+	}
+	return Workspace{ID: id, Name: name, CreatedAt: at}, nil
+}
+
+// Rename changes a workspace's name.
+func Rename(db *sql.DB, id, name string) error {
+	_, err := db.Exec(`UPDATE workspaces SET name = ? WHERE id = ?`, name, id)
+	return err
+}

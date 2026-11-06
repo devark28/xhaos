@@ -216,13 +216,17 @@ function DrawingPane() {
 export function ComposerArea() {
   const narrow = useNarrow(); // a phone has no Draw tab: the canvas needs room and a pointer
   const mode = useApp(s => (narrow ? 'message' : s.mode));
+  const workspaceName = useApp(s => s.workspaceName);
   return (
     <div id="composer-area" {...stylex.props(area.root)}>
       <div {...stylex.props(area.switches)}>
-        <a href="/" aria-label="Xhaos home" title="xhaos" {...stylex.props(area.brand)}>x<span {...stylex.props(area.brandTail)}>h</span></a>
+        {/* The logo leaves this workspace: this browser is signed out of it
+            (its agents keep working) and the workspace picker shows. */}
+        <a href="/" id="leave-workspace" aria-label="Leave this workspace (lock it in this browser)" title="Leave this workspace: lock it in this browser and pick another" onClick={leaveWorkspace} {...stylex.props(area.brand)}>x<span {...stylex.props(area.brandTail)}>h</span></a>
         <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, mode === 'message' && area.switchChosen]}>Message</Button>
         {!narrow && <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>}
       </div>
+      {workspaceName && <span id="workspace-name" title="This workspace" {...stylex.props(area.workspace)}>{workspaceName}</span>}
       <BtwAside />
       <ComposerForm />
       <DrawingPane />
@@ -230,8 +234,18 @@ export function ComposerArea() {
   );
 }
 
+async function leaveWorkspace(event: React.MouseEvent) {
+  if (!get().backendVersion) return; // the prototype: a plain link
+  event.preventDefault();
+  await fetch('/xhaos/auth/signout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  location.href = '/';
+}
+
 const area = stylex.create({
+  // Centered in the header row, at the logo's height.
+  workspace: { position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', maxWidth: '40%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12, fontWeight: 500, color: colors.textSoft, pointerEvents: 'none' },
   root: {
+    position: 'relative',
     display: 'flex',
     flexDirection: 'column',
     gap: 4,

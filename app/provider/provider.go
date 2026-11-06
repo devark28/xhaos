@@ -1,5 +1,6 @@
 // Package provider stores model provider configs (kind, endpoint, models, and
-// an API key encrypted at rest). Keys are entered from any client and never
+// an API key encrypted at rest with the workspace's key). Each workspace has
+// its own providers. Keys are entered from any client and never
 // sent back: clients see only whether a key is set and its last characters.
 package provider
 
@@ -34,12 +35,13 @@ type Provider struct {
 }
 
 type SaveRequest struct {
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Name    string   `json:"name,omitempty"`
-	BaseURL string   `json:"baseUrl,omitempty"`
-	APIKey  string   `json:"apiKey,omitempty"` // empty keeps the stored key
-	Models  []string `json:"models,omitempty"` // empty: the adapter's defaults
+	WorkspaceID string   `json:"workspaceId"`
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Name        string   `json:"name,omitempty"`
+	BaseURL     string   `json:"baseUrl,omitempty"`
+	APIKey      string   `json:"apiKey,omitempty"` // empty keeps the stored key
+	Models      []string `json:"models,omitempty"` // empty: the adapter's defaults
 	// ContextTokens overrides the kind's default context budget (0 keeps it).
 	ContextTokens int64 `json:"contextTokens,omitempty"`
 }
@@ -52,7 +54,8 @@ type TestResult struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS providers (
-	id         TEXT PRIMARY KEY,
+	workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+	id         TEXT NOT NULL,
 	kind       TEXT NOT NULL,
 	name       TEXT NOT NULL,
 	base_url   TEXT NOT NULL DEFAULT '',
@@ -60,7 +63,8 @@ CREATE TABLE IF NOT EXISTS providers (
 	key_sealed TEXT NOT NULL DEFAULT '',
 	key_hint   TEXT NOT NULL DEFAULT '',
 	updated_at TEXT NOT NULL,
-	context_tokens INTEGER NOT NULL DEFAULT 0
+	context_tokens INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (workspace_id, id)
 );`
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -69,26 +73,59 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 // bound to clients.
 type Store struct {
 	db       *sql.DB
-	box      *secretbox.Box
+	keys     *secretbox.Keyring
 	adapters map[string]llm.Adapter
 	defaults map[string][]string
 }
 
 // NewStore migrates the providers table. adapters are keyed by kind; defaults
 // are the model lists used when a config names none.
-func NewStore(db *sql.DB, box *secretbox.Box, adapters []llm.Adapter, defaults map[string][]string) (*Store, error) {
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("migrate providers: %w", err)
-	}
-	// Added after the first release: older tables lack the column.
-	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+func NewStore(db *sql.DB, keys *secretbox.Keyring, adapters []llm.Adapter, defaults map[string][]string) (*Store, error) {
+	if err := migrate(db); err != nil {
 		return nil, fmt.Errorf("migrate providers: %w", err)
 	}
 	byKind := map[string]llm.Adapter{}
 	for _, a := range adapters {
 		byKind[a.Kind()] = a
 	}
-	return &Store{db: db, box: box, adapters: byKind, defaults: defaults}, nil
+	return &Store{db: db, keys: keys, adapters: byKind, defaults: defaults}, nil
+}
+
+// migrate creates the table, or moves an older server-wide one into the
+// first workspace (its keys were sealed with what is now that workspace's
+// key, so they stay readable).
+func migrate(db *sql.DB) error {
+	var cols int
+	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('providers')`).Scan(&cols)
+	if cols == 0 {
+		_, err := db.Exec(schema)
+		return err
+	}
+	var has int
+	db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('providers') WHERE name = 'workspace_id'`).Scan(&has)
+	if has > 0 {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`ALTER TABLE providers RENAME TO providers_old`,
+		schema,
+		`INSERT INTO providers (workspace_id, id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens)
+			SELECT 'default', id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens FROM providers_old`,
+		`DROP TABLE providers_old`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // keyOptional reports whether a kind's adapter can work without an API key
@@ -114,9 +151,9 @@ func scan(r interface{ Scan(...any) error }) (Provider, string, error) {
 	return p, sealed, nil
 }
 
-// Credentials returns the provider and its decrypted credentials.
-func (st *Store) Credentials(id string) (Provider, llm.Credentials, error) {
-	p, sealed, err := scan(st.db.QueryRow(selectProvider+` WHERE id = ?`, id))
+// Credentials returns a workspace's provider and its decrypted credentials.
+func (st *Store) Credentials(ws, id string) (Provider, llm.Credentials, error) {
+	p, sealed, err := scan(st.db.QueryRow(selectProvider+` WHERE workspace_id = ? AND id = ?`, ws, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, llm.Credentials{}, fmt.Errorf("%w: provider %q", apperr.NotFound, id)
 	}
@@ -129,7 +166,7 @@ func (st *Store) Credentials(id string) (Provider, llm.Credentials, error) {
 		}
 		return p, llm.Credentials{}, fmt.Errorf("%w: provider %q has no API key", apperr.Invalid, id)
 	}
-	key, err := st.box.Unseal(sealed)
+	key, err := st.keys.Box(ws).Unseal(sealed)
 	return p, llm.Credentials{APIKey: key, BaseURL: p.BaseURL}, err
 }
 
@@ -154,9 +191,15 @@ type Service struct{ st *Store }
 
 func NewService(st *Store) *Service { return &Service{st: st} }
 
-// Providers lists configs without secrets.
-func (s *Service) Providers() ([]Provider, error) {
-	rows, err := s.st.db.Query(selectProvider + ` ORDER BY id`)
+// Providers lists a workspace's configs, without secrets.
+func (s *Service) Providers(workspaceID string) ([]Provider, error) {
+	return s.st.List(workspaceID)
+}
+
+// List is Providers, for the server side.
+func (st *Store) List(workspaceID string) ([]Provider, error) {
+	s := &Service{st: st}
+	rows, err := s.st.db.Query(selectProvider+` WHERE workspace_id = ? ORDER BY id`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +234,7 @@ func (s *Service) Save(req SaveRequest) (Provider, error) {
 	}
 	if len(models) == 0 {
 		// Re-saving (e.g. a new key) keeps the provider's current list.
-		if old, _, err := scan(s.st.db.QueryRow(selectProvider+` WHERE id = ?`, req.ID)); err == nil {
+		if old, _, err := scan(s.st.db.QueryRow(selectProvider+` WHERE workspace_id = ? AND id = ?`, req.WorkspaceID, req.ID)); err == nil {
 			models = old.Models
 		}
 	}
@@ -209,7 +252,7 @@ func (s *Service) Save(req SaveRequest) (Provider, error) {
 	sealed, hint := "", ""
 	if key != "" {
 		var err error
-		if sealed, err = s.st.box.Seal(key); err != nil {
+		if sealed, err = s.st.keys.Box(req.WorkspaceID).Seal(key); err != nil {
 			return Provider{}, err
 		}
 		hint = "…" + key[max(0, len(key)-4):]
@@ -217,29 +260,32 @@ func (s *Service) Save(req SaveRequest) (Provider, error) {
 	if req.ContextTokens < 0 {
 		return Provider{}, fmt.Errorf("%w: context tokens cannot be negative", apperr.Invalid)
 	}
-	_, err := s.st.db.Exec(`INSERT INTO providers (id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, name = excluded.name, base_url = excluded.base_url,
+	if req.WorkspaceID == "" {
+		return Provider{}, fmt.Errorf("%w: a provider belongs to a workspace", apperr.Invalid)
+	}
+	_, err := s.st.db.Exec(`INSERT INTO providers (workspace_id, id, kind, name, base_url, models, key_sealed, key_hint, updated_at, context_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace_id, id) DO UPDATE SET kind = excluded.kind, name = excluded.name, base_url = excluded.base_url,
 			models = excluded.models, updated_at = excluded.updated_at, context_tokens = excluded.context_tokens,
 			key_sealed = CASE WHEN excluded.key_sealed = '' THEN providers.key_sealed ELSE excluded.key_sealed END,
 			key_hint   = CASE WHEN excluded.key_sealed = '' THEN providers.key_hint   ELSE excluded.key_hint   END`,
-		req.ID, req.Kind, req.Name, strings.TrimSpace(req.BaseURL), string(modelsJSON), sealed, hint, sqlitedb.Stamp(time.Now()), req.ContextTokens)
+		req.WorkspaceID, req.ID, req.Kind, req.Name, strings.TrimSpace(req.BaseURL), string(modelsJSON), sealed, hint, sqlitedb.Stamp(time.Now()), req.ContextTokens)
 	if err != nil {
 		return Provider{}, err
 	}
-	p, _, err := scan(s.st.db.QueryRow(selectProvider+` WHERE id = ?`, req.ID))
+	p, _, err := scan(s.st.db.QueryRow(selectProvider+` WHERE workspace_id = ? AND id = ?`, req.WorkspaceID, req.ID))
 	return p, err
 }
 
 // Delete removes a provider and its key. Deleting a missing one is not an error.
-func (s *Service) Delete(id string) error {
-	_, err := s.st.db.Exec(`DELETE FROM providers WHERE id = ?`, id)
+func (s *Service) Delete(workspaceID, id string) error {
+	_, err := s.st.db.Exec(`DELETE FROM providers WHERE workspace_id = ? AND id = ?`, workspaceID, id)
 	return err
 }
 
 // Test checks the stored key by listing the provider's models.
-func (s *Service) Test(id string) (TestResult, error) {
-	p, creds, err := s.st.Credentials(id)
+func (s *Service) Test(workspaceID, id string) (TestResult, error) {
+	p, creds, err := s.st.Credentials(workspaceID, id)
 	if err != nil {
 		return TestResult{Message: err.Error()}, nil
 	}
@@ -260,7 +306,7 @@ func (s *Service) Test(id string) (TestResult, error) {
 func (s *Service) listModels(req SaveRequest) ([]string, error) {
 	creds := llm.Credentials{APIKey: strings.TrimSpace(req.APIKey), BaseURL: strings.TrimSpace(req.BaseURL)}
 	if creds.APIKey == "" {
-		if _, stored, err := s.st.Credentials(req.ID); err == nil {
+		if _, stored, err := s.st.Credentials(req.WorkspaceID, req.ID); err == nil {
 			creds.APIKey = stored.APIKey
 		}
 	}

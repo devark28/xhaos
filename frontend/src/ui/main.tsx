@@ -22,5 +22,5 @@ if (auth && !auth.signedIn) {
   installKeys();
   installTypingFlow(document, window);
   window.addEventListener('beforeunload', () => blobUrls.forEach(url => URL.revokeObjectURL(url)));
-  start(auth !== null); // served by Xhaos when the auth endpoint answered
+  start(auth !== null, auth?.workspace || 'default', auth?.workspaceName || ''); // served by Xhaos when the auth endpoint answered
 }
