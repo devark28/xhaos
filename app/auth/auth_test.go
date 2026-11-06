@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -229,5 +230,47 @@ func TestWrongGuessesAreLimitedPerClientWithoutWaiting(t *testing.T) {
 	l.Clear("a")
 	if l.Wait("a", now) != 0 {
 		t.Fatal("clear did not reset")
+	}
+}
+
+// Behind a trusted proxy the visitor's address and HTTPS come from its
+// headers; from anyone else those headers are ignored.
+func TestTrustedProxies(t *testing.T) {
+	defer TrustProxies(nil)
+	req := func(remote, xff, proto string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		if proto != "" {
+			r.Header.Set("X-Forwarded-Proto", proto)
+		}
+		return r
+	}
+	TrustProxies(nil)
+	if a := ClientAddr(req("127.0.0.1:5000", "203.0.113.9", "https")); a != "127.0.0.1" {
+		t.Fatalf("untrusted proxy headers were used: %s", a)
+	}
+	if secure(req("127.0.0.1:5000", "", "https")) {
+		t.Fatal("an untrusted X-Forwarded-Proto made the cookie secure")
+	}
+	TrustProxies([]netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("10.0.0.0/8")})
+	cases := []struct{ remote, xff, want string }{
+		{"127.0.0.1:5000", "203.0.113.9", "203.0.113.9"},
+		// A client's own (forged) entry comes first; the proxy appends the real one.
+		{"127.0.0.1:5000", "1.2.3.4, 203.0.113.9", "203.0.113.9"},
+		// Two trusted hops: skip both.
+		{"127.0.0.1:5000", "203.0.113.9, 10.1.2.3", "203.0.113.9"},
+		{"127.0.0.1:5000", "", "127.0.0.1"},
+		{"198.51.100.7:5000", "203.0.113.9", "198.51.100.7"},
+	}
+	for _, c := range cases {
+		if got := ClientAddr(req(c.remote, c.xff, "")); got != c.want {
+			t.Errorf("%s via %q = %s, want %s", c.remote, c.xff, got, c.want)
+		}
+	}
+	if !secure(req("127.0.0.1:5000", "", "https")) || secure(req("198.51.100.7:5000", "", "https")) {
+		t.Fatal("X-Forwarded-Proto handling")
 	}
 }

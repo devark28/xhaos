@@ -5,9 +5,8 @@ set -eu
 cd "$(dirname "$0")/.."
 export GOCACHE="${GOCACHE:-/tmp/xhaos-go-cache}"
 export GOMODCACHE="${GOMODCACHE:-/tmp/xhaos-go-modcache}"
-# cgo is on only for SQLite (linked dynamically against the system libsqlite3).
-# `purego` keeps Wails off its cgo GTK webview code, which server mode never uses.
-export CGO_ENABLED=1
+# Pure Go (SQLite included): no cgo, no system libraries.
+export CGO_ENABLED=0
 # The page loads the bundled React app; rebuild it first.
 node scripts/build.mjs
-exec "${GO:-go}" run -tags server,purego,libsqlite3 ./cmd/xhaos "$@"
+exec "${GO:-go}" run -tags server ./cmd/xhaos "$@"

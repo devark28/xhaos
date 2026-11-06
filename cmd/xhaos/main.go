@@ -5,16 +5,21 @@
 // runtime, and pushes live events over WebSocket. Browser tabs are clients;
 // closing them does not stop this process.
 //
-// Run with scripts/server.sh (tags: server,purego,libsqlite3; cgo on for SQLite).
+// Run with scripts/server.sh (tag: server; pure Go, cgo off). Release builds
+// add the embed tag to build the page in (scripts/release.sh).
 package main
 
 import (
 	"flag"
+	"fmt"
+	"io/fs"
 	"log"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
@@ -25,9 +30,11 @@ import (
 	"xhaos/app/live"
 	"xhaos/app/run"
 	"xhaos/app/sandbox"
+	"xhaos/frontend"
 )
 
-const version = "0.1.0-dev"
+// version is set by release builds (-ldflags -X main.version=…).
+var version = "0.1.0-dev"
 
 // EventName is the Wails event carrying every committed eventlog.Event.
 const EventName = "xhaos:event"
@@ -46,18 +53,44 @@ func defaultDBPath() string {
 
 func main() {
 	sandbox.MaybeRun() // when started as the command sandbox helper, this never returns
-	frontend := flag.String("frontend", "frontend", "directory containing the static frontend (served from disk)")
+	pageDir := flag.String("frontend", "", "serve the page from this directory (default: the page built into release binaries, else ./frontend)")
 	dbPath := flag.String("db", defaultDBPath(), "SQLite database path")
 	verbose := flag.Bool("verbose", false, "log every request and connection")
 	root := flag.String("root", "", "register this folder as a project at startup (optional; add projects in the Files tab)")
 	sandboxMode := flag.String("sandbox", sandbox.Auto, "confine agents' commands with Landlock: auto (when the kernel supports it), on (refuse commands without it), off")
+	publicHosts := flag.String("public-host", "", "domain names a reverse proxy serves this server under (comma-separated, e.g. xhaos.example.com); needed when it listens on localhost behind the proxy")
+	trustedProxies := flag.String("trusted-proxy", "", "reverse proxies whose X-Forwarded-For and X-Forwarded-Proto headers are trusted (comma-separated addresses or CIDRs, e.g. 127.0.0.1,::1)")
 	flag.Parse()
+	var proxies []netip.Prefix
+	for _, p := range strings.Split(*trustedProxies, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if !strings.Contains(p, "/") {
+			if a, err := netip.ParseAddr(p); err == nil {
+				p = netip.PrefixFrom(a, a.BitLen()).String()
+			}
+		}
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			log.Fatalf("-trusted-proxy: %v", err)
+		}
+		proxies = append(proxies, prefix.Masked())
+	}
+	auth.TrustProxies(proxies)
+	var hosts []string
+	for _, h := range strings.Split(*publicHosts, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
 	if m := *sandboxMode; m != sandbox.Auto && m != sandbox.On && m != sandbox.Off {
 		log.Fatalf("-sandbox must be auto, on or off")
 	}
 
-	if _, err := os.Stat(filepath.Join(*frontend, "index.html")); err != nil {
-		log.Fatalf("frontend not found (run from the repo root or pass -frontend): %v", err)
+	page, from, err := pageFiles(*pageDir)
+	if err != nil {
+		log.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o700); err != nil {
 		log.Fatal(err)
@@ -89,11 +122,12 @@ func main() {
 		LogLevel:    level,
 		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})),
 		// WAILS_SERVER_HOST / WAILS_SERVER_PORT override these.
-		Server:     application.ServerOptions{Host: "localhost", Port: 5180},
+		// The Host check on a localhost bind accepts the public names too.
+		Server:     application.ServerOptions{Host: "localhost", Port: 5180, WebSocketOriginPatterns: hosts},
 		Services:   bindings(services),
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{
-			Handler: noCache(application.AssetFileServerFS(os.DirFS(*frontend))),
+			Handler: noCache(application.AssetFileServerFS(page)),
 			// Sign-in, and a session for every runtime call and the event stream.
 			Middleware: services.Vault.Middleware(guarded, services.Channels.Links()),
 		},
@@ -106,7 +140,7 @@ func main() {
 	if port == "" {
 		port = "5180"
 	}
-	log.Printf("xhaos %s: http://%s:%s (db %s)", version, host, port, *dbPath)
+	log.Printf("xhaos %s: http://%s:%s (db %s, page %s)", version, host, port, *dbPath, from)
 	switch services.Vault.State() {
 	case auth.StateSetup:
 		log.Printf("no passphrase yet: open the page to set one (it encrypts API keys and signs browsers in)")
@@ -116,6 +150,21 @@ func main() {
 	if err := wailsApp.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// pageFiles picks where the page comes from: a directory given with
+// -frontend, the page built into a release binary, or ./frontend.
+func pageFiles(dir string) (fs.FS, string, error) {
+	if dir == "" && frontend.Files != nil {
+		return frontend.Files, "built in", nil
+	}
+	if dir == "" {
+		dir = "frontend"
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
+		return nil, "", fmt.Errorf("frontend not found (run from the repo root, pass -frontend, or use a release binary): %v", err)
+	}
+	return os.DirFS(dir), dir, nil
 }
 
 // noCache makes browsers revalidate frontend files on every load. They are

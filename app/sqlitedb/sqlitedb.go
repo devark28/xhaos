@@ -8,17 +8,17 @@ import (
 	"net/url"
 	"time"
 
-	// Build with -tags libsqlite3 to link the system libsqlite3 dynamically;
-	// without it the driver compiles its bundled SQLite (slow first build).
-	_ "github.com/mattn/go-sqlite3"
+	// A pure-Go SQLite (no cgo): the server builds into one static binary
+	// for any platform, with nothing to install alongside it.
+	_ "modernc.org/sqlite"
 )
 
 // Open opens (creating if needed) the database at path with WAL and foreign
 // keys enabled. It allows a single connection, so writes are serialized and
 // per-workspace sequence numbers are assigned without races.
 func Open(path string) (*sql.DB, error) {
-	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"
-	db, err := sql.Open("sqlite3", dsn)
+	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

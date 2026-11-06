@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -412,12 +413,61 @@ func (l *Limiter) Clear(addr string) {
 	l.mu.Unlock()
 }
 
-func ClientAddr(r *http.Request) string {
+// trusted are reverse proxies (TrustProxies) whose X-Forwarded-For and
+// X-Forwarded-Proto headers are believed. Others' headers are ignored: any
+// client can send them.
+var trusted []netip.Prefix
+
+// TrustProxies sets the reverse proxies in front of the server (call once,
+// at startup).
+func TrustProxies(prefixes []netip.Prefix) { trusted = prefixes }
+
+func fromTrusted(addr string) bool {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	for _, p := range trusted {
+		if p.Contains(ip.Unmap()) {
+			return true
+		}
+	}
+	return false
+}
+
+func remote(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// ClientAddr is the visitor's address: the connection's, or, behind a
+// trusted proxy, the nearest address in X-Forwarded-For that is not one of
+// the trusted proxies (each proxy appends the address it saw).
+func ClientAddr(r *http.Request) string {
+	addr := remote(r)
+	if !fromTrusted(addr) {
+		return addr
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" {
+			continue
+		}
+		if !fromTrusted(hop) {
+			return hop
+		}
+	}
+	return addr
+}
+
+// secure reports whether the browser reached us over HTTPS: directly, or
+// through a trusted proxy that says so.
+func secure(r *http.Request) bool {
+	return r.TLS != nil || (fromTrusted(remote(r)) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
 // ---- HTTP ----------------------------------------------------------------------
@@ -446,7 +496,7 @@ func token(r *http.Request) string {
 func (v *Vault) setCookie(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name: CookieName, Value: value, Path: "/", MaxAge: maxAge,
-		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure(r),
 	})
 }
 

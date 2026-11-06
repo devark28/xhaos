@@ -24,7 +24,7 @@ export const options = {
   format: 'esm',
   jsx: 'automatic',
   target: 'es2022',
-  sourcemap: true,
+  sourcemap: !process.env.XHAOS_RELEASE, // release builds ship without source maps
   minify: true,
   // /wails/runtime.js only exists when the Go server serves the page.
   external: ['/wails/runtime.js'],
