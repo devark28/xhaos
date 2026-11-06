@@ -138,3 +138,9 @@ export const text = stylex.create({
   mono: { fontFamily: 'ui-monospace, monospace' },
   ellipsis: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
 });
+
+// Info is a small round (i) that shows a hint as a tooltip on hover and on
+// keyboard focus (global.css: .x-info); screen readers read it as its label.
+export function Info({ text }: { text: string }) {
+  return <button type="button" className="x-info" data-tip={text} aria-label={text} onClick={event => event.preventDefault()}>i</button>;
+}

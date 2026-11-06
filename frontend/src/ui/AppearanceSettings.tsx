@@ -5,7 +5,7 @@ import { useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { applyAppearance, defaults, loadAppearance, saveAppearance, type Appearance } from './appearance.ts';
-import { Button } from './kit.tsx';
+import { Button, Info } from './kit.tsx';
 import { pushAppearance } from './state/backend.ts';
 import { update, useApp } from './state/store.ts';
 import { setSamples } from './state/composer.ts';
@@ -39,14 +39,13 @@ export function AppearanceSettings() {
         <Toggle key={c.key} name={c.key} label={c.label} hint={c.hint} on={a[c.key] === c.toggle[1]} onChange={on => change({ ...a, [c.key]: c.toggle![on ? 1 : 0] })} />
       ) : (
         <label key={c.key} {...stylex.props(s.row)}>
-          <span {...stylex.props(s.label)}>{c.label}</span>
+          <span {...stylex.props(s.label)}>{c.label}{c.hint && <Info text={c.hint} />}</span>
           <select data-appearance={c.key} value={String(a[c.key])} onChange={e => {
             const raw = e.target.value;
             change({ ...a, [c.key]: typeof defaults[c.key] === 'number' ? Number(raw) : raw });
           }} {...stylex.props(s.select)}>
             {c.options!.map(([value, text]) => <option key={String(value)} value={String(value)}>{text}</option>)}
           </select>
-          {c.hint && <span {...stylex.props(s.hint)}>{c.hint}</span>}
         </label>
       ))}
     </div>
@@ -78,11 +77,10 @@ export function DeveloperSettings() {
 export function Toggle({ name, label, hint, on, onChange }: { name: string; label: string; hint?: string; on: boolean; onChange(on: boolean): void }) {
   return (
     <div {...stylex.props(s.toggleRow)}>
-      <span {...stylex.props(s.toggleLabel)}>{label}</span>
+      <span {...stylex.props(s.toggleLabel)}>{label}{hint && <Info text={hint} />}</span>
       <button type="button" role="switch" aria-checked={on} aria-label={label} data-toggle={name} onClick={() => onChange(!on)} {...stylex.props(s.switch, on && s.switchOn)}>
         <span aria-hidden="true" {...stylex.props(s.knob, on && s.knobOn)} />
       </button>
-      {hint && <span {...stylex.props(s.toggleHint)}>{hint}</span>}
     </div>
   );
 }

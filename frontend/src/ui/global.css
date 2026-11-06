@@ -27,7 +27,9 @@
 
 /* ---- Markdown (markdown.ts output, and the composer's rich input) --------- */
 .markdown-body { overflow-wrap: anywhere; min-width: 0; }
-:is(.markdown-body, xhaos-input) p { margin: 0 0 9px; line-height: 1.7; white-space: normal; }
+:is(.markdown-body, xhaos-input) p { margin: 0 0 9px; line-height: 1.7; }
+/* Rendered text wraps normally; the message box keeps every space you type (it is pre-wrap). */
+.markdown-body p { white-space: normal; }
 :is(.markdown-body, xhaos-input) p:last-child { margin-bottom: 0; }
 :is(.markdown-body, xhaos-input) :is(h1, h2, h3, h4, h5, h6) { font-size: 13px; color: var(--x-heading, #ddd); margin: 12px 0 7px; font-weight: 600; }
 :is(.markdown-body, xhaos-input) h1 { font-size: 16px; }
@@ -87,3 +89,19 @@ xhaos-input :is(em, i) { font-style: italic; }
 
 /* A card reached through a link (#agent=…) flashes once. */
 [data-agent-header][data-flash] { box-shadow: inset 0 0 0 1px var(--x-brand, #a78bfa); transition: box-shadow 0.4s; }
+
+/* ---- (i) hints --------------------------------------------------------------- */
+.x-info {
+  position: relative; display: inline-grid; place-items: center; width: 13px; height: 13px; margin-left: 6px; padding: 0;
+  vertical-align: 1px; border: 1px solid var(--x-comment, #777); border-radius: 50%; background: none;
+  font: italic 600 8.5px/1 Georgia, serif; color: var(--x-comment, #777); cursor: help;
+}
+.x-info:hover, .x-info:focus { color: var(--x-text, #ddd); border-color: var(--x-text, #ddd); outline: none; }
+.x-info::after {
+  content: attr(data-tip); position: absolute; left: -6px; top: calc(100% + 6px); z-index: 50; width: max-content; max-width: 240px;
+  padding: 6px 8px; border-radius: 4px; background: var(--x-tip-bg, #262626); color: var(--x-text, #ddd); box-shadow: 0 6px 18px rgba(0,0,0,.35);
+  font: 400 10.5px/1.45 Inter, ui-sans-serif, sans-serif; font-style: normal; text-align: left; white-space: normal;
+  opacity: 0; pointer-events: none; transform: translateY(-2px); transition: opacity .12s, transform .12s;
+}
+.x-info:hover::after, .x-info:focus::after { opacity: 1; transform: none; }
+[data-theme="light"] .x-info::after { --x-tip-bg: #ffffff; box-shadow: 0 6px 18px rgba(0,0,0,.15); border: 1px solid #ddd; }

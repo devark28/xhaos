@@ -97,8 +97,15 @@ export class XhaosInput extends Base {
     this.moveCaretOnFocus = true;
     if (document.activeElement === this) this.placeCaretAtEnd();
   }
+  // placeCaretAtEnd puts the caret at the end of the last text, not after the
+  // last paragraph: Firefox would otherwise type outside it, on a new line.
   placeCaretAtEnd() {
-    const range = document.createRange(); range.selectNodeContents(this); range.collapse(false);
+    const range = document.createRange();
+    const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
+    let last: Text | null = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) last = node as Text;
+    if (last) range.setStart(last, last.length); else { range.selectNodeContents(this); }
+    range.collapse(!last ? false : true);
     const selection = window.getSelection();
     selection?.removeAllRanges(); selection?.addRange(range);
     this.moveCaretOnFocus = false;

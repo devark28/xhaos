@@ -106,6 +106,10 @@ function CommandMenu() {
   const onKey = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
     const buttons = [...event.currentTarget.parentElement!.querySelectorAll('button')];
     if (event.key === 'Escape') { closeCommandMenu(); document.getElementById('command')?.focus(); }
+    // Enter (and Tab) complete the command themselves: left to the button,
+    // Enter would click it on keydown and then insert a new line into the
+    // message box, which has the focus by the time the key's input lands.
+    if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) { event.preventDefault(); chooseCommand(buttons[index].dataset.command!); }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
