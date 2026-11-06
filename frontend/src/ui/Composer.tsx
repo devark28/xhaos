@@ -216,7 +216,6 @@ function DrawingPane() {
 export function ComposerArea() {
   const narrow = useNarrow(); // a phone has no Draw tab: the canvas needs room and a pointer
   const mode = useApp(s => (narrow ? 'message' : s.mode));
-  const workspaceName = useApp(s => s.workspaceName);
   return (
     <div id="composer-area" {...stylex.props(area.root)}>
       <div {...stylex.props(area.switches)}>
@@ -226,7 +225,6 @@ export function ComposerArea() {
         <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, mode === 'message' && area.switchChosen]}>Message</Button>
         {!narrow && <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>}
       </div>
-      {workspaceName && <span id="workspace-name" title="This workspace" {...stylex.props(area.workspace)}>{workspaceName}</span>}
       <BtwAside />
       <ComposerForm />
       <DrawingPane />
@@ -242,8 +240,6 @@ async function leaveWorkspace(event: React.MouseEvent) {
 }
 
 const area = stylex.create({
-  // Centered in the header row, at the logo's height.
-  workspace: { position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', maxWidth: '40%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12, fontWeight: 500, color: colors.textSoft, pointerEvents: 'none' },
   root: {
     position: 'relative',
     display: 'flex',

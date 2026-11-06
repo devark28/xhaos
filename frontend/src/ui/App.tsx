@@ -85,6 +85,7 @@ export function App() {
   useEffect(() => { if (ready) notifyAttention(); }, [ready, agents]);
   const narrow = useNarrow();
   const view = useApp(s => s.mobileView);
+  const workspaceName = useApp(s => s.workspaceName);
   if (!ready) return <Toast />;
   return (
     <main data-mobile-view={narrow ? view : undefined} {...stylex.props(page.main, narrow && page.phone)}>
@@ -95,6 +96,8 @@ export function App() {
         <AgentsSection />
       </div>
       <SidePanel />
+      {/* The workspace's name, in the middle of the page at the logo's height. */}
+      {workspaceName && <span id="workspace-name" title="This workspace" {...stylex.props(page.workspace)}>{workspaceName}</span>}
       <DangerDialog />
       <Toast />
     </main>
@@ -145,6 +148,7 @@ const page = stylex.create({
     pointerEvents: 'none',
   },
   toastVisible: { opacity: 1 },
+  workspace: { position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 6, maxWidth: { default: '30%', [breakpoints.narrow]: '45%' }, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12, fontWeight: 500, color: colors.textSoft, pointerEvents: 'none' },
 });
 
 const board = stylex.create({

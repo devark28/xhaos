@@ -3,7 +3,7 @@
 // first sign-in also unlocks the API keys, and agents resume.
 import { useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
-import { colors } from './theme/tokens.stylex.ts';
+import { colors, fonts } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 
 export interface WorkspaceCard { id: string; name: string; state: 'setup' | 'locked' | 'unlocked' }
@@ -41,6 +41,12 @@ export async function authPost(path: string, body: Record<string, string>): Prom
   } finally { clearTimeout(timer); }
 }
 
+// Each workspace's colour tints its whole card. Colours go in creation
+// order (the list's order), so the first eight differ and none changes when a
+// workspace is added. Hues that read on both dark and light pages.
+const hues = [262, 210, 150, 35, 330, 185, 10, 95];
+export const workspaceHue = (index: number) => hues[index % hues.length];
+
 // The picker: one card per workspace, like profiles. Choosing one asks for
 // its passphrase (each workspace has its own, and its own keys); New
 // workspace makes one, with the passphrase of an existing workspace to
@@ -54,8 +60,8 @@ export function SignIn({ auth }: { auth: AuthState }) {
     <Page wide>
       <h1 {...stylex.props(s.heading)}>Which workspace?</h1>
       <div data-workspace-cards {...stylex.props(s.cards)}>
-        {auth.workspaces.map(w => (
-          <button key={w.id} type="button" data-workspace-card={w.id} onClick={() => setPicked(w)} {...stylex.props(s.tile)}>
+        {auth.workspaces.map((w, index) => (
+          <button key={w.id} type="button" data-workspace-card={w.id} onClick={() => setPicked(w)} {...stylex.props(s.tile, s.tinted(workspaceHue(index)))}>
             <span aria-hidden="true" {...stylex.props(s.initial)}>{w.name.trim().slice(0, 1).toUpperCase() || '?'}</span>
             <span {...stylex.props(s.tileName)}>{w.name}</span>
             {w.state === 'locked' && <small {...stylex.props(s.tileState)}>locked</small>}
@@ -161,17 +167,21 @@ function Create({ auth, back }: { auth: AuthState; back: () => void }) {
 }
 
 const s = stylex.create({
-  page: { minHeight: '100vh', display: 'grid', placeItems: 'center', backgroundColor: colors.bg, color: colors.text, paddingInline: 16 },
+  // The page is zoomed by the text size setting (#app): divide, or it overflows.
+  // The code font (JetBrains Mono by default), like the transcripts.
+  page: { fontFamily: fonts.mono, minHeight: 'calc(100dvh / var(--x-zoom, 1))', boxSizing: 'border-box', display: 'grid', placeItems: 'center', backgroundColor: colors.bg, color: colors.text, paddingInline: 16 },
   frame: { width: '100%', maxWidth: 360 },
   frameWide: { maxWidth: 720 },
   heading: { margin: 0, marginBottom: 20, textAlign: 'center', fontSize: 18, fontWeight: 500, color: colors.textStrong },
   cards: { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 16 },
-  tile: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: 128, paddingBlock: 18, paddingInline: 10, borderWidth: 1, borderStyle: 'solid', borderColor: { default: colors.lineFaint, ':hover': colors.brandLine, ':focus-visible': colors.brand }, borderRadius: 8, backgroundColor: { default: colors.card, ':hover': colors.hover }, color: colors.text, cursor: 'pointer', fontFamily: 'inherit', outline: 'none' },
+  tile: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: 136, paddingBlock: 20, paddingInline: 10, borderWidth: 1, borderStyle: 'solid', borderColor: { default: colors.lineFaint, ':focus-visible': colors.brand }, borderRadius: 10, backgroundColor: { default: colors.card, ':hover': colors.hover }, color: colors.text, cursor: 'pointer', fontFamily: 'inherit', outline: 'none', transitionProperty: 'transform, filter', transitionDuration: '.12s', transform: { default: 'none', ':hover': 'translateY(-2px)' }, filter: { default: 'none', ':hover': 'brightness(1.12)' } },
+  // The workspace's colour over the whole card.
+  tinted: (hue: number) => ({ backgroundColor: `hsl(${hue} 55% 50% / 0.16)`, borderColor: `hsl(${hue} 60% 60% / 0.45)`, color: `light-dark(hsl(${hue} 60% 32%), hsl(${hue} 70% 78%))` }),
   tileNew: { borderStyle: 'dashed' },
-  initial: { display: 'grid', placeItems: 'center', width: 56, height: 56, borderRadius: 10, backgroundColor: colors.brandSoft, color: colors.brand, fontSize: 24, fontWeight: 600 },
-  initialNew: { backgroundColor: 'transparent', color: colors.textFaint, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.lineStrong },
-  tileName: { maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12 },
-  tileState: { fontSize: 9.5, color: colors.textGhost },
+  initial: { display: 'grid', placeItems: 'center', width: 56, height: 56, fontSize: 40, fontWeight: 600, lineHeight: 1 },
+  initialNew: { width: 48, height: 48, marginBlock: 4, fontSize: 26, fontWeight: 400, color: colors.textFaint, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.lineStrong, borderRadius: 10 },
+  tileName: { maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 12, fontWeight: 500 },
+  tileState: { fontSize: 9.5, opacity: 0.7 },
   actions: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
   // Present for password managers (the workspace is the username), not shown.
   hiddenField: { position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' },
