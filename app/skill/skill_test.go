@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"xhaos/app/backend"
-	"xhaos/app/skill"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/skill"
 )
 
 const ws = "default"

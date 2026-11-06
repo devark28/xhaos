@@ -12,7 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/v2/option"
 	sdkparam "github.com/anthropics/anthropic-sdk-go/v2/packages/param"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 const Kind = "anthropic"

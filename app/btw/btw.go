@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/llm"
-	"xhaos/app/provider"
-	"xhaos/app/usage"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/provider"
+	"github.com/devark28/xhaos/app/usage"
 )
 
 const (

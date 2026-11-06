@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"xhaos/app/agent"
-	"xhaos/app/backend"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/backend"
 )
 
 // Every exported method of a bound service is callable from the page, so

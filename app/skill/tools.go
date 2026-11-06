@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"xhaos/app/agent"
-	"xhaos/app/llm"
-	"xhaos/app/tool"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/tool"
 )
 
 // Tools is skill_read, for agents. A function rather than a method of

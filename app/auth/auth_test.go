@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"xhaos/app/secretbox"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 const pass = "correct horse battery"
@@ -269,7 +269,7 @@ func TestMiddlewareKeepsSessionsInTheirWorkspace(t *testing.T) {
 	// The shape the Wails client really sends: the method's arguments one
 	// level down, beside the call id and method name.
 	wails := func(args string) string {
-		return `{"call-id":"c1","methodName":"xhaos/app/memory.Service.Memories","args":` + args + `}`
+		return `{"call-id":"c1","methodName":"github.com/devark28/xhaos/app/memory.Service.Memories","args":` + args + `}`
 	}
 	if code := call(home, wails(`["default"]`)); code != 200 {
 		t.Errorf("own workspace, Wails shape = %d", code)

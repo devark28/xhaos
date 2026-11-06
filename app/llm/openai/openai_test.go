@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 // server answers /chat/completions with the given SSE lines and records the

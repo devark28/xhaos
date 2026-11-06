@@ -5,7 +5,7 @@ package policy
 import (
 	"fmt"
 
-	"xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/apperr"
 )
 
 // Policy is an agent's execution policy for its project/repository.

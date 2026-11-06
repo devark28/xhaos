@@ -9,10 +9,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"xhaos/app/agent"
-	"xhaos/app/attachment"
-	"xhaos/app/llm"
-	"xhaos/app/tool"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/attachment"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/tool"
 )
 
 // Text attachments up to maxInlineText characters go into the message whole.

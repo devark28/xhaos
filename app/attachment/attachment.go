@@ -17,8 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"xhaos/app/apperr"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 // MaxSize is the largest file accepted (larger images and PDFs exceed what

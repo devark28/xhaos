@@ -23,15 +23,15 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"xhaos/app/auth"
-	"xhaos/app/backend"
-	"xhaos/app/egress"
-	"xhaos/app/eventlog"
-	"xhaos/app/health"
-	"xhaos/app/live"
-	"xhaos/app/run"
-	"xhaos/app/sandbox"
-	"xhaos/frontend"
+	"github.com/devark28/xhaos/app/auth"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/egress"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/health"
+	"github.com/devark28/xhaos/app/live"
+	"github.com/devark28/xhaos/app/run"
+	"github.com/devark28/xhaos/app/sandbox"
+	"github.com/devark28/xhaos/frontend"
 )
 
 // version is set by release builds (-ldflags -X main.version=…).

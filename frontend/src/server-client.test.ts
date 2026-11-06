@@ -11,7 +11,7 @@ test('calls the health service through the Wails runtime', async () => {
   const scope = { wails: { Events: {}, Call: { ByName: async (name, ...args) => { calls.push([name, args]); return { version: 'v' }; } } } };
   const backend = await connectBackend(async () => {}, scope);
   assert.deepEqual(backend.status, { version: 'v' });
-  assert.deepEqual(calls, [['xhaos/app/health.Service.Status', []]]);
+  assert.deepEqual(calls, [['github.com/devark28/xhaos/app/health.Service.Status', []]]);
 });
 
 const ev = seq => ({ workspaceId: 'w', seq, kind: 'agent.message' });

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"xhaos/app/backend"
-	"xhaos/app/llm"
-	"xhaos/app/provider"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/provider"
 )
 
 type stub struct{}

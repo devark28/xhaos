@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 const sse = `event: message_start

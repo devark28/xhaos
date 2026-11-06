@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 func TestAppearanceRoundTripAndLimits(t *testing.T) {

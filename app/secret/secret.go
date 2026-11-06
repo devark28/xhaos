@@ -32,14 +32,14 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/egress"
-	"xhaos/app/eventlog"
-	"xhaos/app/llm"
-	"xhaos/app/secretbox"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/tool"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/egress"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/tool"
 )
 
 const EventChanged = "secret.changed" // data: {"name": …}; never a value

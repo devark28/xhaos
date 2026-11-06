@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 const Kind = "openai"

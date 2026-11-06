@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/apperr"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/tool"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/tool"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 type Project struct {

@@ -31,9 +31,9 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/sandbox"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // Durations the owner can choose, in minutes.

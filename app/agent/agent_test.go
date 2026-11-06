@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/backend"
-	"xhaos/app/eventlog"
-	"xhaos/app/policy"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/policy"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 const ws = workspace.DefaultID

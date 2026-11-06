@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 const Kind = "sim"

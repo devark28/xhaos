@@ -41,9 +41,9 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"xhaos/app/secretbox"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 const (

@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"xhaos/app/llm"
-	"xhaos/app/policy"
-	"xhaos/app/sandbox"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/policy"
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // Effects, from least to most dangerous.

@@ -14,12 +14,12 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"xhaos/app/agent"
-	"xhaos/app/backend"
-	"xhaos/app/llm"
-	"xhaos/app/mcp"
-	"xhaos/app/tool"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/mcp"
+	"github.com/devark28/xhaos/app/tool"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 const ws = workspace.DefaultID

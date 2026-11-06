@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"xhaos/app/llm"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 func TestReportCostsByModelAndAgent(t *testing.T) {

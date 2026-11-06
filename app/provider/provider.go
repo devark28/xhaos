@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/apperr"
-	"xhaos/app/llm"
-	"xhaos/app/secretbox"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 type Provider struct {

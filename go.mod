@@ -1,4 +1,4 @@
-module xhaos
+module github.com/devark28/xhaos
 
 go 1.26.0
 

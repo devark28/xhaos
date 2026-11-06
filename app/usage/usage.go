@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/apperr"
-	"xhaos/app/llm"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 // Purposes of a model call.

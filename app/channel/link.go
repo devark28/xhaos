@@ -26,10 +26,10 @@ import (
 	"strings"
 	"time"
 
-	"xhaos/app/apperr"
-	"xhaos/app/auth"
-	"xhaos/app/eventlog"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/auth"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 const linkSchema = `

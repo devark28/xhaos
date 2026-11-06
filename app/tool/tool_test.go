@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"xhaos/app/llm"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 func call(name string, input any) llm.ToolCall {

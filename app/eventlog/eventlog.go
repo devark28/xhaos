@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 // Event is one log entry. Seq increases by exactly one per workspace, so a

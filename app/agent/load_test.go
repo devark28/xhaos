@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"xhaos/app/agent"
-	"xhaos/app/backend"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/backend"
 )
 
 // TestConcurrentWriters measures the event log under many agents writing at

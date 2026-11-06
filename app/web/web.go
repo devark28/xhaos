@@ -11,11 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/llm"
-	"xhaos/app/secretbox"
-	"xhaos/app/tool"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/tool"
 )
 
 const schema = `

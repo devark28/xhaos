@@ -1,6 +1,6 @@
 package tool
 
-import "xhaos/app/sandbox"
+import "github.com/devark28/xhaos/app/sandbox"
 
 // Info describes one tool for the owner's tools panel.
 type Info struct {

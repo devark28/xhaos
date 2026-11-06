@@ -24,13 +24,13 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"xhaos/app/agent"
-	"xhaos/app/apperr"
-	"xhaos/app/llm"
-	"xhaos/app/secretbox"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/tool"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/secretbox"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/tool"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 // Trust levels, from most to least cautious.

@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"xhaos/app/agent"
-	"xhaos/app/backend"
-	"xhaos/app/secret"
+	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/secret"
 )
 
 const ws = "default"

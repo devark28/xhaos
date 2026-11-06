@@ -35,10 +35,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"xhaos/app/apperr"
-	"xhaos/app/eventlog"
-	"xhaos/app/project"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/project"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 const EventChanged = "skill.changed"

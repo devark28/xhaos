@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"xhaos/app/eventlog"
-	"xhaos/app/sqlitedb"
-	"xhaos/app/workspace"
+	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/workspace"
 )
 
 func openDB(t *testing.T, dir string) *sql.DB {

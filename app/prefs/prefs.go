@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"time"
 
-	"xhaos/app/apperr"
-	"xhaos/app/sqlitedb"
+	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
 const schema = `

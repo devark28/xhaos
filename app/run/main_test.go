@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"xhaos/app/egress"
-	"xhaos/app/sandbox"
+	"github.com/devark28/xhaos/app/egress"
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // The test binary doubles as the sandbox helper, like the server binary.
