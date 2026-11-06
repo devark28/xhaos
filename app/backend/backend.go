@@ -21,6 +21,7 @@ import (
 	"xhaos/app/usage"
 
 	"xhaos/app/agent"
+	"xhaos/app/egress"
 	"xhaos/app/eventlog"
 	"xhaos/app/idempotency"
 	"xhaos/app/llm"
@@ -29,6 +30,7 @@ import (
 	"xhaos/app/provider"
 	"xhaos/app/run"
 	"xhaos/app/sandbox"
+	"xhaos/app/secret"
 	"xhaos/app/secretbox"
 	"xhaos/app/sqlitedb"
 	"xhaos/app/workspace"
@@ -71,7 +73,9 @@ type Services struct {
 	Memories   *memory.Service
 	Usage      *usage.Service
 	Prefs      *prefs.Service
+	Secrets    *secret.Service
 	mcp        *mcp.Manager
+	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
 	Vault *auth.Vault
 }
@@ -138,6 +142,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if err := channel.Migrate(db); err != nil { // its tables refer to agents
 		return nil, fmt.Errorf("migrate channel: %w", err)
 	}
+	if err := secret.Migrate(db); err != nil { // its grants refer to agents
+		return nil, fmt.Errorf("migrate secret: %w", err)
+	}
 	// Root, when given, is registered as a project. Nothing is registered
 	// implicitly: a server started from a home folder or an empty VPS must
 	// not turn that folder into a project.
@@ -170,11 +177,22 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	side.Context = func(ws string) string {
 		return strings.TrimSpace(channels.Digest(ws) + "\n\n## Memories\n" + memories.Index(ws))
 	}
+	secrets := secret.NewService(db, box, opts.Publish)
+	if vault != nil {
+		secrets.Verify = vault.Verify
+	}
+	// Commands given secrets reach the network only through this proxy.
+	out, err := egress.Start()
+	if err != nil {
+		return nil, fmt.Errorf("egress proxy: %w", err)
+	}
+	runner.Secrets, runner.Egress = secret.NewSealer(secrets), out
+	runner.Extras = append(runner.Extras, secret.NewTools(secrets))
 	catalog := tool.NewService()
 	runner.Sandbox = sandbox.Config{Mode: opts.Sandbox, Cache: filepath.Join(dataDir, "sandbox")}
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(runner.Catalog(), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
+		return append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -234,7 +252,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Memories:   memories,
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
+		Secrets:    secrets,
 		mcp:        tools,
+		egress:     out,
 		Vault:      vault,
 	}, nil
 }
@@ -243,12 +263,16 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 func (s *Services) Close() error {
 	s.runner.Close()
 	s.mcp.Close()
+	s.egress.Close()
 	eventlog.Close(s.db)
 	return s.db.Close()
 }
 
 // MCPManager is the live MCP connections (for tests and the runner).
 func (s *Services) MCPManager() *mcp.Manager { return s.mcp }
+
+// Egress is the proxy for commands that hold secrets (tests point it at local servers).
+func (s *Services) Egress() *egress.Proxy { return s.egress }
 
 // DB is the shared database handle (for measurements and tests).
 func (s *Services) DB() *sql.DB { return s.db }

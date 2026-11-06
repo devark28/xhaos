@@ -20,10 +20,12 @@ import (
 	"xhaos/app/attachment"
 
 	"xhaos/app/agent"
+	"xhaos/app/egress"
 	"xhaos/app/llm"
 	"xhaos/app/policy"
 	"xhaos/app/provider"
 	"xhaos/app/sandbox"
+	"xhaos/app/secret"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 )
@@ -63,6 +65,10 @@ type Runner struct {
 	OnFinal func(a agent.Agent, answer string)
 	// Sandbox confines agents' shell commands (package sandbox).
 	Sandbox sandbox.Config
+	// Secrets and Egress give bash calls secrets, in a sealed environment
+	// whose network goes through the proxy (package secret, egress).
+	Secrets *secret.Sealer
+	Egress  *egress.Proxy
 	// Usage, when set, counts the tokens of every model call.
 	Usage   *usage.Recorder
 	titling map[key]bool // titles asked for since start (at most once each)
@@ -117,12 +123,52 @@ func (r *Runner) prepare(root, ws string, a agent.Agent, c llm.ToolCall) (tool.C
 	if x := r.extra(c.Name); x != nil {
 		return x.Prepare(ws, a, c)
 	}
-	return tool.Prepare(root, c)
+	call, err := tool.Prepare(root, c)
+	if err != nil || len(call.Secrets) == 0 {
+		return call, err
+	}
+	if r.Secrets == nil || r.Egress == nil {
+		return call, errors.New("secrets are not available on this server")
+	}
+	use, err := r.Secrets.Check(ws, a, call.Secrets)
+	if err != nil {
+		return call, err
+	}
+	// Each use asks, unless every secret is trusted to this agent.
+	if !use.Trusted {
+		call.Effect = policy.EffectSecret
+	}
+	call.Preview = use.Preview
+	return call, nil
+}
+
+// sealed runs a bash call that holds secrets: values as environment
+// variables, network only to their hosts through the proxy, values
+// scrubbed from the output.
+func (r *Runner) sealed(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+	values, use, err := r.Secrets.Open(ws, a, call.Secrets)
+	if err != nil {
+		return "", err
+	}
+	proxyURL, release := r.Egress.Lease(use.Hosts)
+	defer release()
+	env := []string{"GIT_TERMINAL_PROMPT=0", "NO_PROXY=", "no_proxy="}
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
+		env = append(env, k+"="+proxyURL)
+	}
+	for name, v := range values {
+		env = append(env, name+"="+v)
+	}
+	scrub := func(s string) string { return secret.Scrub(strings.ReplaceAll(s, proxyURL, "[proxy]"), values) }
+	return tool.ExecuteSealed(ctx, root, r.Sandbox, call, sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port()}, scrub)
 }
 
 func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
+	}
+	if len(call.Secrets) > 0 {
+		return r.sealed(ctx, root, ws, a, call)
 	}
 	return tool.ExecuteIn(ctx, root, r.Sandbox, call)
 }

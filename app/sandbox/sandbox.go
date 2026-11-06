@@ -8,19 +8,22 @@
 // the command starts.
 //
 // Inside, a command can:
-//   - read and write its project folder, and a shared cache (HOME, Go, npm,
-//     and other tool caches live there, never in the real home);
+//   - read and write its project folder, a temp folder of its own under
+//     /tmp/xhaos-<uid>/sandboxes/ (TMPDIR), and a shared cache beside the
+//     database (HOME, Go, npm and other tool caches; never the real home);
 //   - read and run system files (/usr, /etc, …) and the toolchains on PATH;
 //   - read the git identity (~/.gitconfig), but not ~/.ssh or credentials.
 //
 // It cannot read the rest of the home folder (other projects, Xhaos's
 // database, transcripts, attachments, the key file), and cannot signal or
-// connect to processes outside the sandbox through abstract sockets.
+// connect to processes outside the sandbox through abstract sockets, nor
+// open any Unix socket (the SSH agent, keyring, D-Bus, Docker; seccomp).
 // Network access is unchanged for now.
 package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +93,10 @@ type policy struct {
 	Read  []string `json:"read"`  // directories: read and execute
 	Files []string `json:"files"` // single files: read
 	Write []string `json:"write"` // directories: read, write, execute
+	// Sealed commands: the only TCP port they may connect to (the egress
+	// proxy), and no UDP (DNS lookups could carry a secret out).
+	Port    int  `json:"port,omitempty"`
+	DenyUDP bool `json:"denyUdp,omitempty"`
 }
 
 // Command builds the command that runs `bash -c command` in root, inside
@@ -123,6 +130,83 @@ func (c Config) Command(ctx context.Context, root, command string) (*exec.Cmd, e
 	return cmd, nil
 }
 
+// Sealed describes a command that holds secrets (a "sealed environment").
+type Sealed struct {
+	Env       []string // NAME=value: the secrets and the proxy settings
+	ProxyPort int      // the one TCP port it may connect to (127.0.0.1)
+}
+
+// NetABI is the first Landlock ABI that restricts TCP connections.
+const NetABI = 4
+
+// CommandSealed is Command for a command that holds secrets. On top of the
+// usual sandbox: the project is read-only (except .git, so git can push and
+// update its refs); HOME, TMPDIR and the tool caches are a throwaway folder,
+// deleted by the returned cleanup, so nothing it writes outlives it; it may
+// connect only to the proxy's port, and cannot open UDP sockets. Secrets
+// need the sandbox: without it, or on a kernel whose Landlock cannot
+// restrict the network, this refuses.
+func (c Config) CommandSealed(ctx context.Context, root, command string, s Sealed) (*exec.Cmd, func(), error) {
+	if c.Mode == Off || c.Mode == "" {
+		return nil, nil, errors.New("secrets are only given to sandboxed commands, and the sandbox is off (start the server with -sandbox auto)")
+	}
+	if abi := ABI(); abi < NetABI {
+		return nil, nil, fmt.Errorf("secrets need a kernel whose Landlock can restrict the network (ABI %d+, Linux 6.7+); this one has ABI %d", NetABI, abi)
+	}
+	if s.ProxyPort <= 0 {
+		return nil, nil, errors.New("sandbox: sealed command without a proxy")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, nil, err
+	}
+	env, p, err := c.prepare(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err := TempDir(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	scratch, err := os.MkdirTemp(project, "sealed-")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { os.RemoveAll(scratch) }
+	for _, d := range []string{"home", "tmp", "cache", "go-build"} {
+		os.MkdirAll(filepath.Join(scratch, d), 0o700)
+	}
+	// The project and the shared cache become read-only; only the scratch
+	// folder, devices and the project's .git stay writable.
+	p.Read = append(p.Read, root, c.Cache)
+	p.Write = []string{scratch, "/dev"}
+	if fi, err := os.Stat(filepath.Join(root, ".git")); err == nil && fi.IsDir() {
+		p.Write = append(p.Write, filepath.Join(root, ".git"))
+	}
+	p.Port, p.DenyUDP = s.ProxyPort, true
+	over := map[string]string{
+		"HOME": filepath.Join(scratch, "home"), "TMPDIR": filepath.Join(scratch, "tmp"),
+		"XDG_CACHE_HOME": filepath.Join(scratch, "cache"), "GOCACHE": filepath.Join(scratch, "go-build"),
+		"npm_config_cache": filepath.Join(scratch, "cache", "npm"),
+	}
+	out := env[:0:0]
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, replaced := over[k]; !replaced {
+			out = append(out, kv)
+		}
+	}
+	for k, v := range over {
+		out = append(out, k+"="+v)
+	}
+	out = append(out, s.Env...)
+	raw, _ := json.Marshal(p)
+	cmd := exec.CommandContext(ctx, self, helperArg, string(raw), command)
+	cmd.Dir = root
+	cmd.Env = out
+	return cmd, cleanup, nil
+}
+
 // prepare makes the cache folders and works out the environment and the
 // policy for a command in root.
 func (c Config) prepare(root string) ([]string, policy, error) {
@@ -130,16 +214,23 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 		return nil, policy{}, errors.New("sandbox: no cache folder configured")
 	}
 	dirs := map[string]string{}
-	for _, d := range []string{"home", "tmp", "cache", "go-build", "go-mod", "npm"} {
+	for _, d := range []string{"home", "cache", "go-build", "go-mod", "npm"} {
 		dirs[d] = filepath.Join(c.Cache, d)
 		if err := os.MkdirAll(dirs[d], 0o700); err != nil {
 			return nil, policy{}, err
 		}
 	}
+	// Temp files go to a folder of the project's own under /tmp, which the
+	// system clears: /tmp/xhaos-<uid>/sandboxes/<project>-<hash>.
+	tmp, err := TempDir(root)
+	if err != nil {
+		return nil, policy{}, err
+	}
+	dirs["tmp"] = tmp
 	home, _ := os.UserHomeDir()
 	p := policy{
 		Read:  []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/proc", "/sys", "/snap", "/nix", "/run/systemd/resolve", "/var/lib/ca-certificates"},
-		Write: []string{root, c.Cache, "/dev"},
+		Write: []string{root, c.Cache, tmp, "/dev"},
 	}
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
@@ -186,6 +277,22 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	return env, p, nil
 }
 
+// TempDir is the private temp folder for commands in root.
+func TempDir(root string) (string, error) {
+	sum := sha256.Sum256([]byte(root))
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("xhaos-%d", os.Getuid()), "sandboxes", fmt.Sprintf("%s-%x", filepath.Base(root), sum[:4]))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	// Another user could have made /tmp/xhaos-<uid> first: it must be ours.
+	if fi, err := os.Stat(filepath.Dir(filepath.Dir(dir))); err != nil {
+		return "", err
+	} else if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("sandbox: %s is not private to this user", filepath.Dir(filepath.Dir(dir)))
+	}
+	return dir, nil
+}
+
 // MaybeRun is the helper side: when this process was started by Command,
 // it restricts itself and execs bash; it never returns then. Call it first
 // in main (and in TestMain of packages that run commands).
@@ -222,7 +329,16 @@ func restrict(p policy) error {
 	if err := cfg.RestrictScoped(); err != nil {
 		return fmt.Errorf("landlock scope: %w", err)
 	}
-	return nil
+	if p.Port > 0 {
+		// BestEffort would quietly skip this on an older kernel: check.
+		if ABI() < NetABI {
+			return errors.New("landlock cannot restrict the network on this kernel")
+		}
+		if err := landlock.V6.RestrictNet(landlock.ConnectTCP(uint16(p.Port))); err != nil {
+			return fmt.Errorf("landlock network: %w", err)
+		}
+	}
+	return denySockets(p.DenyUDP)
 }
 
 func fail(err error) {

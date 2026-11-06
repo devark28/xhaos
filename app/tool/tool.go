@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -48,20 +49,23 @@ type Call struct {
 	Summary string `json:"summary"`           // path or command, for the owner
 	Preview string `json:"preview,omitempty"` // diff of a write, shown before approval
 	Commit  bool   `json:"commit,omitempty"`  // a git commit or push
+	// Secrets a bash call asks for (names; package secret gives the values).
+	Secrets []string `json:"secrets,omitempty"`
 	// Args is the raw input of a call handled outside this package (MCP).
 	Args  json.RawMessage `json:"-"`
 	input input
 }
 
 type input struct {
-	Path      string  `json:"path"`
-	Offset    int     `json:"offset"`
-	Limit     int     `json:"limit"`
-	Pattern   string  `json:"pattern"`
-	Content   *string `json:"content"`
-	OldString string  `json:"old_string"`
-	NewString string  `json:"new_string"`
-	Command   string  `json:"command"`
+	Path      string   `json:"path"`
+	Offset    int      `json:"offset"`
+	Limit     int      `json:"limit"`
+	Pattern   string   `json:"pattern"`
+	Content   *string  `json:"content"`
+	OldString string   `json:"old_string"`
+	NewString string   `json:"new_string"`
+	Command   string   `json:"command"`
+	Secrets   []string `json:"secrets"`
 }
 
 var str = map[string]any{"type": "string"}
@@ -79,8 +83,8 @@ func Specs() []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "content": str}, Required: []string{"path", "content"}}},
 		{Name: "edit_file", Description: "Replace old_string with new_string in a file inside the workspace. old_string must occur exactly once; include enough surrounding lines to make it unique. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "old_string": str, "new_string": str}, Required: []string{"path", "old_string", "new_string"}}},
-		{Name: "bash", Description: "Run a shell command with bash in the workspace root (2 minute timeout). Returns combined stdout and stderr and the exit code. The user may review it first.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"command": str}, Required: []string{"command"}}},
+		{Name: "bash", Description: "Run a shell command with bash in the workspace root (2 minute timeout). Returns combined stdout and stderr and the exit code. The user may review it first. To use secrets (see secrets_list), name them in `secrets` and refer to them as $NAME in the command: you never see their values, they are removed from the output, and such a command can reach only the secrets' hosts and cannot change the project (except .git).",
+			Schema: llm.ToolSchema{Properties: map[string]any{"command": str, "secrets": map[string]any{"type": "array", "items": str, "description": "Names of secrets to give this command as environment variables."}}, Required: []string{"command"}}},
 		{Name: "ask_user", Description: "Ask the user (the person running this workspace) one or more questions and wait for the answers. Use it when you need a decision or information only they have; offer options when the likely answers are known (they can always write their own). Your turn pauses until they answer; the answers come back as this tool's result.",
 			Schema: llm.ToolSchema{Properties: askSpec, Required: []string{"questions"}}},
 	}
@@ -121,6 +125,11 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		call.Summary = in.Command
 		call.Commit = commitRE.MatchString(in.Command)
 		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
+		for _, s := range in.Secrets {
+			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Secrets, s) {
+				call.Secrets = append(call.Secrets, s)
+			}
+		}
 		return call, nil
 	case "search":
 		if err := need("pattern", in.Pattern); err != nil {
@@ -413,6 +422,26 @@ func search(ctx context.Context, root, rel, pattern string) (string, error) {
 	return clip(out), nil
 }
 
+// ExecuteSealed runs a bash call that holds secrets, in a sealed
+// environment; scrub removes the values from what the model gets back.
+func ExecuteSealed(ctx context.Context, root string, sb sandbox.Config, call Call, sealed sandbox.Sealed, scrub func(string) string) (string, error) {
+	if call.Name != "bash" {
+		return "", fmt.Errorf("only bash takes secrets")
+	}
+	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
+	defer cancel()
+	cmd, cleanup, err := sb.CommandSealed(ctx, root, call.input.Command, sealed)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	out, err := runCommand(ctx, cmd)
+	if err != nil {
+		return scrub(out), errors.New(scrub(err.Error()))
+	}
+	return scrub(out), nil
+}
+
 func bash(ctx context.Context, root string, sb sandbox.Config, command string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
 	defer cancel()
@@ -420,6 +449,12 @@ func bash(ctx context.Context, root string, sb sandbox.Config, command string) (
 	if err != nil {
 		return "", err
 	}
+	return runCommand(ctx, cmd)
+}
+
+// runCommand runs cmd (already bound to ctx and its timeout) and reports
+// its output and exit status.
+func runCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
 	// Own process group, so stopping kills the command's children too
 	// (otherwise `sleep` in `sleep 20; make` outlives a stop).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -427,7 +462,7 @@ func bash(ctx context.Context, root string, sb sandbox.Config, command string) (
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = 5 * time.Second
-	err = cmd.Run()
+	err := cmd.Run()
 	text := clip(out.String())
 	var exit *exec.ExitError
 	switch {

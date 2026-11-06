@@ -32,6 +32,7 @@ export interface State {
   tools: Tools; // loaded when the tools panel opens
   mcpServers: McpServer[];
   usage: UsageReport | null; // token use and cost, from the backend
+  secretsVersion: number; // bumped by secret.changed, so the Secrets section reloads
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
@@ -77,6 +78,7 @@ function initial(): State {
     tools: null,
     mcpServers: [],
     usage: null,
+    secretsVersion: 0,
     projects: [],
     attachedProject: null,
     files: {},

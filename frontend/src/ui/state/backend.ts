@@ -164,6 +164,7 @@ async function startBackend(connection: Backend) {
     if (event.kind === 'agent.message' && event.data?.from !== 'owner') usageSoon();
     if (event.kind === 'agent.message' && event.data?.from === 'agent') saved.set(event.agentId, (saved.get(event.agentId) || 0) + 1);
     update(s => {
+    if (event.kind === 'secret.changed') { s.secretsVersion++; return; }
     if (applyChannelEvent(workspaceOf(s), event) || applyMemoryEvent(s, event)) return;
     const change = applyEvent(workspaceOf(s), event);
     if (change?.created) s.collapsed.add(change.agentId);

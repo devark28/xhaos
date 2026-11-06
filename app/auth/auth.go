@@ -291,6 +291,26 @@ func (v *Vault) SignIn(pass string) (string, error) {
 	return v.newSession(), nil
 }
 
+// Verify checks the passphrase again, for actions that ask for it on top of
+// a session (revealing a secret, trusting one to an agent). Wrong guesses
+// are slowed down like sign-ins (one count for every client: these calls
+// come from signed-in pages, not addresses).
+func (v *Vault) Verify(pass string) error {
+	const who = "verify"
+	if d := v.limits.Wait(who, v.now()); d > 0 {
+		return fmt.Errorf("too many wrong passphrases; try again in %ds", int(d.Seconds())+1)
+	}
+	if _, err := v.open(pass); err != nil {
+		v.limits.Fail(who, v.now())
+		if errors.Is(err, ErrNotSet) {
+			return err
+		}
+		return ErrWrong
+	}
+	v.limits.Clear(who)
+	return nil
+}
+
 // Change rewraps the data key under a new passphrase. Other sessions stay.
 func (v *Vault) Change(old, next string) error {
 	if err := checkLength(next); err != nil {

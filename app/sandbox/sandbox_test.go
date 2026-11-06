@@ -3,10 +3,13 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The test binary doubles as the helper, like the server binary does.
@@ -54,7 +57,8 @@ func TestCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("read system files", "head -c 0 /etc/hostname && ls /usr/bin | head -1 && echo fine", "fine")
 	ok("run tools from PATH", "git --version", "git version")
 	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(dir, "cache", "home"))
-	ok("temp files", "mktemp && echo made", "made")
+	ok("temp files in the project's own temp folder", "mktemp && echo $TMPDIR", filepath.Join(os.TempDir(), fmt.Sprintf("xhaos-%d", os.Getuid()), "sandboxes", "project-"))
+	denied("other temp files", "ls "+os.TempDir())
 	ok("devices", "echo x > /dev/null && echo done", "done")
 	denied("reading another folder", "cat "+filepath.Join(other, "secret.txt"))
 	denied("listing another folder", "ls "+other)
@@ -69,6 +73,57 @@ func TestCommandsSeeOnlyTheirProject(t *testing.T) {
 	pid := os.Getpid()
 	denied("reading the server's environment", fmt.Sprintf("cat /proc/%d/environ", pid))
 	denied("signalling the server", fmt.Sprintf("kill -0 %d", pid))
+}
+
+// Unix sockets are refused, so a command cannot use the SSH agent (or the
+// keyring, D-Bus, Docker) even when it knows the socket's path.
+func TestNoUnixSockets(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	if _, err := exec.LookPath("ssh-add"); err != nil {
+		t.Skip("no ssh-add")
+	}
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "agent.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	reached := make(chan bool, 4)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			reached <- true
+			c.Close()
+		}
+	}()
+	root := filepath.Join(dir, "p")
+	os.MkdirAll(root, 0o755)
+	c := Config{Mode: Auto, Cache: filepath.Join(dir, "c")}
+	// Unsandboxed, the same command reaches the socket (the test is real).
+	out, _ := run(t, Config{Mode: Off}, root, "SSH_AUTH_SOCK="+sock+" ssh-add -l")
+	select {
+	case <-reached:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("control: the unsandboxed command never reached the socket: %q", out)
+	}
+	out, err = run(t, c, root, "SSH_AUTH_SOCK="+sock+" ssh-add -l")
+	if err == nil {
+		t.Fatalf("ssh-add succeeded in the sandbox: %q", out)
+	}
+	select {
+	case <-reached:
+		t.Fatalf("the sandboxed command reached the agent socket: %q", out)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if out, err := run(t, c, root, "echo piped | cat && python3 -c 'import socket; a, b = socket.socketpair(); a.send(b\"ok\"); print(b.recv(2).decode())'"); err != nil || !strings.Contains(out, "piped") || !strings.Contains(out, "ok") {
+		t.Fatalf("pipes and socketpair = %q %v", out, err)
+	}
 }
 
 func TestModes(t *testing.T) {
@@ -95,4 +150,3 @@ func TestModes(t *testing.T) {
 		t.Errorf("auto status = %+v", s)
 	}
 }
-

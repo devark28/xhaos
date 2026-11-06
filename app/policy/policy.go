@@ -67,6 +67,10 @@ const (
 	// (another top-level agent and its subagents): it always waits for the
 	// owner, whatever the policy, so agents never start talking unseen.
 	EffectContact = "contact"
+	// EffectSecret is a command given secrets (package secret): it always
+	// asks, whatever the agent's policy, unless the owner trusted every
+	// secret it uses for this agent (then it is gated as a plain command).
+	EffectSecret = "secret"
 )
 
 // Gate decides what happens to a tool call with the given effect. commit
@@ -81,6 +85,9 @@ func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 	}
 	if effect == EffectContact {
 		return Ask, "opening a channel to agents outside its own family needs your approval"
+	}
+	if effect == EffectSecret {
+		return Ask, "commands that use secrets need your approval"
 	}
 	if p.Access != "rw" {
 		return Deny, "this agent is read-only"

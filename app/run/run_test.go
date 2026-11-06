@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,6 +35,7 @@ import (
 	"xhaos/app/provider"
 	"xhaos/app/run"
 	"xhaos/app/sandbox"
+	"xhaos/app/secret"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 	"xhaos/app/workspace"
@@ -1165,6 +1169,84 @@ func TestSandboxedCommands(t *testing.T) {
 	}
 	if cat := h.s.Tools.Catalog(); !cat.Sandbox.Active {
 		t.Fatalf("catalog sandbox = %+v", cat.Sandbox)
+	}
+}
+
+// A command given a secret: it waits for approval, gets the value as an
+// environment variable, reaches only the secret's hosts through the proxy,
+// cannot change the project or use UDP, and its output never shows the value.
+func TestSecretsInSealedCommands(t *testing.T) {
+	if sandbox.ABI() < sandbox.NetABI {
+		t.Skip("this kernel's Landlock cannot restrict the network")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl")
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "secure hello, auth=%v", r.Header.Get("Authorization") == "Bearer tok_abcdef123456")
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	root := t.TempDir()
+	cmd := `echo "value: $MY_TOKEN"; printf %s "$MY_TOKEN" | base64
+curl -sk -H "Authorization: Bearer $MY_TOKEN" https://api.allowed.test/hello; echo
+curl -sk -m 5 https://evil.test/ || echo EVIL-BLOCKED
+curl -sk -m 5 --noproxy '*' https://127.0.0.1:` + port + `/ || echo DIRECT-BLOCKED
+touch planted.txt 2>/dev/null || echo READONLY
+python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM)" 2>/dev/null || echo UDP-BLOCKED`
+	h := setupIn(t, root, func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		if len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{Calls: []llm.ToolCall{
+			tc("s", "bash", map[string]any{"command": cmd, "secrets": []string{"MY_TOKEN"}}),
+			tc("x", "bash", map[string]any{"command": "echo $OTHER", "secrets": []string{"OTHER"}}),
+		}, StopReason: "tool_use"}, nil
+	}, func(o *backend.Options) { o.Sandbox = sandbox.Auto })
+	p := h.s.Egress()
+	p.AllowPrivate = true
+	p.Resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	var d net.Dialer
+	p.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, _ := net.SplitHostPort(addr)
+		return d.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "MY_TOKEN", Value: "tok_abcdef123456", Hosts: []string{"api.allowed.test"}})
+	h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "OTHER", Value: "other-value"})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1", Policy: &auto})
+	h.s.Secrets.Grant(secret.GrantRequest{WorkspaceID: ws, Name: "MY_TOKEN", AgentID: a.ID, Mode: secret.Ask})
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "go"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	tools := h.tools(t, a.ID)
+	if st := tools["s"]; st.State != agent.ToolPending || st.Effect != policy.EffectSecret || !strings.Contains(st.Preview, "api.allowed.test") {
+		t.Fatalf("even under auto review, a secret command waits: %+v", st)
+	}
+	if st := tools["x"]; st.State != agent.ToolFailed || !strings.Contains(st.Output, "not granted") {
+		t.Fatalf("ungranted secret = %+v", st)
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "s", Allow: true})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	out := h.tools(t, a.ID)["s"].Output
+	for _, want := range []string{"value: [secret:MY_TOKEN]", "secure hello, auth=true", "EVIL-BLOCKED", "DIRECT-BLOCKED", "READONLY", "UDP-BLOCKED"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "tok_abcdef") || strings.Contains(out, "dG9rX2FiY2RlZjEyMzQ1Ng") {
+		t.Errorf("the value leaked:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "planted.txt")); err == nil {
+		t.Error("the sealed command wrote into the project")
+	}
+	for _, raw := range transcript(t, h) {
+		if strings.Contains(raw, "tok_abcdef") {
+			t.Fatalf("the value reached the log: %s", raw)
+		}
 	}
 }
 
