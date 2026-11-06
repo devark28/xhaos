@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # The server serves the built page; build it so the server tests find it.
+      - run: npm ci --no-audit --no-fund && node scripts/build.mjs
+      - run: go vet -tags server ./...
+      - run: go test ./app/...
+        env:
+          CGO_ENABLED: "0"
+      - run: go test -tags server ./cmd/xhaos
+        env:
+          CGO_ENABLED: "0"
+      - run: go test -race ./app/...
+        env:
+          CGO_ENABLED: "1"
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm test

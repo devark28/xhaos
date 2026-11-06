@@ -1,0 +1,43 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please remove API keys, secrets and private paths from anything you paste.
+        **Security problems:** do not open an issue; report them privately (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: Xhaos version
+      description: Shown in the page's "Connected to Xhaos backend" toast, or at /health. A commit hash if you build from source.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: OS and kernel (`uname -r`), how you run it (binary, container, from source), and the browser.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log
+      description: The relevant lines (run with -verbose for more).
+      render: text

@@ -1,10 +1,12 @@
-# Architecture direction
+# Design notes
+
+These are the notes Xhaos was designed from, written before the backend existed. They explain why things are the way they are (server-owned execution, the approval gate, channels as data rather than instructions, memory versus compaction). Some passages describe the browser prototype or plans that have since been built or changed; for how the code is organized today, see [architecture.md](architecture.md), and for what the product does, the [user guide](guide.md).
 
 ## Two independent parts
 
 `frontend/` is a TypeScript React web client bundled by esbuild into `frontend/dist/index.js` and `index.css` (styles via StyleX). The Go server serves it, or `scripts/dev.mjs` does for prototype work; neither is the agent backend in prototype mode. React components live in `frontend/src/ui/`, and framework-free logic modules (model, questions, backend sync, composer intent) stay in `frontend/src/` so they remain unit-testable. Live reply text repaints at most once per animation frame. Virtualize large networks based on profiling.
 
-Wails v3 with Go is the chosen framework and language for the prototype and MVP. Use Wails headless server mode to serve the frontend over HTTP and expose Go services through generated bindings, with Wails events over WebSocket. This lets the browser receive the complete UI from the backend and avoids writing a custom transport for the first version. The current browser-only UI remains unchanged while the backend is built. Check the installed Go version, Wails prerequisites, and free disk before installing or compiling; keep Go build and module caches out of the project and on `/tmp` while local disk is constrained.
+Wails v3 with Go is the chosen framework and language for the prototype and MVP. Use Wails headless server mode to serve the frontend over HTTP and expose Go services through generated bindings, with Wails events over WebSocket. This lets the browser receive the complete UI from the backend and avoids writing a custom transport for the first version. The current browser-only UI remains unchanged while the backend is built.
 
 The server owns runtime lifetime: closing or disconnecting a browser client does not stop agents or change their saved policies. Server-side automode continues eligible work unattended; manual requests remain pending and block only dependent work. Reconnection restores current sessions and missed events. Keep model credentials, MCP connections, filesystem access, process execution, and permission enforcement on the server. Wails' server build is the MVP headless host; later, a Wails desktop shell may connect to the same local server. Do not make the desktop window the owner of execution lifetime.
 
@@ -36,14 +38,6 @@ Configure the automode classifier independently of task models. A small local qu
 
 Voice should produce a proposed command, including target workspace and agent ID, before submission. Keep dictation separate from model execution; a transcription result alone must never approve an action. Browser dictation is a convenience for this prototype; choose a local or hosted transcription implementation later.
 
-## Next implementation steps
-
-1. Refine the browser interaction and density with realistic agent counts.
-2. Verify Go 1.26+, Wails v3 server prerequisites, and a `/tmp` cache plan before compiling.
-3. Create a minimal Wails headless server that serves the existing frontend and exposes a health service.
-4. Replace mock state through a frontend service adapter while persisting sessions, policy, and sequenced events in SQLite.
-5. Add one model/runner adapter and enforce the approval gate before dogfooding a small Xhaos change.
-6. Add MCP and remaining model adapters behind the same Go service boundary.
 
 ## Agents, tasks, sessions, and removal
 

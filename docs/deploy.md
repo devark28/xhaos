@@ -19,7 +19,7 @@ Either way, put it behind an HTTPS reverse proxy before it is reachable from any
 
 ## On a VPS, from a release binary
 
-Build the archives once (on any machine with Node and Go) with `scripts/release.sh`, or download them from a release. Each `xhaos-<version>-linux-<arch>.tar.gz` holds the `xhaos` binary, the README and this guide; `SHA256SUMS` lists their checksums.
+Build the archives once (on any machine with Node and Go) with `scripts/release.sh`, or download them from a release. Each `xhaos-<version>-linux-<arch>.tar.gz` holds the `xhaos` binary, the README, the licence, this guide and the user guide (`docs/`); `SHA256SUMS` lists their checksums.
 
 ```sh
 # On the server:
@@ -186,8 +186,8 @@ Everything lives in the data folder (`/var/lib/xhaos/data`, or the `/data` volum
 | `attachments/` | attached files |
 | `sandbox/` | agents' shared tool caches: safe to skip and to delete |
 
-Back up the database consistently: stop the service, or copy it with `sqlite3 xhaos.db ".backup backup.db"` while it runs, then copy `transcripts/` and `attachments/`. The encrypted values are useless without the passphrase, so a backup is safe to keep off the machine, and restoring one needs the passphrase that was current when it was made.
+Back up the database consistently: stop the service, or copy it with `sqlite3 xhaos.db ".backup backup.db"` while it runs, then copy `transcripts/` and `attachments/`. The encrypted values are useless without the workspaces' passphrases, so a backup is safe to keep off the machine, and restoring one needs each workspace's passphrase as it was when the backup was made.
 
 ## Upgrading
 
-Replace the binary (or pull and rebuild the image) and restart. The database is migrated forward on start; take a backup first. Sign in again afterwards: the server starts locked.
+Replace the binary (or pull and rebuild the image) and restart. The database is migrated forward on start; take a backup first. Sign in again afterwards: every workspace starts locked.
