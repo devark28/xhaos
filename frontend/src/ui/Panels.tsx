@@ -14,6 +14,7 @@ import { authPost } from './SignIn.tsx';
 import { UsagePanel, usageLine } from './Usage.tsx';
 import { AppearanceSettings, DeveloperSettings } from './AppearanceSettings.tsx';
 import { Secrets } from './Secrets.tsx';
+import { Skills } from './Skills.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import type { Channel as ChannelView } from '../types.ts';
@@ -370,7 +371,7 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'usage' | 'tools' | 'secrets' | 'appearance' | 'security' | 'developer';
+type SectionId = 'models' | 'usage' | 'tools' | 'skills' | 'secrets' | 'appearance' | 'security' | 'developer';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
@@ -416,6 +417,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         </Section>
         <Section id="tools" title="Tools and MCP" summary={`${catalogCount ? `${catalogCount} tools` : 'tools'}${servers ? ` · ${servers} MCP server${servers > 1 ? 's' : ''}` : ''}`} open={open.has('tools')} onToggle={() => toggle('tools')}>
           <Tools />
+        </Section>
+        <Section id="skills" title="Skills" summary=".skill files and project skills" open={open.has('skills')} onToggle={() => toggle('skills')}>
+          <Skills />
         </Section>
         <Section id="secrets" title="Secrets" summary="tokens for agents' commands" open={open.has('secrets')} onToggle={() => toggle('secrets')}>
           <Secrets />

@@ -32,6 +32,7 @@ import (
 	"xhaos/app/provider"
 	"xhaos/app/sandbox"
 	"xhaos/app/secret"
+	"xhaos/app/skill"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 )
@@ -71,6 +72,9 @@ type Runner struct {
 	OnFinal func(a agent.Agent, answer string)
 	// Sandbox confines agents' shell commands (package sandbox).
 	Sandbox sandbox.Config
+	// Skills lists skills in the system prompt and gives bash calls their
+	// folders (package skill).
+	Skills *skill.Service
 	// Secrets and Egress give bash calls secrets, in a sealed environment
 	// whose network goes through the proxy (package secret, egress).
 	Secrets *secret.Sealer
@@ -148,6 +152,27 @@ func (r *Runner) prepare(root, ws string, a agent.Agent, c llm.ToolCall) (tool.C
 	return call, nil
 }
 
+// skillDirs gives a bash call the folders of the skills it names, read-only,
+// as $SKILL_<NAME>.
+func (r *Runner) skillDirs(ws string, a agent.Agent, call tool.Call) (sandbox.Extra, error) {
+	if len(call.Skills) == 0 {
+		return sandbox.Extra{}, nil
+	}
+	if r.Skills == nil {
+		return sandbox.Extra{}, errors.New("skills are not available on this server")
+	}
+	dirs, err := r.Skills.Dirs(ws, a.ProjectID, call.Skills)
+	if err != nil {
+		return sandbox.Extra{}, err
+	}
+	var x sandbox.Extra
+	for name, dir := range dirs {
+		x.Read = append(x.Read, dir)
+		x.Env = append(x.Env, "SKILL_"+skill.EnvName(name)+"="+dir)
+	}
+	return x, nil
+}
+
 // lockBreak says why a call breaks a dangerously allowed agent's git lock.
 func lockBreak(a agent.Agent, call tool.Call) string {
 	if call.Name != "bash" || a.Danger == nil {
@@ -179,7 +204,11 @@ func (r *Runner) sealed(ctx context.Context, root, ws string, a agent.Agent, cal
 		env = append(env, name+"="+v)
 	}
 	sort.Strings(keys)
-	sealed := sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port()}
+	extra, err := r.skillDirs(ws, a, call)
+	if err != nil {
+		return "", err
+	}
+	sealed := sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port(), Extra: extra}
 	if len(keys) > 0 {
 		sealed.Setup = func(scratch string) ([]string, error) {
 			return sshSetup(scratch, keys, values, use, r.Secrets.KnownHosts(ws, keys[0]))
@@ -266,7 +295,11 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 	if len(call.Secrets) > 0 {
 		return r.sealed(ctx, root, ws, a, call)
 	}
-	return tool.ExecuteIn(ctx, root, r.Sandbox, call)
+	extra, err := r.skillDirs(ws, a, call)
+	if err != nil {
+		return "", err
+	}
+	return tool.ExecuteWith(ctx, root, r.Sandbox, extra, call)
 }
 
 // Catalog lists the runner's own tools beyond tool.Specs (read_attachment),
@@ -470,6 +503,11 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		system := SystemPrompt(a, root)
 		if r.Memories != nil {
 			system += "\n\n" + r.Memories(ws)
+		}
+		if r.Skills != nil {
+			if index := r.Skills.Index(ws, a.ProjectID); index != "" {
+				system += "\n\n" + index
+			}
 		}
 		turn := llm.Turn{Model: a.Model, System: system, Tools: r.specs(ws)}
 		prefix := Prefix(turn)

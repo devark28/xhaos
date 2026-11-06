@@ -101,19 +101,37 @@ type policy struct {
 
 // Command builds the command that runs `bash -c command` in root, inside
 // the sandbox when it is active. The error says why a command cannot run.
-func (c Config) Command(ctx context.Context, root, command string) (*exec.Cmd, error) {
-	if c.Mode == Off || c.Mode == "" {
+// Extra is more for one command: folders it may read (skills' files) and
+// environment variables.
+type Extra struct {
+	Read []string
+	Env  []string
+}
+
+func (x Extra) apply(env []string, p *policy) []string {
+	p.Read = append(p.Read, x.Read...)
+	return append(env, x.Env...)
+}
+
+func (c Config) Command(ctx context.Context, root, command string, extra ...Extra) (*exec.Cmd, error) {
+	plain := func() (*exec.Cmd, error) {
 		cmd := exec.CommandContext(ctx, "bash", "-c", command)
 		cmd.Dir = root
+		for _, x := range extra {
+			if len(x.Env) > 0 {
+				cmd.Env = append(os.Environ(), x.Env...)
+			}
+		}
 		return cmd, nil
+	}
+	if c.Mode == Off || c.Mode == "" {
+		return plain()
 	}
 	if ABI() == 0 {
 		if c.Mode == On {
 			return nil, errors.New("commands must run sandboxed, and this kernel has no Landlock")
 		}
-		cmd := exec.CommandContext(ctx, "bash", "-c", command)
-		cmd.Dir = root
-		return cmd, nil
+		return plain()
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -122,6 +140,9 @@ func (c Config) Command(ctx context.Context, root, command string) (*exec.Cmd, e
 	env, p, err := c.prepare(root)
 	if err != nil {
 		return nil, err
+	}
+	for _, x := range extra {
+		env = x.apply(env, &p)
 	}
 	raw, _ := json.Marshal(p)
 	cmd := exec.CommandContext(ctx, self, helperArg, string(raw), command)
@@ -140,6 +161,8 @@ type Sealed struct {
 	// Done, when set, runs after the command, before the scratch folder is
 	// deleted (to keep SSH host keys it accepted).
 	Done func(scratch string)
+	// Extra adds read-only folders and variables (skills).
+	Extra Extra
 }
 
 // NetABI is the first Landlock ABI that restricts TCP connections.
@@ -225,6 +248,7 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	}
 	// The command may start the server's binary as ssh's ProxyCommand.
 	p.Files = append(p.Files, self)
+	out = s.Extra.apply(out, &p)
 	raw, _ := json.Marshal(p)
 	cmd := exec.CommandContext(ctx, self, helperArg, string(raw), command)
 	cmd.Dir = root

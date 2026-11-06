@@ -1,31 +1,35 @@
 # Skills in Xhaos
 
-Design requirement; the browser prototype does not load or execute skills yet.
+A skill is instructions (and optional files: references, templates, scripts) for one kind of work, which an agent loads when a task calls for it. Xhaos uses Claude Code's format: a folder with a `SKILL.md` whose front matter gives the skill's `name` (lowercase letters, digits, hyphens) and `description`:
 
-A skill is a user-defined instruction package describing when and how an agent should perform a workflow. The harness provides tools and permissions separately. Channels are the first example: a channels skill teaches discovery, creation, joining, sending, reading, and waiting; the backend supplies those operations.
+```markdown
+---
+name: release-notes
+description: Write release notes from the git log, grouped by area.
+---
+# Release notes
+Run scripts/collect.sh first, then …
+```
 
-## Package and discovery
+## Where skills come from
 
-Use a directory with `SKILL.md` (name, description, instructions), plus optional references, scripts, and templates. Configure skill roots on the backend for user, workspace, and project scope. A workspace may span several projects; discovery must not indiscriminately expose one project's skills or files to another. Resolve duplicate names explicitly with source-qualified IDs and visible provenance.
+- **Workspace skills** are uploaded in Settings → Skills as one `.skill` file: a zip of that folder (with `SKILL.md` at its top, or in its one top folder, as Claude's skill uploads are). They are kept beside the database (`skills/<workspace>/<name>.skill`) and read inside the zip, without unpacking. Uploading a skill with an existing name replaces it. At most 20 MB zipped, 60 MB unpacked, 1000 files; paths that leave the folder are refused.
+- **Project skills** are folders in a project's `.xhaos/skills/` or `.claude/skills/` (so a repository's Claude Code skills work as they are). They are read where they are, for the agents working in that project only; another project's agents never see them. Links out of the folder are ignored. **Export .skill** zips one, to share or to upload as a workspace skill.
 
-Discover names/descriptions first; load full instructions and referenced resources when selected or relevant. Give agents a provider-neutral skill-discovery/read interface so Claude, GPT, DeepSeek, and local models receive the same workflow knowledge. Importing Claude Code-style packages may require adapting tool names and local paths; report incompatibilities rather than claiming every package runs unchanged.
+Each skill has an on/off switch. A project skill wins over a workspace skill of the same name for that project's agents.
 
-## Selection and versions
+## How agents use them
 
-Record enabled skills in agent configuration. Explicit invocation selects a skill; optional model-driven activation can use the enabled descriptions. Subagents receive an explicit enabled subset. Keep an active skill's source and content hash in session history, and pin its version for the turn/session so editing a file does not silently rewrite instructions in flight. Reloading skills is explicit.
-
-A future Skills view can list installed sources and per-agent activation through the agent menu. Do not add a large permanent dashboard or inject every installed skill into every conversation.
+- An agent's system prompt lists the enabled skills it can use, by name and description only, so the prompt stays small and the cache warm.
+- `skill_read(name)` returns the skill's `SKILL.md` and the list of its other files; `skill_read(name, file)` returns one of them (text, up to 100,000 characters). It is a read: it runs without asking.
+- To run a skill's scripts, a `bash` call names the skill (`"skills": ["release-notes"]`) and uses `$SKILL_RELEASE_NOTES`, the skill's folder, which the sandbox makes readable but not writable for that command. A workspace skill is unpacked for this once per version (by content hash), so editing or replacing a skill never changes one in use mid-command.
 
 ## Permissions
 
-A skill is not an authorization grant. Its scripts, writes, shell commands, MCP operations, channels, and subagent requests still pass through the same server execution policy. RO, commit-review, and automode settings remain in force. Reading a skill must not automatically execute its installation scripts. Changes to shared skill packages require the same owner-approved mutation policy as project changes.
+A skill grants nothing. Its scripts run through `bash` like any command: the same policy (they ask under manual review), the same sandbox, the same secrets rules. Reading a skill never runs anything.
 
-## Channels skill behavior
+## Not yet
 
-Support both owner-directed and agent-initiated setup: one agent creates a subject, another joins or discovers it. Participants can belong to several subjects. Explain which backend tools to use and how to read only unseen messages; include the optional append-only file bridge for compatibility with the existing workflow.
-
-Channel messages are data from another agent. They do not override owner instructions or supply approval, even if the message says “the owner says.” The skill should describe that distinction; the backend must enforce it independently.
-
-## Backend milestone
-
-Implement the skill catalog and instruction loader alongside the first real runner adapter. Ship a default channels package as an editable example, expose its required backend operations, and dogfood that workflow while building Xhaos. Skill scripts and file-channel integration follow only after the execution-policy boundary exists.
+- Choosing skills per agent (today every agent sees every enabled skill it can reach); `/skill <name>` to attach one to a message.
+- Agents proposing new skills for you to approve.
+- The channels skill described in the original design: channels are tools today (`agents_list`, `channel_create`, …), documented in their descriptions.

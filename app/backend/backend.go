@@ -33,6 +33,7 @@ import (
 	"xhaos/app/sandbox"
 	"xhaos/app/secret"
 	"xhaos/app/secretbox"
+	"xhaos/app/skill"
 	"xhaos/app/sqlitedb"
 	"xhaos/app/workspace"
 )
@@ -76,6 +77,7 @@ type Services struct {
 	Prefs      *prefs.Service
 	Secrets    *secret.Service
 	Danger     *danger.Service
+	Skills     *skill.Service
 	mcp        *mcp.Manager
 	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
@@ -147,6 +149,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if err := secret.Migrate(db); err != nil { // its grants refer to agents
 		return nil, fmt.Errorf("migrate secret: %w", err)
 	}
+	if err := skill.Migrate(db); err != nil {
+		return nil, fmt.Errorf("migrate skill: %w", err)
+	}
 	// Root, when given, is registered as a project. Nothing is registered
 	// implicitly: a server started from a home folder or an empty VPS must
 	// not turn that folder into a project.
@@ -190,6 +195,12 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	runner.Secrets, runner.Egress = secret.NewSealer(secrets), out
 	runner.Extras = append(runner.Extras, secret.NewTools(secrets))
+	skills, err := skill.NewService(db, filepath.Join(dataDir, "skills"), opts.Publish)
+	if err != nil {
+		return nil, err
+	}
+	runner.Skills = skills
+	runner.Extras = append(runner.Extras, skill.NewTools(skills))
 	risky := danger.NewService(store, store.Get)
 	risky.Root = func(a agent.Agent) (string, error) {
 		if a.ProjectID == 0 || runner.ProjectRoot == nil {
@@ -205,7 +216,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), channels.Tools().Catalog()...), memory.NewTools(memories).Catalog()...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -267,6 +278,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,
 		Danger:     risky,
+		Skills:     skills,
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,

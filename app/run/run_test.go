@@ -1,6 +1,8 @@
 package run_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +40,7 @@ import (
 	"xhaos/app/run"
 	"xhaos/app/sandbox"
 	"xhaos/app/secret"
+	"xhaos/app/skill"
 	"xhaos/app/tool"
 	"xhaos/app/usage"
 	"xhaos/app/workspace"
@@ -1330,6 +1333,57 @@ func TestSSHKeySecret(t *testing.T) {
 	}
 	if known := secret.NewSealer(h.s.Secrets).KnownHosts(ws, "BOX_KEY"); !strings.Contains(known, "ssh-ed25519") {
 		t.Fatalf("host key not remembered: %q", known)
+	}
+}
+
+// Skills: an enabled skill is listed in the prompt, skill_read loads it, and
+// a sandboxed bash call that names it runs its script from a read-only copy.
+func TestSkills(t *testing.T) {
+	h := setupIn(t, t.TempDir(), func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		if len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{Calls: []llm.ToolCall{
+			tc("r", "skill_read", map[string]any{"name": "release-notes"}),
+			tc("b", "bash", map[string]any{"command": "$SKILL_RELEASE_NOTES/scripts/collect.sh; touch $SKILL_RELEASE_NOTES/x 2>/dev/null || echo READONLY", "skills": []string{"release-notes"}}),
+			tc("n", "skill_read", map[string]any{"name": "nope"}),
+		}, StopReason: "tool_use"}, nil
+	}, func(o *backend.Options) { o.Sandbox = sandbox.Auto })
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range map[string]string{
+		"release-notes/SKILL.md":           "---\nname: release-notes\ndescription: Write release notes from the git log.\n---\nRun the collect script first.",
+		"release-notes/scripts/collect.sh": "#!/bin/sh\necho collected\n",
+	} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	if _, err := h.s.Skills.Upload(skill.UploadRequest{WorkspaceID: ws, Data: buf.Bytes()}); err != nil {
+		t.Fatal(err)
+	}
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "notes", Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "b", Allow: true})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	h.fake.mu.Lock()
+	system := h.fake.turns[0].System
+	h.fake.mu.Unlock()
+	if !strings.Contains(system, "- release-notes: Write release notes from the git log.") {
+		t.Fatalf("system prompt:\n%s", system)
+	}
+	st := h.tools(t, a.ID)
+	if !strings.Contains(st["r"].Output, "Run the collect script first.") || !strings.Contains(st["r"].Output, "scripts/collect.sh") {
+		t.Errorf("skill_read = %+v", st["r"])
+	}
+	if out := st["b"].Output; !strings.Contains(out, "collected") || (sandbox.ABI() > 0 && !strings.Contains(out, "READONLY")) {
+		t.Errorf("bash with the skill = %+v", st["b"])
+	}
+	if st["n"].State != agent.ToolFailed {
+		t.Errorf("unknown skill = %+v", st["n"])
 	}
 }
 

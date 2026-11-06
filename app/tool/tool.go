@@ -51,6 +51,8 @@ type Call struct {
 	Commit  bool   `json:"commit,omitempty"`  // a git commit or push
 	// Secrets a bash call asks for (names; package secret gives the values).
 	Secrets []string `json:"secrets,omitempty"`
+	// Skills a bash call asks for: their folders, read-only ($SKILL_<NAME>).
+	Skills []string `json:"skills,omitempty"`
 	// Args is the raw input of a call handled outside this package (MCP).
 	Args  json.RawMessage `json:"-"`
 	input input
@@ -66,6 +68,7 @@ type input struct {
 	NewString string   `json:"new_string"`
 	Command   string   `json:"command"`
 	Secrets   []string `json:"secrets"`
+	Skills    []string `json:"skills"`
 }
 
 var str = map[string]any{"type": "string"}
@@ -84,7 +87,8 @@ func Specs() []llm.Tool {
 		{Name: "edit_file", Description: "Replace old_string with new_string in a file inside the workspace. old_string must occur exactly once; include enough surrounding lines to make it unique. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"path": str, "old_string": str, "new_string": str}, Required: []string{"path", "old_string", "new_string"}}},
 		{Name: "bash", Description: "Run a shell command with bash in the workspace root (2 minute timeout). Returns combined stdout and stderr and the exit code. The user may review it first. To use secrets (see secrets_list), name them in `secrets` and refer to them as $NAME in the command: you never see their values, they are removed from the output, and such a command can reach only the secrets' hosts and cannot change the project (except .git).",
-			Schema: llm.ToolSchema{Properties: map[string]any{"command": str, "secrets": map[string]any{"type": "array", "items": str, "description": "Names of secrets to give this command as environment variables."}}, Required: []string{"command"}}},
+			Schema: llm.ToolSchema{Properties: map[string]any{"command": str, "secrets": map[string]any{"type": "array", "items": str, "description": "Names of secrets to give this command as environment variables."},
+				"skills": map[string]any{"type": "array", "items": str, "description": "Names of skills whose files this command uses (their scripts): each folder is $SKILL_<NAME>, read-only."}}, Required: []string{"command"}}},
 		{Name: "ask_user", Description: "Ask the user (the person running this workspace) one or more questions and wait for the answers. Use it when you need a decision or information only they have; offer options when the likely answers are known (they can always write their own). Your turn pauses until they answer; the answers come back as this tool's result.",
 			Schema: llm.ToolSchema{Properties: askSpec, Required: []string{"questions"}}},
 	}
@@ -128,6 +132,11 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		for _, s := range in.Secrets {
 			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Secrets, s) {
 				call.Secrets = append(call.Secrets, s)
+			}
+		}
+		for _, s := range in.Skills {
+			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Skills, s) {
+				call.Skills = append(call.Skills, s)
 			}
 		}
 		return call, nil
@@ -191,6 +200,11 @@ func Execute(ctx context.Context, root string, call Call) (string, error) {
 
 // ExecuteIn runs a call; bash commands run under sb (package sandbox).
 func ExecuteIn(ctx context.Context, root string, sb sandbox.Config, call Call) (string, error) {
+	return ExecuteWith(ctx, root, sb, sandbox.Extra{}, call)
+}
+
+// ExecuteWith runs a call; a bash command gets extra (skills' folders).
+func ExecuteWith(ctx context.Context, root string, sb sandbox.Config, extra sandbox.Extra, call Call) (string, error) {
 	in := call.input
 	switch call.Name {
 	case "list_dir":
@@ -234,7 +248,7 @@ func ExecuteIn(ctx context.Context, root string, sb sandbox.Config, call Call) (
 		}
 		return "Edited " + in.Path + ".", nil
 	case "bash":
-		return bash(ctx, root, sb, in.Command)
+		return bash(ctx, root, sb, extra, in.Command)
 	}
 	return "", fmt.Errorf("unknown tool %q", call.Name)
 }
@@ -442,10 +456,10 @@ func ExecuteSealed(ctx context.Context, root string, sb sandbox.Config, call Cal
 	return scrub(out), nil
 }
 
-func bash(ctx context.Context, root string, sb sandbox.Config, command string) (string, error) {
+func bash(ctx context.Context, root string, sb sandbox.Config, extra sandbox.Extra, command string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, bashTimeout)
 	defer cancel()
-	cmd, err := sb.Command(ctx, root, command)
+	cmd, err := sb.Command(ctx, root, command, extra)
 	if err != nil {
 		return "", err
 	}
