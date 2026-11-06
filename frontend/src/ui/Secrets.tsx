@@ -11,7 +11,7 @@ import { call } from './state/backend.ts';
 import { useApp, workspaceOf, toast, errorText, get } from './state/store.ts';
 
 interface Grant { agentId: number; mode: 'ask' | 'trusted' }
-interface SecretView { name: string; description: string; hosts: string[]; grants: Grant[]; updatedAt: string }
+interface SecretView { name: string; kind: 'token' | 'ssh'; description: string; hosts: string[]; grants: Grant[]; updatedAt: string }
 
 const hostsOf = (text: string) => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
 
@@ -65,6 +65,7 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
     <section data-secret={v.name} {...stylex.props(s.row)}>
       <div {...stylex.props(s.head)}>
         <code {...stylex.props(s.name)}>{v.name}</code>
+        {v.kind === 'ssh' && <span data-secret-kind="ssh" {...stylex.props(s.kind)}>SSH key</span>}
         <span {...stylex.props(s.desc)}>{v.description}</span>
         <Button data-secret-reveal={v.name} onClick={() => { setRevealing(!revealing); setValue(null); }}>{revealing ? 'Hide' : 'Reveal'}</Button>
         <Button data-secret-edit={v.name} onClick={onEdit}>Edit</Button>
@@ -77,7 +78,7 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
             <Button data-secret-show onClick={reveal}>Show</Button>
           </div>
         : <div {...stylex.props(s.inline)}>
-            <code data-secret-value {...stylex.props(s.value)}>{value}</code>
+            <code data-secret-value {...stylex.props(s.value, v.kind === 'ssh' && s.valueBlock)}>{value}</code>
             <Button onClick={() => { if (!navigator.clipboard) { toast('Copying needs HTTPS here; select the value instead.'); return; } void navigator.clipboard.writeText(value).then(() => toast('Copied.')); }}>Copy</Button>
           </div>)}
       <div {...stylex.props(s.grants)}>
@@ -110,23 +111,32 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
 
 function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): void }) {
   const [name, setName] = useState(existing?.name || ''), [value, setValue] = useState('');
+  const [kind, setKind] = useState<'token' | 'ssh'>(existing?.kind || 'token');
   const [description, setDescription] = useState(existing?.description || ''), [hosts, setHosts] = useState(existing?.hosts.join(', ') || '');
   const save = async () => {
     try {
-      await call('secret', 'Save', { workspaceId: get().active, name: name.trim(), value, description, hosts: hostsOf(hosts) });
+      await call('secret', 'Save', { workspaceId: get().active, name: name.trim(), kind, value, description, hosts: hostsOf(hosts) });
       toast(`Saved ${name.trim()}.`); onDone();
     } catch (error) { toast(errorText(error)); }
   };
   return (
     <section data-secret-form {...stylex.props(s.row, s.form)}>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Kind<Info text="Token: an API token or password, given to the command as $NAME. SSH key: a private key; the command's ssh (and git over ssh) use it for its hosts, and $NAME is the key file's path." /></span>
+        <select value={kind} disabled={Boolean(existing)} onChange={e => setKind(e.target.value as 'token' | 'ssh')} data-secret-kind-input {...stylex.props(s.input)}>
+          <option value="token">Token</option><option value="ssh">SSH key</option>
+        </select></label>
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Name<Info text="Used as an environment variable: capitals, digits and _ (like GITHUB_TOKEN)." /></span>
         <input value={name} disabled={Boolean(existing)} onChange={e => setName(e.target.value.toUpperCase())} placeholder="GITHUB_TOKEN" data-secret-name {...stylex.props(s.input, s.mono)} /></label>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Value{existing && <Info text="Leave empty to keep the saved value." />}</span>
-        <input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : ''} data-secret-value-input {...stylex.props(s.input, s.mono)} /></label>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>{kind === 'ssh' ? 'Private key' : 'Value'}<Info text={kind === 'ssh' ? 'The whole private key, -----BEGIN … to -----END … PRIVATE KEY-----, without a passphrase (ideally a key made just for this). Leave empty when editing to keep it.' : 'Leave empty when editing to keep the saved value.'} /></span>
+        {kind === 'ssh'
+          ? <textarea autoComplete="off" spellCheck={false} rows={4} value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'} data-secret-value-input {...stylex.props(s.input, s.mono, s.keyBox)} />
+          : <input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : ''} data-secret-value-input {...stylex.props(s.input, s.mono)} />}</label>
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>What it's for</span>
         <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Push to my GitHub repos" data-secret-desc {...stylex.props(s.input)} /></label>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Hosts<Info text="The only hosts a command using it can reach, over HTTPS (comma or space separated; *.example.com covers its subdomains). Empty: no network." /></span>
-        <input value={hosts} onChange={e => setHosts(e.target.value)} placeholder="github.com, api.github.com" data-secret-hosts {...stylex.props(s.input, s.mono)} /></label>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Hosts<Info text={kind === 'ssh'
+          ? 'Where this key may connect: [user@]host[:port], comma or space separated (port 22 by default), e.g. deploy@192.168.1.47, git@github.com. A LAN address works when you name it exactly.'
+          : 'The only hosts a command using it can reach, over HTTPS (comma or space separated; *.example.com covers its subdomains; an IP address like 192.168.1.47 works). Empty: no network.'} /></span>
+        <input value={hosts} onChange={e => setHosts(e.target.value)} placeholder={kind === 'ssh' ? 'deploy@192.168.1.47, git@github.com' : 'github.com, api.github.com'} data-secret-hosts {...stylex.props(s.input, s.mono)} /></label>
       <div {...stylex.props(s.actions)}>
         <Button onClick={onDone}>Cancel</Button>
         <Button data-secret-save onClick={save}>Save</Button>
@@ -148,6 +158,9 @@ const s = stylex.create({
   inline: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
   input: { minWidth: 0, flexGrow: 1, backgroundColor: colors.card, color: colors.text, borderWidth: 0, borderRadius: 3, paddingBlock: 5, paddingInline: 7, fontSize: 11, fontFamily: 'inherit' },
   mono: { fontFamily: fonts.mono },
+  keyBox: { resize: 'vertical', minHeight: 70, fontSize: 10, lineHeight: 1.4 },
+  kind: { flexShrink: 0, fontSize: 9, paddingInline: 5, paddingBlock: 1, borderRadius: 3, color: colors.textSoft, backgroundColor: colors.card },
+  valueBlock: { whiteSpace: 'pre', overflow: 'auto', maxHeight: 160, fontSize: 10 },
   value: { fontFamily: fonts.mono, fontSize: 11, color: colors.textStrong, backgroundColor: colors.card, paddingBlock: 4, paddingInline: 6, borderRadius: 3, overflowWrap: 'anywhere', userSelect: 'all', flexGrow: 1 },
   grants: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
   label: { color: colors.textFaint, fontSize: 10 },

@@ -14,6 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -159,17 +164,99 @@ func (r *Runner) sealed(ctx context.Context, root, ws string, a agent.Agent, cal
 	if err != nil {
 		return "", err
 	}
-	proxyURL, release := r.Egress.Lease(use.Hosts)
+	proxyURL, release := r.Egress.Lease(use.Rules)
 	defer release()
-	env := []string{"GIT_TERMINAL_PROMPT=0", "NO_PROXY=", "no_proxy="}
+	env := []string{"GIT_TERMINAL_PROMPT=0", "NO_PROXY=", "no_proxy=", "XHAOS_PROXY=" + proxyURL}
 	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
 		env = append(env, k+"="+proxyURL)
 	}
+	var keys []string
 	for name, v := range values {
+		if use.Kinds[name] == secret.KindSSH {
+			keys = append(keys, name)
+			continue
+		}
 		env = append(env, name+"="+v)
 	}
+	sort.Strings(keys)
+	sealed := sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port()}
+	if len(keys) > 0 {
+		sealed.Setup = func(scratch string) ([]string, error) {
+			return sshSetup(scratch, keys, values, use, r.Secrets.KnownHosts(ws, keys[0]))
+		}
+		sealed.Done = func(scratch string) {
+			if b, err := os.ReadFile(filepath.Join(scratch, "home", ".ssh", "known_hosts")); err == nil {
+				for _, k := range keys {
+					r.Secrets.RememberHosts(ws, k, string(b))
+				}
+			}
+		}
+	}
 	scrub := func(s string) string { return secret.Scrub(strings.ReplaceAll(s, proxyURL, "[proxy]"), values) }
-	return tool.ExecuteSealed(ctx, root, r.Sandbox, call, sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port()}, scrub)
+	return tool.ExecuteSealed(ctx, root, r.Sandbox, call, sealed, scrub)
+}
+
+// sshSetup gives a sealed command its SSH keys: each key in a file ($NAME is
+// its path), an ssh config that uses it for its hosts and reaches them only
+// through the proxy (the server's binary as ProxyCommand), the host keys
+// accepted before, and ssh/scp/sftp wrappers on PATH that use that config
+// (ssh reads ~/.ssh from the real home otherwise, which the sandbox hides).
+// git uses it through GIT_SSH_COMMAND.
+func sshSetup(scratch string, keys []string, values map[string]string, use secret.Use, known string) ([]string, error) {
+	dir := filepath.Join(scratch, "home", ".ssh")
+	bin := filepath.Join(scratch, "bin")
+	for _, d := range []string{dir, bin} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	config := filepath.Join(dir, "config")
+	var cfg strings.Builder
+	var env []string
+	for _, name := range keys {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(values[name]), 0o600); err != nil {
+			return nil, err
+		}
+		env = append(env, name+"="+path)
+		for _, h := range use.Hosts[name] {
+			user, host, port := "", h, "22"
+			if u, rest, ok := strings.Cut(h, "@"); ok {
+				user, host = u, rest
+			}
+			if hh, pp, err := net.SplitHostPort(host); err == nil {
+				host, port = hh, pp
+			}
+			fmt.Fprintf(&cfg, "Host %s\n  HostName %s\n  Port %s\n  IdentityFile %s\n  IdentitiesOnly yes\n", host, host, port, path)
+			if user != "" {
+				fmt.Fprintf(&cfg, "  User %s\n", user)
+			}
+		}
+	}
+	fmt.Fprintf(&cfg, "Host *\n  ProxyCommand %s\n  UserKnownHostsFile %s\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking accept-new\n  BatchMode yes\n  ForwardAgent no\n",
+		egress.ConnectCommand(self), filepath.Join(dir, "known_hosts"))
+	if err := os.WriteFile(config, []byte(cfg.String()), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "known_hosts"), []byte(known), 0o600); err != nil {
+		return nil, err
+	}
+	for _, prog := range []string{"ssh", "scp", "sftp"} {
+		real, err := exec.LookPath(prog)
+		if err != nil {
+			continue
+		}
+		script := fmt.Sprintf("#!/bin/sh\nexec %q -F %q \"$@\"\n", real, config)
+		if err := os.WriteFile(filepath.Join(bin, prog), []byte(script), 0o700); err != nil {
+			return nil, err
+		}
+	}
+	env = append(env, "PATH="+bin+":"+os.Getenv("PATH"), fmt.Sprintf("GIT_SSH_COMMAND=%s -F %q", filepath.Join(bin, "ssh"), config))
+	return env, nil
 }
 
 func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {

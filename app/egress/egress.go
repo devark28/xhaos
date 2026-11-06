@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,9 +31,20 @@ import (
 	"time"
 )
 
+// Rule lets a lease reach a host on some ports. Pattern is an exact name or
+// IP address, or "*.example.com" for its subdomains. An exact pattern may
+// resolve to a private (LAN) address: the owner named that host; a wildcard
+// never may. Loopback is never reachable (that would be the server itself).
+type Rule struct {
+	Pattern string
+	Ports   []int
+}
+
+// Web is the usual rule for a token: HTTPS, and HTTP.
+func Web(pattern string) Rule { return Rule{Pattern: pattern, Ports: []int{443, 80}} }
+
 type lease struct {
-	hosts []string // exact names, or "*.example.com" for its subdomains
-	ports []int
+	rules []Rule
 	conns map[net.Conn]bool // open tunnels, closed on release
 }
 
@@ -67,20 +79,20 @@ func (p *Proxy) Port() int { return p.ln.Addr().(*net.TCPAddr).Port }
 
 func (p *Proxy) Close() error { return p.ln.Close() }
 
-// Lease allows hosts (on ports 443 and 80) until release is called, and
-// returns the proxy URL to give the command.
-func (p *Proxy) Lease(hosts []string) (proxyURL string, release func()) {
+// Lease allows rules until release is called, and returns the proxy URL to
+// give the command.
+func (p *Proxy) Lease(rules []Rule) (proxyURL string, release func()) {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	token := hex.EncodeToString(b)
-	clean := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
-			clean = append(clean, h)
+	clean := make([]Rule, 0, len(rules))
+	for _, r := range rules {
+		if r.Pattern = strings.ToLower(strings.TrimSpace(r.Pattern)); r.Pattern != "" {
+			clean = append(clean, r)
 		}
 	}
 	p.mu.Lock()
-	p.leases[token] = lease{hosts: clean, ports: []int{443, 80}, conns: map[net.Conn]bool{}}
+	p.leases[token] = lease{rules: clean, conns: map[net.Conn]bool{}}
 	p.mu.Unlock()
 	return fmt.Sprintf("http://%s:x@127.0.0.1:%d", token, p.Port()), func() {
 		// Also end its open connections: a client reuses them, and a
@@ -141,6 +153,33 @@ func (p *Proxy) leaseOf(r *http.Request) (string, lease, bool) {
 	return token, l, ok
 }
 
+// match finds the rule letting host:port through.
+func match(rules []Rule, host string, port int) (Rule, string) {
+	var names []string
+	for _, r := range rules {
+		if Allowed([]string{r.Pattern}, host) {
+			for _, p := range r.Ports {
+				if p == port {
+					return r, ""
+				}
+			}
+			return Rule{}, fmt.Sprintf("port %d is not allowed for %s (only %v)", port, host, r.Ports)
+		}
+		names = append(names, r.Pattern)
+	}
+	if len(names) == 0 {
+		return Rule{}, "this command's secrets allow no network"
+	}
+	return Rule{}, fmt.Sprintf("%s is not among this command's allowed hosts (%s)", host, strings.Join(names, ", "))
+}
+
+// lan reports whether an address is a private network's (reachable only
+// for a host the owner named exactly).
+func lan(a netip.Addr) bool {
+	a = a.Unmap()
+	return a.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(a)
+}
+
 // public reports whether an address is on the open internet.
 func public(a netip.Addr) bool {
 	a = a.Unmap()
@@ -155,16 +194,11 @@ func (p *Proxy) dial(ctx context.Context, l lease, hostport string) (net.Conn, e
 		return nil, err
 	}
 	port, _ := strconv.Atoi(portText)
-	okPort := false
-	for _, allowed := range l.ports {
-		okPort = okPort || allowed == port
+	rule, why := match(l.rules, host, port)
+	if why != "" {
+		return nil, errors.New(why)
 	}
-	if !okPort {
-		return nil, fmt.Errorf("port %d is not allowed (only 443 and 80)", port)
-	}
-	if !Allowed(l.hosts, host) {
-		return nil, fmt.Errorf("%s is not among this secret's allowed hosts (%s)", host, strings.Join(l.hosts, ", "))
-	}
+	exact := !strings.HasPrefix(rule.Pattern, "*.")
 	var addrs []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
 		addrs = []netip.Addr{ip}
@@ -172,9 +206,13 @@ func (p *Proxy) dial(ctx context.Context, l lease, hostport string) (net.Conn, e
 		return nil, err
 	}
 	for _, a := range addrs {
-		if !p.AllowPrivate && !public(a) {
-			return nil, fmt.Errorf("%s resolves to %s, which is not a public address", host, a)
+		if p.AllowPrivate || public(a) || (exact && lan(a)) {
+			continue
 		}
+		if lan(a) {
+			return nil, fmt.Errorf("%s resolves to %s, a private address; name the host exactly (not *.) to allow it", host, a)
+		}
+		return nil, fmt.Errorf("%s resolves to %s, which is not reachable through the proxy", host, a)
 	}
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("%s has no addresses", host)

@@ -59,10 +59,35 @@ func TestVaultNeverShowsValues(t *testing.T) {
 			t.Errorf("accepted name %q", bad)
 		}
 	}
-	for _, bad := range []string{"http://github.com", "github.com/path", "*", "localhost", "10.0.0.1"} {
+	for _, bad := range []string{"http://github.com", "github.com/path", "*", "localhost", "127.0.0.1", "::1", "0.0.0.0"} {
 		if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "X", Value: "x", Hosts: []string{bad}}); err == nil {
 			t.Errorf("accepted host %q", bad)
 		}
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "LAN_TOKEN", Value: "x", Hosts: []string{"192.168.1.47", "fd00::5"}}); err != nil {
+		t.Errorf("LAN addresses: %v", err)
+	}
+	// SSH keys: [user@]host[:port], the whole private key, without a passphrase.
+	key := "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----"
+	if v, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "DEPLOY_SSH", Kind: secret.KindSSH, Value: key, Hosts: []string{"deploy@192.168.1.47", "git@github.com", "nas.home:2222"}}); err != nil || v.Kind != secret.KindSSH {
+		t.Fatalf("ssh key = %+v %v", v, err)
+	}
+	if got, _ := s.Secrets.Reveal(secret.RevealRequest{WorkspaceID: ws, Name: "DEPLOY_SSH"}); got != key+"\n" {
+		t.Errorf("the key file needs its final newline: %q", got)
+	}
+	for _, bad := range []string{"*.github.com", "deploy@", "Bad User@host", "host:99999", "127.0.0.1"} {
+		if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S2", Kind: secret.KindSSH, Value: key, Hosts: []string{bad}}); err == nil {
+			t.Errorf("accepted ssh host %q", bad)
+		}
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S3", Kind: secret.KindSSH, Value: "ghp_not_a_key"}); err == nil {
+		t.Error("accepted a token as an ssh key")
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S4", Kind: secret.KindSSH, Value: "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n-----END RSA PRIVATE KEY-----"}); err == nil {
+		t.Error("accepted a key with a passphrase")
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "DEPLOY_SSH", Kind: secret.KindToken, Value: "x"}); err == nil {
+		t.Error("changed a secret's kind")
 	}
 }
 

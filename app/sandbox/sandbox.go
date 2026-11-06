@@ -134,6 +134,12 @@ func (c Config) Command(ctx context.Context, root, command string) (*exec.Cmd, e
 type Sealed struct {
 	Env       []string // NAME=value: the secrets and the proxy settings
 	ProxyPort int      // the one TCP port it may connect to (127.0.0.1)
+	// Setup, when set, prepares the scratch folder before the command runs
+	// (SSH keys and config) and returns more environment; its values win.
+	Setup func(scratch string) ([]string, error)
+	// Done, when set, runs after the command, before the scratch folder is
+	// deleted (to keep SSH host keys it accepted).
+	Done func(scratch string)
 }
 
 // NetABI is the first Landlock ABI that restricts TCP connections.
@@ -172,7 +178,12 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	if err != nil {
 		return nil, nil, err
 	}
-	cleanup := func() { os.RemoveAll(scratch) }
+	cleanup := func() {
+		if s.Done != nil {
+			s.Done(scratch)
+		}
+		os.RemoveAll(scratch)
+	}
 	for _, d := range []string{"home", "tmp", "cache", "go-build"} {
 		os.MkdirAll(filepath.Join(scratch, d), 0o700)
 	}
@@ -200,6 +211,20 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 		out = append(out, k+"="+v)
 	}
 	out = append(out, s.Env...)
+	if s.Setup != nil {
+		more, err := s.Setup(scratch)
+		if err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		for _, kv := range more {
+			k, _, _ := strings.Cut(kv, "=")
+			out = slices.DeleteFunc(out, func(e string) bool { return strings.HasPrefix(e, k+"=") })
+			out = append(out, kv)
+		}
+	}
+	// The command may start the server's binary as ssh's ProxyCommand.
+	p.Files = append(p.Files, self)
 	raw, _ := json.Marshal(p)
 	cmd := exec.CommandContext(ctx, self, helperArg, string(raw), command)
 	cmd.Dir = root

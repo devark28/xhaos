@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1248,6 +1249,87 @@ python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM)" 2>/
 		if strings.Contains(raw, "tok_abcdef") {
 			t.Fatalf("the value reached the log: %s", raw)
 		}
+	}
+}
+
+// An SSH key secret: the command reaches the key's host through the proxy
+// with that key (a real sshd on a spare port), the key never shows in the
+// output, other hosts are refused, and the host key is remembered.
+func TestSSHKeySecret(t *testing.T) {
+	if sandbox.ABI() < sandbox.NetABI {
+		t.Skip("this kernel's Landlock cannot restrict the network")
+	}
+	if _, err := os.Stat("/usr/sbin/sshd"); err != nil {
+		t.Skip("no sshd")
+	}
+	dir := t.TempDir()
+	keygen := func(path string) {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen: %v %s", err, out)
+		}
+	}
+	keygen(filepath.Join(dir, "host"))
+	keygen(filepath.Join(dir, "client"))
+	pub, _ := os.ReadFile(filepath.Join(dir, "client.pub"))
+	os.WriteFile(filepath.Join(dir, "authorized_keys"), pub, 0o600)
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	me, _ := user.Current()
+	conf := fmt.Sprintf("Port %d\nListenAddress 127.0.0.1\nHostKey %s\nAuthorizedKeysFile %s\nPidFile %s\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n",
+		port, filepath.Join(dir, "host"), filepath.Join(dir, "authorized_keys"), filepath.Join(dir, "sshd.pid"))
+	os.WriteFile(filepath.Join(dir, "sshd_config"), []byte(conf), 0o600)
+	sshd := exec.Command("/usr/sbin/sshd", "-D", "-e", "-f", filepath.Join(dir, "sshd_config"))
+	if err := sshd.Start(); err != nil {
+		t.Skipf("cannot start sshd: %v", err)
+	}
+	defer sshd.Process.Kill()
+	time.Sleep(300 * time.Millisecond)
+	key, _ := os.ReadFile(filepath.Join(dir, "client"))
+
+	cmd := "ssh box.test 'echo REMOTE-$((40+2))'; cat $BOX_KEY | head -3; ssh -o ConnectTimeout=5 other.test true || echo OTHER-REFUSED"
+	h := setupIn(t, t.TempDir(), func(turn llm.Turn) (llm.Result, error) {
+		last := turn.Messages[len(turn.Messages)-1]
+		if len(last.Results) > 0 {
+			return llm.Result{Text: "done", StopReason: "end_turn"}, nil
+		}
+		return llm.Result{Calls: []llm.ToolCall{tc("s", "bash", map[string]any{"command": cmd, "secrets": []string{"BOX_KEY"}})}, StopReason: "tool_use"}, nil
+	}, func(o *backend.Options) { o.Sandbox = sandbox.Auto })
+	p := h.s.Egress()
+	p.AllowPrivate = true // box.test is this machine in the test
+	p.Resolve = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	}
+	var d net.Dialer
+	p.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return d.DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", port))
+	}
+	h.s.Providers.Save(provider.SaveRequest{ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	if _, err := h.s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "BOX_KEY", Kind: secret.KindSSH, Value: string(key), Hosts: []string{me.Username + "@box.test"}}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	h.s.Secrets.Grant(secret.GrantRequest{WorkspaceID: ws, Name: "BOX_KEY", AgentID: a.ID, Mode: secret.Ask})
+	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "go"})
+	h.waitStatus(t, a.ID, agent.StatusAttention)
+	if st := h.tools(t, a.ID)["s"]; !strings.Contains(st.Preview, "SSH key BOX_KEY") {
+		t.Fatalf("preview = %q", st.Preview)
+	}
+	h.s.Agents.Decide(agent.DecideRequest{IdempotencyKey: "d", WorkspaceID: ws, AgentID: a.ID, CallID: "s", Allow: true})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	out := h.tools(t, a.ID)["s"].Output
+	for _, want := range []string{"REMOTE-42", "OTHER-REFUSED", "[secret:BOX_KEY]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(string(key), "\n") {
+		if len(line) > 20 && !strings.HasPrefix(line, "-----") && strings.Contains(out, line) {
+			t.Fatalf("a key line leaked:\n%s", out)
+		}
+	}
+	if known := secret.NewSealer(h.s.Secrets).KnownHosts(ws, "BOX_KEY"); !strings.Contains(known, "ssh-ed25519") {
+		t.Fatalf("host key not remembered: %q", known)
 	}
 }
 

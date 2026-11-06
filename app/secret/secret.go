@@ -19,15 +19,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"xhaos/app/agent"
 	"xhaos/app/apperr"
+	"xhaos/app/egress"
 	"xhaos/app/eventlog"
 	"xhaos/app/llm"
 	"xhaos/app/secretbox"
@@ -57,7 +61,28 @@ CREATE TABLE IF NOT EXISTS secret_grants (
 	FOREIGN KEY (workspace_id, name) REFERENCES secrets(workspace_id, name) ON DELETE CASCADE
 );`
 
-func Migrate(db *sql.DB) error { _, err := db.Exec(schema); return err }
+func Migrate(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	for _, col := range []string{`kind TEXT NOT NULL DEFAULT 'token'`, `known_hosts TEXT NOT NULL DEFAULT ''`} {
+		if _, err := db.Exec(`ALTER TABLE secrets ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
+}
+
+// Kinds of secret.
+const (
+	// KindToken is a value given to the command as $NAME (an API token, a
+	// password); its hosts are reached over HTTPS (and HTTP) through the proxy.
+	KindToken = "token"
+	// KindSSH is a private key: the command gets $NAME as the key file's
+	// path and an ssh set up to use it through the proxy, to its hosts only
+	// ([user@]host[:port], port 22 by default).
+	KindSSH = "ssh"
+)
 
 // Grant modes.
 const (
@@ -68,6 +93,7 @@ const (
 // View is a secret as the page sees it: never the value.
 type View struct {
 	Name        string    `json:"name"`
+	Kind        string    `json:"kind"`
 	Description string    `json:"description"`
 	Hosts       []string  `json:"hosts"`
 	Grants      []Grant   `json:"grants"`
@@ -118,15 +144,51 @@ func validName(name string) error {
 	return nil
 }
 
-func cleanHosts(hosts []string) ([]string, error) {
+// sshHost splits an SSH host entry: [user@]host[:port].
+func sshHost(entry string) (user, host string, port int, err error) {
+	rest := entry
+	if u, h, ok := strings.Cut(rest, "@"); ok {
+		user, rest = u, h
+		if !regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`).MatchString(user) {
+			return "", "", 0, fmt.Errorf("%q is not a user name", user)
+		}
+	}
+	host, port = rest, 22
+	if h, p, err := net.SplitHostPort(rest); err == nil {
+		host = h
+		if port, err = strconv.Atoi(p); err != nil || port < 1 || port > 65535 {
+			return "", "", 0, fmt.Errorf("%q is not a port", p)
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if !hostOrIP(host) || strings.HasPrefix(host, "*.") {
+		return "", "", 0, fmt.Errorf("%q is not a host name or IP address", host)
+	}
+	return user, host, port, nil
+}
+
+// hostOrIP accepts a host name (or *.name) or an IP address, but not
+// loopback or unspecified addresses (that would be the server itself).
+func hostOrIP(h string) bool {
+	if ip, err := netip.ParseAddr(h); err == nil {
+		return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
+	}
+	return hostRE.MatchString(h) && h != "localhost"
+}
+
+func cleanHosts(kind string, hosts []string) ([]string, error) {
 	out := []string{}
 	for _, h := range hosts {
 		h = strings.ToLower(strings.TrimSpace(h))
 		if h == "" {
 			continue
 		}
-		if !hostRE.MatchString(h) {
-			return nil, fmt.Errorf("%w: %q is not a host name (like api.github.com, or *.github.com for its subdomains)", apperr.Invalid, h)
+		if kind == KindSSH {
+			if _, _, _, err := sshHost(h); err != nil {
+				return nil, fmt.Errorf("%w: %v (an SSH host is [user@]host[:port], like git@github.com or deploy@192.168.1.47)", apperr.Invalid, err)
+			}
+		} else if !hostOrIP(h) {
+			return nil, fmt.Errorf("%w: %q is not a host name or IP address (like api.github.com, *.github.com for its subdomains, or 192.168.1.47)", apperr.Invalid, h)
 		}
 		if !slices.Contains(out, h) {
 			out = append(out, h)
@@ -137,7 +199,7 @@ func cleanHosts(hosts []string) ([]string, error) {
 
 // Secrets lists the workspace's secrets, names only, with their grants.
 func (s *Service) Secrets(workspaceID string) ([]View, error) {
-	rows, err := s.db.Query(`SELECT name, description, hosts, updated_at FROM secrets WHERE workspace_id = ? ORDER BY name`, workspaceID)
+	rows, err := s.db.Query(`SELECT name, kind, description, hosts, updated_at FROM secrets WHERE workspace_id = ? ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +207,7 @@ func (s *Service) Secrets(workspaceID string) ([]View, error) {
 	for rows.Next() {
 		var v View
 		var hosts, at string
-		if err := rows.Scan(&v.Name, &v.Description, &hosts, &at); err != nil {
+		if err := rows.Scan(&v.Name, &v.Kind, &v.Description, &hosts, &at); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -178,6 +240,7 @@ func (s *Service) Secrets(workspaceID string) ([]View, error) {
 type SaveRequest struct {
 	WorkspaceID string   `json:"workspaceId"`
 	Name        string   `json:"name"`
+	Kind        string   `json:"kind"` // token (default) or ssh; fixed once saved
 	Description string   `json:"description"`
 	Value       string   `json:"value"` // empty keeps the saved value
 	Hosts       []string `json:"hosts"`
@@ -189,7 +252,29 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 	if err := validName(name); err != nil {
 		return View{}, err
 	}
-	hosts, err := cleanHosts(req.Hosts)
+	kind := req.Kind
+	if kind == "" {
+		kind = KindToken
+	}
+	if kind != KindToken && kind != KindSSH {
+		return View{}, fmt.Errorf("%w: a secret is a token or an ssh key", apperr.Invalid)
+	}
+	var saved string
+	if err := s.db.QueryRow(`SELECT kind FROM secrets WHERE workspace_id = ? AND name = ?`, req.WorkspaceID, name).Scan(&saved); err == nil && saved != kind {
+		return View{}, fmt.Errorf("%w: %s is a %s; delete it to save it as another kind", apperr.Invalid, name, saved)
+	}
+	if kind == KindSSH && req.Value != "" {
+		if !strings.Contains(req.Value, "PRIVATE KEY-----") {
+			return View{}, fmt.Errorf("%w: paste the whole private key, from -----BEGIN … PRIVATE KEY----- to the END line", apperr.Invalid)
+		}
+		if strings.Contains(req.Value, "ENCRYPTED") {
+			return View{}, fmt.Errorf("%w: this key has a passphrase; agents cannot type it. Use a key without one (ideally a key just for this)", apperr.Invalid)
+		}
+		if !strings.HasSuffix(req.Value, "\n") {
+			req.Value += "\n" // ssh rejects a key file without its final newline
+		}
+	}
+	hosts, err := cleanHosts(kind, req.Hosts)
 	if err != nil {
 		return View{}, err
 	}
@@ -215,9 +300,9 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 		if err != nil {
 			return View{}, err
 		}
-		if _, err := s.db.Exec(`INSERT INTO secrets (workspace_id, name, description, value, hosts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		if _, err := s.db.Exec(`INSERT INTO secrets (workspace_id, name, kind, description, value, hosts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (workspace_id, name) DO UPDATE SET description = excluded.description, value = excluded.value, hosts = excluded.hosts, updated_at = excluded.updated_at`,
-			req.WorkspaceID, name, desc, sealed, string(hostsJSON), at, at); err != nil {
+			req.WorkspaceID, name, kind, desc, sealed, string(hostsJSON), at, at); err != nil {
 			return View{}, err
 		}
 	}
@@ -359,9 +444,12 @@ func NewSealer(s *Service) *Sealer { return &Sealer{s: s} }
 
 // Use describes the secrets a command asks for, as the agent may use them.
 type Use struct {
-	Preview string   // for the approval card
-	Trusted bool     // every one is trusted to the agent
-	Hosts   []string // union of their hosts
+	Preview string        // for the approval card
+	Trusted bool          // every one is trusted to the agent
+	Rules   []egress.Rule // what the proxy lets the command reach
+	Kinds   map[string]string
+	// Hosts are each SSH key's host entries ([user@]host[:port]).
+	Hosts map[string][]string
 }
 
 // Check validates names for agent a: each must exist and be granted to it.
@@ -373,7 +461,7 @@ func (x *Sealer) Check(ws string, a agent.Agent, names []string) (Use, error) {
 	if err != nil {
 		return Use{}, err
 	}
-	use := Use{Trusted: true}
+	use := Use{Trusted: true, Kinds: map[string]string{}, Hosts: map[string][]string{}}
 	var lines []string
 	for _, name := range names {
 		i := slices.IndexFunc(list, func(v View) bool { return v.Name == name })
@@ -386,19 +474,44 @@ func (x *Sealer) Check(ws string, a agent.Agent, names []string) (Use, error) {
 			return Use{}, fmt.Errorf("secret %s is not granted to you; ask the user to grant it in Settings → Secrets", name)
 		}
 		use.Trusted = use.Trusted && v.Grants[g].Mode == Trusted
+		use.Kinds[name] = v.Kind
 		for _, h := range v.Hosts {
-			if !slices.Contains(use.Hosts, h) {
-				use.Hosts = append(use.Hosts, h)
+			if v.Kind == KindSSH {
+				_, host, port, _ := sshHost(h)
+				use.Rules = append(use.Rules, egress.Rule{Pattern: host, Ports: []int{port}})
+				use.Hosts[name] = append(use.Hosts[name], h)
+			} else {
+				use.Rules = append(use.Rules, egress.Web(h))
 			}
 		}
 		where := "no network"
 		if len(v.Hosts) > 0 {
 			where = "can reach " + strings.Join(v.Hosts, ", ")
 		}
-		lines = append(lines, fmt.Sprintf("%s (%s)", name, where))
+		what := "secret"
+		if v.Kind == KindSSH {
+			what = "SSH key"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s (%s)", what, name, where))
 	}
-	use.Preview = "Uses secrets: " + strings.Join(lines, "; ") + ".\nThe project is read-only for this command; other hosts, and UDP, are blocked."
+	use.Preview = "Uses " + strings.Join(lines, "; ") + ".\nThe project is read-only for this command; other hosts, and UDP, are blocked."
 	return use, nil
+}
+
+// KnownHosts returns the SSH host keys remembered for a key ("" for none).
+func (x *Sealer) KnownHosts(ws, name string) string {
+	var k string
+	_ = x.s.db.QueryRow(`SELECT known_hosts FROM secrets WHERE workspace_id = ? AND name = ?`, ws, name).Scan(&k)
+	return k
+}
+
+// RememberHosts keeps the host keys an SSH key's command accepted (on first
+// connection), so later commands check them.
+func (x *Sealer) RememberHosts(ws, name, knownHosts string) {
+	if len(knownHosts) > 64<<10 {
+		return
+	}
+	_, _ = x.s.db.Exec(`UPDATE secrets SET known_hosts = ? WHERE workspace_id = ? AND name = ?`, knownHosts, ws, name)
 }
 
 // Open returns the values (checked again: a grant may be revoked while
@@ -422,6 +535,14 @@ func Scrub(text string, values map[string]string) string {
 			continue
 		}
 		mark := "[secret:" + name + "]"
+		// A key printed in part (head, grep) still hides each line.
+		if strings.Contains(v, "\n") {
+			for _, line := range strings.Split(v, "\n") {
+				if line = strings.TrimSpace(line); len(line) >= 16 && !strings.HasPrefix(line, "-----") {
+					pairs = append(pairs, pair{line, mark})
+				}
+			}
+		}
 		for _, form := range []string{v, base64.StdEncoding.EncodeToString([]byte(v)), base64.RawStdEncoding.EncodeToString([]byte(v)),
 			base64.URLEncoding.EncodeToString([]byte(v)), base64.RawURLEncoding.EncodeToString([]byte(v)), url.QueryEscape(v)} {
 			pairs = append(pairs, pair{form, mark})
@@ -480,7 +601,11 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, _ tool.Call
 		if len(v.Hosts) > 0 {
 			hosts = strings.Join(v.Hosts, ", ")
 		}
-		fmt.Fprintf(&b, "%s: %s\n  hosts: %s\n  you: %s\n", v.Name, firstNonEmpty(v.Description, "(no description)"), hosts, access)
+		kind := "token ($" + v.Name + " is the value)"
+		if v.Kind == KindSSH {
+			kind = "SSH key: run plain ssh/scp/sftp or git over ssh to its hosts ($" + v.Name + " is the key file's path; your own ~/.ssh is not available)"
+		}
+		fmt.Fprintf(&b, "%s: %s\n  kind: %s\n  hosts: %s\n  you: %s\n", v.Name, firstNonEmpty(v.Description, "(no description)"), kind, hosts, access)
 	}
 	b.WriteString("\nTo use one: bash with `secrets: [\"NAME\"]`, and $NAME in the command (e.g. curl -H \"Authorization: Bearer $NAME\" https://host/…). The command can reach only those hosts, over HTTPS through a proxy that is set for it; the project is read-only for it.")
 	return b.String(), nil

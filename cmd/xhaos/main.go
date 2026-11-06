@@ -25,6 +25,7 @@ import (
 
 	"xhaos/app/auth"
 	"xhaos/app/backend"
+	"xhaos/app/egress"
 	"xhaos/app/eventlog"
 	"xhaos/app/health"
 	"xhaos/app/live"
@@ -52,7 +53,8 @@ func defaultDBPath() string {
 }
 
 func main() {
-	sandbox.MaybeRun() // when started as the command sandbox helper, this never returns
+	sandbox.MaybeRun()    // started as the command sandbox helper: never returns
+	egress.MaybeConnect() // started as ssh's ProxyCommand in a sealed command: never returns
 	pageDir := flag.String("frontend", "", "serve the page from this directory (default: the page built into release binaries, else ./frontend)")
 	dbPath := flag.String("db", defaultDBPath(), "SQLite database path")
 	verbose := flag.Bool("verbose", false, "log every request and connection")
