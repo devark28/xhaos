@@ -3,9 +3,13 @@ package secret_test
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	"xhaos/app/agent"
 	"xhaos/app/backend"
@@ -68,12 +72,12 @@ func TestVaultNeverShowsValues(t *testing.T) {
 		t.Errorf("LAN addresses: %v", err)
 	}
 	// SSH keys: [user@]host[:port], the whole private key, without a passphrase.
-	key := "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----"
+	key := genKey(t, "")
 	if v, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "DEPLOY_SSH", Kind: secret.KindSSH, Value: key, Hosts: []string{"deploy@192.168.1.47", "git@github.com", "nas.home:2222"}}); err != nil || v.Kind != secret.KindSSH {
 		t.Fatalf("ssh key = %+v %v", v, err)
 	}
-	if got, _ := s.Secrets.Reveal(secret.RevealRequest{WorkspaceID: ws, Name: "DEPLOY_SSH"}); got != key+"\n" {
-		t.Errorf("the key file needs its final newline: %q", got)
+	if got, _ := s.Secrets.Reveal(secret.RevealRequest{WorkspaceID: ws, Name: "DEPLOY_SSH"}); got != key {
+		t.Errorf("a key without a passphrase is kept as it was: %q", got)
 	}
 	for _, bad := range []string{"*.github.com", "deploy@", "Bad User@host", "host:99999", "127.0.0.1"} {
 		if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S2", Kind: secret.KindSSH, Value: key, Hosts: []string{bad}}); err == nil {
@@ -83,8 +87,21 @@ func TestVaultNeverShowsValues(t *testing.T) {
 	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S3", Kind: secret.KindSSH, Value: "ghp_not_a_key"}); err == nil {
 		t.Error("accepted a token as an ssh key")
 	}
-	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S4", Kind: secret.KindSSH, Value: "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n-----END RSA PRIVATE KEY-----"}); err == nil {
-		t.Error("accepted a key with a passphrase")
+	// A key with a passphrase: refused without it or with a wrong one;
+	// with it, stored unlocked (ssh then needs no passphrase).
+	locked := genKey(t, "key passphrase")
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S4", Kind: secret.KindSSH, Value: locked}); err == nil || !strings.Contains(err.Error(), "Key passphrase") {
+		t.Errorf("a locked key without its passphrase = %v", err)
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S4", Kind: secret.KindSSH, Value: locked, KeyPassphrase: "wrong"}); err == nil {
+		t.Error("a wrong key passphrase was accepted")
+	}
+	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "S4", Kind: secret.KindSSH, Value: locked, KeyPassphrase: "key passphrase"}); err != nil {
+		t.Fatal(err)
+	}
+	unlocked, _ := s.Secrets.Reveal(secret.RevealRequest{WorkspaceID: ws, Name: "S4"})
+	if _, err := ssh.ParseRawPrivateKey([]byte(unlocked)); err != nil || unlocked == locked {
+		t.Errorf("stored key is not unlocked: %v", err)
 	}
 	if _, err := s.Secrets.Save(secret.SaveRequest{WorkspaceID: ws, Name: "DEPLOY_SSH", Kind: secret.KindToken, Value: "x"}); err == nil {
 		t.Error("changed a secret's kind")
@@ -168,4 +185,15 @@ func eventsText(t *testing.T, s *backend.Services) string {
 		b.WriteString(k + "\n")
 	}
 	return b.String()
+}
+
+// genKey makes an ed25519 key with ssh-keygen (passphrase "" for none).
+func genKey(t *testing.T, passphrase string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "k")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", passphrase, "-f", path).CombinedOutput(); err != nil {
+		t.Skipf("ssh-keygen: %v %s", err, out)
+	}
+	b, _ := os.ReadFile(path)
+	return string(b)
 }

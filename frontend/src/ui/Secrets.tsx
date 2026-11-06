@@ -112,10 +112,11 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
 function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): void }) {
   const [name, setName] = useState(existing?.name || ''), [value, setValue] = useState('');
   const [kind, setKind] = useState<'token' | 'ssh'>(existing?.kind || 'token');
+  const [keyPass, setKeyPass] = useState('');
   const [description, setDescription] = useState(existing?.description || ''), [hosts, setHosts] = useState(existing?.hosts.join(', ') || '');
   const save = async () => {
     try {
-      await call('secret', 'Save', { workspaceId: get().active, name: name.trim(), kind, value, description, hosts: hostsOf(hosts) });
+      await call('secret', 'Save', { workspaceId: get().active, name: name.trim(), kind, value, keyPassphrase: kind === 'ssh' ? keyPass : '', description, hosts: hostsOf(hosts) });
       toast(`Saved ${name.trim()}.`); onDone();
     } catch (error) { toast(errorText(error)); }
   };
@@ -127,10 +128,12 @@ function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): voi
         </select></label>
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Name<Info text="Used as an environment variable: capitals, digits and _ (like GITHUB_TOKEN)." /></span>
         <input value={name} disabled={Boolean(existing)} onChange={e => setName(e.target.value.toUpperCase())} placeholder="GITHUB_TOKEN" data-secret-name {...stylex.props(s.input, s.mono)} /></label>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>{kind === 'ssh' ? 'Private key' : 'Value'}<Info text={kind === 'ssh' ? 'The whole private key, -----BEGIN … to -----END … PRIVATE KEY-----, without a passphrase (ideally a key made just for this). Leave empty when editing to keep it.' : 'Leave empty when editing to keep the saved value.'} /></span>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>{kind === 'ssh' ? 'Private key' : 'Value'}<Info text={kind === 'ssh' ? 'The whole private key, -----BEGIN … to -----END … PRIVATE KEY----- (ideally a key made just for this). Leave empty when editing to keep it.' : 'Leave empty when editing to keep the saved value.'} /></span>
         {kind === 'ssh'
           ? <textarea autoComplete="off" spellCheck={false} rows={4} value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'} data-secret-value-input {...stylex.props(s.input, s.mono, s.keyBox)} />
           : <input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : ''} data-secret-value-input {...stylex.props(s.input, s.mono)} />}</label>
+      {kind === 'ssh' && <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Key passphrase<Info text="Only if the key has one. Xhaos unlocks the key with it and stores the unlocked key, encrypted with your own passphrase like every secret; the key's passphrase is not kept." /></span>
+        <input type="password" autoComplete="off" value={keyPass} onChange={e => setKeyPass(e.target.value)} placeholder="(none)" data-secret-key-pass {...stylex.props(s.input)} /></label>}
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>What it's for</span>
         <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Push to my GitHub repos" data-secret-desc {...stylex.props(s.input)} /></label>
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Hosts<Info text={kind === 'ssh'

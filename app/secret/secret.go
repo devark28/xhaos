@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -28,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"xhaos/app/agent"
 	"xhaos/app/apperr"
@@ -167,6 +170,33 @@ func sshHost(entry string) (user, host string, port int, err error) {
 	return user, host, port, nil
 }
 
+// unlockKey checks that text is an SSH private key and returns it in
+// OpenSSH form without a passphrase (agents' ssh cannot type one), using
+// passphrase when the key has one.
+func unlockKey(text, passphrase string) (string, error) {
+	text = strings.TrimSpace(text) + "\n"
+	key, err := ssh.ParseRawPrivateKey([]byte(text))
+	var missing *ssh.PassphraseMissingError
+	switch {
+	case errors.As(err, &missing):
+		if passphrase == "" {
+			return "", fmt.Errorf("%w: this key has a passphrase: enter it in Key passphrase (Xhaos stores the key unlocked, encrypted with your own passphrase, and does not keep the key's)", apperr.Invalid)
+		}
+		if key, err = ssh.ParseRawPrivateKeyWithPassphrase([]byte(text), []byte(passphrase)); err != nil {
+			return "", fmt.Errorf("%w: the key passphrase does not unlock this key", apperr.Invalid)
+		}
+	case err != nil:
+		return "", fmt.Errorf("%w: this is not an SSH private key (paste all of it, from -----BEGIN to the -----END line): %v", apperr.Invalid, err)
+	case passphrase == "":
+		return text, nil // already unlocked: keep it as it was
+	}
+	block, err := ssh.MarshalPrivateKey(key, "xhaos")
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(block)), nil
+}
+
 // hostOrIP accepts a host name (or *.name) or an IP address, but not
 // loopback or unspecified addresses (that would be the server itself).
 func hostOrIP(h string) bool {
@@ -238,12 +268,15 @@ func (s *Service) Secrets(workspaceID string) ([]View, error) {
 }
 
 type SaveRequest struct {
-	WorkspaceID string   `json:"workspaceId"`
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"` // token (default) or ssh; fixed once saved
-	Description string   `json:"description"`
-	Value       string   `json:"value"` // empty keeps the saved value
-	Hosts       []string `json:"hosts"`
+	WorkspaceID string `json:"workspaceId"`
+	Name        string `json:"name"`
+	Kind        string `json:"kind"` // token (default) or ssh; fixed once saved
+	// KeyPassphrase unlocks an SSH key that has one. The unlocked key is
+	// stored (encrypted like every value); the passphrase is not kept.
+	KeyPassphrase string   `json:"keyPassphrase"`
+	Description   string   `json:"description"`
+	Value         string   `json:"value"` // empty keeps the saved value
+	Hosts         []string `json:"hosts"`
 }
 
 // Save adds a secret, or updates one (an empty value keeps the old one).
@@ -264,15 +297,11 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 		return View{}, fmt.Errorf("%w: %s is a %s; delete it to save it as another kind", apperr.Invalid, name, saved)
 	}
 	if kind == KindSSH && req.Value != "" {
-		if !strings.Contains(req.Value, "PRIVATE KEY-----") {
-			return View{}, fmt.Errorf("%w: paste the whole private key, from -----BEGIN … PRIVATE KEY----- to the END line", apperr.Invalid)
+		key, err := unlockKey(req.Value, req.KeyPassphrase)
+		if err != nil {
+			return View{}, err
 		}
-		if strings.Contains(req.Value, "ENCRYPTED") {
-			return View{}, fmt.Errorf("%w: this key has a passphrase; agents cannot type it. Use a key without one (ideally a key just for this)", apperr.Invalid)
-		}
-		if !strings.HasSuffix(req.Value, "\n") {
-			req.Value += "\n" // ssh rejects a key file without its final newline
-		}
+		req.Value = key
 	}
 	hosts, err := cleanHosts(kind, req.Hosts)
 	if err != nil {
