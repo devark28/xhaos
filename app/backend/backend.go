@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/devark28/xhaos/app/attachment"
 	"github.com/devark28/xhaos/app/auth"
+	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/btw"
 	"github.com/devark28/xhaos/app/channel"
 	"github.com/devark28/xhaos/app/dictation"
@@ -77,6 +78,7 @@ type Services struct {
 	Channels   *channel.Service
 	Files      *attachment.Service
 	Memories   *memory.Service
+	Boards     *board.Service
 	Usage      *usage.Service
 	Prefs      *prefs.Service
 	Secrets    *secret.Service
@@ -117,6 +119,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"mcp", mcp.Migrate},
 		{"attachment", attachment.Migrate},
 		{"memory", memory.Migrate},
+		{"board", board.Migrate},
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
 	}
@@ -291,6 +294,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Channels:   channels,
 		Files:      attachment.NewService(files),
 		Memories:   memories,
+		Boards:     board.NewService(db, opts.Publish, filepath.Join(dataDir, "boards")),
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,
