@@ -21,7 +21,7 @@ import { Files } from './Files.tsx';
 import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
-import { visibleCommands, developerMode } from './state/composer.ts';
+import { visibleCommands, developerMode, closeBtw } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
   openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
@@ -542,6 +542,30 @@ const simple = (): Partial<Record<string, [string, ReactNode]>> => ({
   </>],
 });
 
+// The latest /btw answer: a side question about the agents, answered from a
+// read-only digest. It is not part of any agent; closing it returns to the
+// panel shown before.
+function BtwPanel() {
+  const btw = useApp(s => s.btw);
+  if (!btw) return <Shell title="Side answer"><P muted>No side question. Ask one with /btw, e.g. /btw what is #12 doing?</P></Shell>;
+  return (
+    <Shell title="Side answer" action={<Button variant="icon" id="close-btw" aria-label="Close the side answer" title="Close (Esc in the composer)" onClick={closeBtw}><Icon name="close" size={12} /></Button>}>
+      <div id="btw" aria-live="polite" aria-label="Side answer">
+        <p data-btw-question {...stylex.props(btwStyle.question)}><span {...stylex.props(btwStyle.kind)}>/btw</span> {btw.question}</p>
+        {btw.pending ? <P muted>Reading the agents…</P>
+          : btw.error ? <p {...stylex.props(btwStyle.error)}>Could not answer: {btw.error}</p>
+          : <div className="markdown-body" data-answer dangerouslySetInnerHTML={html(markdown(btw.answer || ''))} />}
+      </div>
+    </Shell>
+  );
+}
+
+const btwStyle = stylex.create({
+  question: { marginTop: 2, marginBottom: 10, marginInline: 0, paddingBottom: 8, borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colors.lineFaint, color: colors.textMuted, fontSize: 12 },
+  kind: { fontFamily: fonts.mono, fontSize: 10, color: colors.textFaint },
+  error: { color: colors.danger, margin: 0 },
+});
+
 export function Panel() {
   const panel = useApp(s => s.panel);
   let body: ReactNode = null;
@@ -553,6 +577,7 @@ export function Panel() {
   else if (panel.kind === 'history') body = <History />;
   else if (panel.kind === 'status') body = <Status />;
   else if (panel.kind === 'help') body = <Help />;
+  else if (panel.kind === 'btw') body = <BtwPanel />;
   else if (panel.kind === 'settings') body = <Settings focus={panel.section as SectionId | undefined} request={panel} />;
   else if (panel.kind === 'tools') body = <Settings focus="tools" />;
   else { const entry = simple()[panel.kind]; if (entry) body = <Shell title={entry[0]}>{entry[1]}</Shell>; }

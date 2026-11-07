@@ -8,7 +8,7 @@ import { modelChoices, saveModelChoice } from '../../models.ts';
 import { activeAgents } from '../../model.ts';
 import { storeFiles, uploadFiles } from '../../attachments.ts';
 import { applyAgentCommand } from '../../agent-actions.ts';
-import { update, get, workspaceOf, findAgent, focusLater, toast, errorText, save, type Btw, type SlashCommand } from './store.ts';
+import { update, get, workspaceOf, findAgent, focusLater, toast, errorText, save, type Btw, type Panel, type SlashCommand } from './store.ts';
 import { call, connected, isSample, applySamples } from './backend.ts';
 import { newAgent, sendMessage, focusNewAgent, terminateAgent, restore, stopAgent, decide } from './agents.ts';
 import { openPanel, showProviders, showTools } from './panels.ts';
@@ -235,15 +235,21 @@ function runSlashCommand(value: string, attachments: Attachment[] = []) {
 
 // ---- side questions ----------------------------------------------------------
 // /btw asks a model about the workspace from a read-only digest of the agents.
-// The answer shows above the composer only; no agent or transcript changes.
+// The answer opens in the side panel's btw panel; no agent or transcript
+// changes. Closing it returns to the panel (and, on a phone, the view) shown
+// before.
 let btwRequest = 0;
+let beforeBtw: { panel: Panel; mobileView: 'agents' | 'panel' } | null = null;
 export async function askBtw(question: string) {
   if (!question) { toast('Ask a question after /btw, e.g. /btw what is #12 doing?'); return; }
   if (!connected()) { toast('/btw needs the Go backend.'); return; }
   const choice = currentChoice();
   if (!choice) { toast('Add a model provider first.'); showProviders(); return; }
   const request = ++btwRequest;
+  const s0 = get();
+  if (s0.panel.kind !== 'btw') beforeBtw = { panel: s0.panel, mobileView: s0.mobileView };
   update(s => { s.btw = { question, pending: true }; });
+  openPanel('btw');
   clearComposer();
   let next: Btw;
   try {
@@ -252,4 +258,16 @@ export async function askBtw(question: string) {
   } catch (error) { next = { question, error: errorText(error) }; }
   if (request === btwRequest && get().btw) update(s => { s.btw = next; });
 }
-export function closeBtw() { btwRequest++; if (get().btw) update(s => { s.btw = null; }); }
+export function closeBtw() {
+  btwRequest++;
+  if (!get().btw) return;
+  const back = beforeBtw;
+  beforeBtw = null;
+  update(s => {
+    s.btw = null;
+    if (s.panel.kind === 'btw') {
+      s.panel = back?.panel ?? { kind: 'questions' };
+      if (back) s.mobileView = back.mobileView;
+    }
+  });
+}

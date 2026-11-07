@@ -22,8 +22,12 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
   { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings', also: ['providers', 'tools'] },
 ];
 
+// The /btw answer's tab, shown while there is one.
+const btwTab: (typeof tabs)[number] = { kind: 'btw', id: 'show-btw', icon: 'aside', label: 'Side answer (/btw)' };
+
 export function SidePanel() {
   const kind = useApp(s => s.panel.kind);
+  const hasBtw = useApp(s => s.btw !== null);
   const pending = useApp(s => pendingQuestionsIn(s).length);
   const narrow = useNarrow();
   const view = useApp(s => s.mobileView);
@@ -35,7 +39,7 @@ export function SidePanel() {
         {narrow
           ? <Button variant="icon" id="show-agents" aria-label="Agents" title="Agents" aria-pressed={agentsView} chosen={agentsView} onClick={showAgentsView} sx={[side.tab, side.phoneTab]}><Icon name="list" size={18} /></Button>
           : <UsageTotal />}
-        {tabs.map(tab => {
+        {(hasBtw ? [btwTab, ...tabs] : tabs).map(tab => {
           const chosen = !agentsView && (kind === tab.kind || Boolean(tab.also?.includes(kind)));
           const waiting = tab.kind === 'questions' && pending > 0;
           return (

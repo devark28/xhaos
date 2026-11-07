@@ -3,7 +3,6 @@ import { Suspense, lazy, useLayoutEffect, useRef, useState, type KeyboardEvent a
 import * as stylex from '@stylexjs/stylex';
 import { bindEditor } from '../editor.ts';
 import { composerPlaceholder } from '../composer-target.ts';
-import { markdown } from '../markdown.ts';
 import { activeAgents } from '../model.ts';
 import { fileSize } from '../attachments.ts';
 import { colors, breakpoints, fonts } from './theme/tokens.stylex.ts';
@@ -183,24 +182,6 @@ function ComposerForm() {
   );
 }
 
-// The latest /btw answer, above the composer. It is not part of any agent.
-function BtwAside() {
-  const btw = useApp(s => (s.mode === 'message' ? s.btw : null));
-  if (!btw) return null;
-  return (
-    <aside id="btw" aria-live="polite" aria-label="Side answer" {...stylex.props(aside.root)}>
-      <div {...stylex.props(aside.heading)}>
-        <span {...stylex.props(aside.kind)}>btw</span>
-        <span {...stylex.props(aside.question)}>{btw.question}</span>
-        <Button variant="icon" id="close-btw" aria-label="Dismiss side answer" onClick={closeBtw}><Icon name="close" size={12} /></Button>
-      </div>
-      {btw.pending ? <p {...stylex.props(aside.muted)}>Reading the agents…</p>
-        : btw.error ? <p {...stylex.props(aside.error)}>Could not answer: {btw.error}</p>
-        : <div className="markdown-body" data-answer dangerouslySetInnerHTML={{ __html: markdown(btw.answer || '') }} />}
-    </aside>
-  );
-}
-
 // Excalidraw is large, so the Draw tab loads it on first use.
 const Draw = lazy(() => import('./Draw.tsx'));
 function DrawingPane() {
@@ -225,7 +206,6 @@ export function ComposerArea() {
         <Button id="show-message" onClick={showMessageComposer} sx={[area.switch, mode === 'message' && area.switchChosen]}>Message</Button>
         {!narrow && <Button id="show-drawing" onClick={showDraw} sx={[area.switch, mode === 'draw' && area.switchChosen]}>Draw</Button>}
       </div>
-      <BtwAside />
       <ComposerForm />
       <DrawingPane />
     </div>
@@ -324,40 +304,5 @@ const form = stylex.create({
 });
 
 const aside = stylex.create({
-  root: {
-    flexGrow: 0,
-    flexShrink: 1,
-    flexBasis: 'auto',
-    minHeight: 40,
-    margin: 0,
-    paddingBlock: 8,
-    paddingInline: 10,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: colors.line,
-    borderRadius: 8,
-    backgroundColor: colors.sunken,
-    fontSize: 12,
-    overflow: 'auto',
-    scrollbarWidth: 'thin',
-    scrollbarColor: `${colors.lineStrong} transparent`,
-  },
-  heading: {
-    position: 'sticky',
-    top: -8,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: -8,
-    marginInline: -10,
-    marginBottom: 4,
-    paddingTop: 8,
-    paddingInline: 10,
-    paddingBottom: 4,
-    backgroundColor: colors.sunken,
-  },
-  kind: { fontSize: 9, color: colors.textFaint },
-  question: { flexGrow: 1, minWidth: 0, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  muted: { color: colors.textFaint, margin: 0 },
-  error: { color: colors.danger, margin: 0 },
+  muted: { color: colors.textFaint, margin: 0, fontSize: 12 },
 });
