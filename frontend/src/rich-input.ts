@@ -89,7 +89,16 @@ export class XhaosInput extends Base {
   get value(): string {
     return Array.from(this.childNodes as NodeListOf<ChildNode & RichNode>).map(serializeRichText).join('').replace(/\n+$/, '');
   }
+  // Setting the value while the field has focus goes through the browser's
+  // editing commands, so Ctrl+Z can undo it (a turned-into-chip "#12 ", a
+  // chosen slash command, a dictated transcript). Replacing innerHTML, the
+  // fallback, would wipe the field's undo history.
   set value(text: string) {
+    if (document.activeElement === this && this.value !== text && this.replaceUndoably(text)) {
+      this.dataset.empty = String(!text);
+      this.captureSelection();
+      return;
+    }
     this.innerHTML = markdown(text);
     this.dataset.empty = String(!text);
     this.savedRange = null;
@@ -115,10 +124,25 @@ export class XhaosInput extends Base {
     super.focus(options);
     if (this.moveCaretOnFocus) this.placeCaretAtEnd(); else this.restoreSelection();
   }
+  // replaceUndoably swaps the whole content as one undoable edit.
+  private replaceUndoably(text: string): boolean {
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const all = document.createRange();
+    all.selectNodeContents(this);
+    selection.removeAllRanges(); selection.addRange(all);
+    return text ? document.execCommand('insertHTML', false, markdown(text)) : document.execCommand('delete');
+  }
+  // insertText types text at the caret as the browser would (undoable, and it
+  // fires the input event); hand-made DOM edits are the fallback.
   insertText(text: string) {
     const selection = window.getSelection();
     if (!selection) return;
     if (!selection.rangeCount) this.placeCaretAtEnd();
+    if (this.contains(selection.getRangeAt(0).commonAncestorContainer) && document.execCommand('insertText', false, text)) {
+      this.captureSelection();
+      return;
+    }
     const range = selection.getRangeAt(0);
     if (!this.contains(range.commonAncestorContainer)) return;
     range.deleteContents();
