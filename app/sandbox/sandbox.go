@@ -306,7 +306,11 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 		"npm_config_cache=" + dirs["npm"],
 		"XHAOS_SANDBOX=1",
 	}
-	for _, k := range []string{"LANG", "LC_ALL", "TERM", "TZ", "USER", "LOGNAME", "GOTOOLCHAIN", "GOROOT", "GOPATH", "GOFLAGS", "CGO_ENABLED"} {
+	// Toolchain settings pass through: a system-wide rustup keeps its
+	// toolchains in RUSTUP_HOME (under /opt or /usr, readable here), which its
+	// cargo and rustc proxies need. CARGO_HOME does not: cargo's registry
+	// cache stays in the command's own home, which it can write.
+	for _, k := range []string{"LANG", "LC_ALL", "TERM", "TZ", "USER", "LOGNAME", "GOTOOLCHAIN", "GOROOT", "GOPATH", "GOFLAGS", "CGO_ENABLED", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}

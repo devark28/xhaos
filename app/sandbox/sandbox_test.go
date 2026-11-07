@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -192,5 +193,27 @@ func TestGitSubmodulesAndWorktrees(t *testing.T) {
 	}
 	if dirs := GitDirs(filepath.Join(dir, "wt")); len(dirs) != 2 || dirs[1] != filepath.Join(parent, ".git") {
 		t.Errorf("worktree git dirs = %v", dirs)
+	}
+}
+
+// Toolchain settings reach commands (a system-wide rustup needs RUSTUP_HOME);
+// the rest of the server's environment does not, and HOME is never the real one.
+func TestToolchainSettingsPassThrough(t *testing.T) {
+	t.Setenv("RUSTUP_HOME", "/opt/rust/rustup")
+	t.Setenv("GOROOT", "/usr/local/go")
+	t.Setenv("XHAOS_TEST_SECRET", "nope")
+	c := Config{Cache: t.TempDir()}
+	env, _, err := c.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(kv string) bool { return slices.Contains(env, kv) }
+	if !has("RUSTUP_HOME=/opt/rust/rustup") || !has("GOROOT=/usr/local/go") {
+		t.Errorf("toolchain settings missing: %v", env)
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "XHAOS_TEST_SECRET=") || kv == "HOME="+os.Getenv("HOME") {
+			t.Errorf("leaked %s", kv)
+		}
 	}
 }
