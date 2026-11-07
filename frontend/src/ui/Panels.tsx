@@ -24,7 +24,7 @@ import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { visibleCommands, developerMode, closeBtw } from './state/composer.ts';
 import { restore } from './state/agents.ts';
 import {
-  openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
+  openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, type ProviderForm,
 } from './state/panels.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -536,10 +536,6 @@ function Tools() {
 
 const simple = (): Partial<Record<string, [string, ReactNode]>> => ({
   layout: ['Layout', <P>Use /layout 1, /layout 2, or /layout 3.</P>],
-  dictation: ['Voice dictation', <>
-    <P>Your browser’s speech service may send audio to its provider. The transcript will appear in the command bar for you to review.</P>
-    <Button variant="send" id="start-dictation" onClick={startDictation} sx={shell.wide}>Start microphone</Button>
-  </>],
 });
 
 // The latest /btw answer: a side question about the agents, answered from a
@@ -615,7 +611,6 @@ const shell = stylex.create({
   content: { flexGrow: 1, minHeight: 0, overflow: 'auto', paddingBlock: 8, paddingInline: 12, fontSize: 11, lineHeight: 1.65 },
   p: { color: colors.textMuted, marginTop: 6, marginBottom: 12, marginInline: 0 },
   muted: { color: colors.textFaint },
-  wide: { width: 'auto', paddingInline: 12, marginBlock: 8 },
   questions: { height: '100%', display: 'flex', flexDirection: 'column' },
 });
 

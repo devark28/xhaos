@@ -1,9 +1,9 @@
 // Views and panels: the composer's Message/Draw tab, which side panel is
-// open, and the panels' own actions (memories, providers, tools, dictation).
+// open, and the panels' own actions (memories, providers, tools).
 import { update, get, focusLater, toast, errorText, saveMemories, pendingQuestions, type Layout, type Panel, type PanelKind } from './store.ts';
 import { call, connected, refreshProviders, pushAppearance } from './backend.ts';
 import { loadAppearance, saveAppearance } from '../appearance.ts';
-import { focusComposer, setDraft } from './composer.ts';
+import { focusComposer } from './composer.ts';
 import { refreshProjects } from './projects.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
 import { newId } from '../../ids.ts';
@@ -184,24 +184,4 @@ export async function testProvider(id: string) {
 export async function removeProvider(id: string) {
   try { await call('provider', 'Delete', get().active, id); await refreshProviders(); showProviders('Removed.'); }
   catch (error) { showProviders(`Remove failed: ${errorText(error)}`); }
-}
-
-// ---- dictation -------------------------------------------------------------
-// The Web Speech API is not in TypeScript's DOM types yet.
-interface Recognition { lang: string; interimResults: boolean; start(): void; onresult: (e: any) => void; onerror: (e: any) => void; onend: () => void }
-const speechApi = (): (new () => Recognition) | undefined => (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-export function dictate() {
-  if (!speechApi()) { toast('Dictation is unavailable in this browser. You can type a command.'); return; }
-  openPanel('dictation');
-}
-export function startDictation() {
-  const Speech = speechApi();
-  if (!Speech) return;
-  const recognition = new Speech();
-  recognition.lang = 'en-US'; recognition.interimResults = false;
-  recognition.onresult = e => { setDraft(e.results[0][0].transcript); focusComposer(); toast('Transcript ready. Review it and press send.'); };
-  recognition.onerror = e => toast(`Dictation: ${e.error}`);
-  recognition.onend = () => update(s => { s.recording = false; });
-  showQuestions(get().questionAgentId);
-  try { recognition.start(); update(s => { s.recording = true; }); toast('Listening…'); } catch { toast('Could not start microphone.'); }
 }
