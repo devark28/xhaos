@@ -31,6 +31,7 @@ import (
 	"github.com/devark28/xhaos/app/live"
 	"github.com/devark28/xhaos/app/run"
 	"github.com/devark28/xhaos/app/sandbox"
+	"github.com/devark28/xhaos/app/serve"
 	"github.com/devark28/xhaos/frontend"
 )
 
@@ -132,8 +133,9 @@ func main() {
 		OnShutdown: func() { services.Close() },
 		Assets: application.AssetOptions{
 			Handler: noCache(application.AssetFileServerFS(page)),
-			// Sign-in, and a session for every runtime call and the event stream.
-			Middleware: services.Vault.Middleware(guarded, services.Channels.Links()),
+			// Sign-in, and a session for every runtime call and the event
+			// stream; responses compressed, static files revalidated by ETag.
+			Middleware: middleware(services.Vault.Middleware(guarded, services.Channels.Links())),
 		},
 	})
 
@@ -170,9 +172,23 @@ func pageFiles(dir string) (fs.FS, string, error) {
 	return os.DirFS(dir), dir, nil
 }
 
+// middleware puts compression around everything (event streams and the
+// WebSocket pass through untouched) and ETags on the static files: the page,
+// its bundle, fonts, and Wails's runtime script. Calls, live streams and
+// per-user data are never tagged.
+func middleware(authed func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	dynamic := func(p string) bool {
+		return strings.HasPrefix(p, "/xhaos/") || p == "/wails/runtime" || p == "/wails/events" || p == "/health"
+	}
+	return func(next http.Handler) http.Handler {
+		return serve.Compress(authed(serve.ETag(dynamic, next)))
+	}
+}
+
 // noCache makes browsers revalidate frontend files on every load. They are
 // served straight from disk during development, so a heuristically cached
-// stylesheet or script would otherwise mix old and new code.
+// stylesheet or script would otherwise mix old and new code. With the ETags
+// (middleware), revalidating an unchanged file is one 304 with no body.
 func noCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
