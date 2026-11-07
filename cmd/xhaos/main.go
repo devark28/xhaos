@@ -227,6 +227,7 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Channels.Owner()),
 		application.NewService(s.Files),
 		application.NewService(s.Memories),
+		application.NewService(s.Boards),
 		application.NewService(s.Usage),
 		application.NewService(s.Prefs),
 		application.NewService(s.Secrets),
