@@ -6,6 +6,7 @@ import { update, get, toast, errorText } from './store.ts';
 import { call, connected } from './backend.ts';
 import { focusComposer, getDraft, setDraft } from './composer.ts';
 import { resampler, toInt16, utteranceBase64, DICTATION_RATE, DICTATION_MAX_SECONDS } from '../../audio.ts';
+import { transcribeEstimate, transcribingText, emptyText } from '../../dictation-format.ts';
 
 const MAX_SAMPLES = DICTATION_RATE * DICTATION_MAX_SECONDS; // the backend's limit, in samples
 const MIN_SAMPLES = DICTATION_RATE / 4; // less than a quarter second: nothing to transcribe
@@ -33,6 +34,8 @@ interface Session {
 }
 let phase: Phase = 'idle';
 let session: Session | null = null;
+let measuredRate: number | undefined; // seconds of work per second of speech, from the last timed take
+const RATE_MIN_SECONDS = 3; // shorter takes are mostly the sidecar's start-up, so they do not time the rate
 
 // levelAnalyser is the live input's analyser (for the waveform), or null.
 // It is read per frame by the waveform; it is not store state.
@@ -56,7 +59,7 @@ async function start() {
     } catch (error) { toast(`Dictation is unavailable: ${errorText(error)}`); return; }
     session = await open(get().active);
     phase = 'recording';
-    update(s => { s.recording = true; });
+    update(s => { s.recording = true; s.recordingSince = Date.now(); });
     toast('Listening… Press the mic again to stop.');
   } catch (error) {
     toast(`Could not start the microphone: ${errorText(error)}`);
@@ -66,7 +69,7 @@ async function start() {
 }
 
 async function open(workspace: string): Promise<Session> {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, autoGainControl: false, noiseSuppression: false, echoCancellation: false } });
   let context: AudioContext | null = null;
   try {
     context = new AudioContext();
@@ -124,18 +127,24 @@ async function finish(reason?: string) {
   session = null;
   phase = 'transcribing';
   close(s);
-  update(d => { d.recording = false; });
-  if (reason) toast(reason);
+  update(d => { d.recording = false; d.recordingSince = 0; });
+  const length = s.samples / DICTATION_RATE;
+  const said = (message: string) => (reason ? `${reason} ${message}` : message);
   try {
-    if (s.samples < MIN_SAMPLES) { toast('Nothing recorded. Hold the mic a little longer.'); return; }
-    toast('Transcribing…');
+    if (s.samples < MIN_SAMPLES) { toast(said('Nothing recorded. Hold the mic a little longer.')); return; }
+    const estimate = transcribeEstimate(length, measuredRate);
+    update(d => { d.transcribing = true; d.transcribeEstimate = estimate; });
+    toast(said(transcribingText(estimate)));
+    const started = performance.now();
     const text = String(await call<string>('dictation', 'Transcribe', s.workspace, utteranceBase64(s.chunks)) ?? '').trim();
-    if (!text) { toast('No speech heard.'); return; }
+    if (length >= RATE_MIN_SECONDS) measuredRate = (performance.now() - started) / 1000 / length;
+    if (!text) { toast(emptyText(length)); return; }
     insert(text);
   } catch (error) {
     toast(`Dictation failed: ${errorText(error)}`);
   } finally {
     phase = 'idle';
+    update(d => { d.transcribing = false; });
   }
 }
 

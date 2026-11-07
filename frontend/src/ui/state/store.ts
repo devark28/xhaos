@@ -57,6 +57,9 @@ export interface State {
   menu: SlashCommand[]; // slash command matches
   sending: boolean;
   recording: boolean; // dictation is listening
+  recordingSince: number; // when the take started (ms since the epoch), 0 when idle
+  transcribing: boolean; // dictation is sending the take to the sidecar
+  transcribeEstimate: number; // seconds, as shown while transcribing
   btw: Btw | null; // the latest side question
   toast: { message: string; id: number } | null;
 
@@ -106,6 +109,9 @@ function initial(): State {
     menu: [],
     sending: false,
     recording: false,
+    recordingSince: 0,
+    transcribing: false,
+    transcribeEstimate: 0,
     btw: null,
     toast: null,
     questionAgentId: null,

@@ -20,6 +20,7 @@ import { detachProject } from './state/projects.ts';
 import { showMessageComposer, showDraw } from './state/panels.ts';
 import { toggleDictation } from './state/dictation.ts';
 import { Waveform } from './Waveform.tsx';
+import { DictationStatus, dictateStyles } from './DictationStatus.tsx';
 import type { XhaosInput } from '../rich-input.ts';
 import { useNarrow } from './narrow.ts';
 
@@ -154,6 +155,7 @@ function ComposerForm() {
   const hidden = useApp(s => s.mode !== 'message');
   const sending = useApp(s => s.sending);
   const recording = useApp(s => s.recording);
+  const transcribing = useApp(s => s.transcribing);
   const selected = useApp(s => s.selected);
   const projectName = useApp(s => s.projects.find(p => p.id === s.attachedProject)?.name);
   useLayoutEffect(() => {
@@ -176,7 +178,12 @@ function ComposerForm() {
         <ModelPicker />
       </div>
       <div {...stylex.props(form.actions)}>
-        <Button variant="icon" id="dictate" aria-label={recording ? 'Stop dictation' : 'Dictate command'} aria-pressed={recording} onClick={toggleDictation} chosen={recording}><Icon name="mic" size={16} /></Button>
+        <DictationStatus />
+        <Button variant="icon" id="dictate" aria-label={recording ? 'Stop dictation' : transcribing ? 'Transcribing' : 'Dictate command'} aria-pressed={recording} aria-busy={transcribing || undefined}
+          disabled={transcribing} onClick={toggleDictation} chosen={recording} sx={transcribing ? dictateStyles.busy : undefined}>
+          <Icon name="mic" size={16} />
+          {transcribing && <span aria-hidden="true" {...stylex.props(dictateStyles.ring)} />}
+        </Button>
         <Button variant="send" type="submit" id="send" aria-label="Send command"><Icon name="send" size={15} /></Button>
       </div>
       <CommandMenu />
