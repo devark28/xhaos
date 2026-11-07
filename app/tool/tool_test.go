@@ -215,3 +215,17 @@ func TestAskUserInput(t *testing.T) {
 		t.Fatal("an unknown option was accepted")
 	}
 }
+
+// Agents learn where scratch files go, so logs and downloads stay out of
+// their project.
+func TestBashTellsAgentsAboutTMPDIR(t *testing.T) {
+	for _, s := range Specs() {
+		if s.Name == "bash" {
+			if !strings.Contains(s.Description, "$TMPDIR") || !strings.Contains(s.Description, "kept between commands") {
+				t.Fatalf("bash description does not mention $TMPDIR: %s", s.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("no bash tool")
+}
