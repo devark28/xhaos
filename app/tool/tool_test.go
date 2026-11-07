@@ -140,6 +140,31 @@ func TestClassifyCommand(t *testing.T) {
 		"cat README.md && git show HEAD": Read,
 		"git log 2>&1":                   Read,
 		"echo 'a > b'":                   Exec, // conservative: any > asks, even quoted
+		// output thrown away, or moved between the command's own streams
+		"ls missing 2>/dev/null":                    Read,
+		"grep -rn x . 2>/dev/null | head -5":        Read,
+		"find . -name '*.go' >/dev/null 2>&1 && ls": Read,
+		"git status &>/dev/null; git log -1":        Read,
+		"cat README.md >> /dev/null":                Read,
+		"wc -l < /dev/null":                         Read,
+		"echo oops >&2":                             Read,
+		"echo hi 1>&2":                              Read,
+		"git add -A >/dev/null && git commit -m x":  Git,
+		"ls > /dev/null/../../etc/x":                Exec, // not /dev/null itself
+		"ls >/dev/nullx":                            Exec,
+		"ls 2>/dev/null >out.txt":                   Exec, // a real file too
+		"cat < secrets.txt":                         Exec, // input from a file still asks
+		"echo hi >&2x":                              Exec, // bash: writes the file "2x"
+		"echo hi 2>&1x":                             Exec, // bash: writes the file "1x"
+		"echo hi >&out.txt":                         Exec, // >&word is a file when word is not a number
+		"echo hi >|/dev/null":                       Exec, // noclobber override: not on the list
+		"ls >(cat)":                                 Exec, // process substitution
+		"cat <<<hi":                                 Exec, // here-string
+		"ls 2>/dev/null>out.txt":                    Exec, // a file after /dev/null with no space
+		"ls 2>&1|head":                              Read,
+		"ls 2>/dev/null&&ls":                        Read,
+		"ls 2>/dev/null&rm -rf build":               Exec, // backgrounded, then rm
+		"ls 2>/dev/null; rm -rf build":              Exec,
 		// local git changes
 		"git add -A && git commit -m \"fix: a; b\"": Git,
 		"git switch -c feature/x":                   Git,
