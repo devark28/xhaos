@@ -143,5 +143,13 @@ export const text = stylex.create({
 // Info is a small round (i) that shows a hint as a tooltip on hover and on
 // keyboard focus (global.css: .x-info); screen readers read it as its label.
 export function Info({ text }: { text: string }) {
-  return <button type="button" className="x-info" data-tip={text} aria-label={text} onClick={event => event.preventDefault()}>i</button>;
+  // Before showing, flip the bubble leftward when 240px would not fit to the
+  // right inside the nearest dialog or panel (or the window).
+  const place = (event: { currentTarget: HTMLButtonElement }) => {
+    const el = event.currentTarget;
+    const box = el.closest('dialog, [data-panel-content], #side')?.getBoundingClientRect();
+    const right = box ? box.right : window.innerWidth;
+    el.toggleAttribute('data-tip-flip', el.getBoundingClientRect().left + 240 > right - 8);
+  };
+  return <button type="button" className="x-info" data-tip={text} aria-label={text} onPointerEnter={place} onFocus={place} onClick={event => event.preventDefault()}>i</button>;
 }
