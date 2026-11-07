@@ -141,6 +141,14 @@ export interface Memory {
   updatedAt?: string;
 }
 
+// A Draw board, as the picker lists it (the scene loads when it is opened).
+export interface BoardSummary {
+  id: number;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ModelChoice {
   id: string;
   provider: string;

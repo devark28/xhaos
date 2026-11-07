@@ -10,7 +10,7 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
-import type { Agent, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace, UsageReport } from '../../types.ts';
+import type { Agent, BoardSummary, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace, UsageReport } from '../../types.ts';
 
 enableMapSet();
 
@@ -41,6 +41,8 @@ export interface State {
   projects: Project[];
   attachedProject: number | null; // project attached to the composer: where new agents work
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
+  boards: BoardSummary[]; // the workspace's Draw boards, oldest first
+  boardId: number | null; // the board open in the Draw tab
   openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
   layout: Layout;
@@ -91,6 +93,8 @@ function initial(): State {
     projects: [],
     attachedProject: null,
     files: {},
+    boards: [],
+    boardId: null,
     openDirs: new Set(),
     layout: (() => { try { return (JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').layout as Layout) || 'grid'; } catch { return 'grid' as Layout; } })(),
     search: '',
