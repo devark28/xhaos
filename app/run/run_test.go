@@ -1520,12 +1520,18 @@ func TestDangerouslyAllow(t *testing.T) {
 	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "nope", Minutes: 60}); err == nil {
 		t.Fatal("turned on with a wrong passphrase")
 	}
-	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 7}); err == nil {
-		t.Fatal("accepted an odd duration")
+	for _, bad := range []danger.Request{{Duration: "5s"}, {Duration: "8d"}, {Duration: "soon"}, {Duration: "1h", Calls: 5000}, {Duration: "1h", Calls: -7}} {
+		bad.WorkspaceID, bad.AgentID, bad.Passphrase = ws, a.ID, "right"
+		if _, err := h.s.Danger.Set(bad); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
 	}
-	on, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 60})
+	on, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Duration: "1h", Calls: 120})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := time.Until(on.Danger.Until); on.Danger.Calls != 120 || got < 59*time.Minute || got > time.Hour {
+		t.Fatalf("session = %+v (%s left)", on.Danger, got)
 	}
 	want := fmt.Sprintf("xhaos/%d-fix-login", a.ID)
 	if on.Danger == nil || on.Danger.Branch != want || time.Until(on.Danger.Until) < 59*time.Minute {

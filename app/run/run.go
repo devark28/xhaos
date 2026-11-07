@@ -390,7 +390,20 @@ func (r *Runner) loop(k key) {
 }
 
 // maxSteps bounds model calls per wake-up, so a looping agent stops and asks.
+// A dangerously-allowed session may raise or lift it (callLimit).
 const maxSteps = 40
+
+// callLimit is the limit on model calls in a row for a at now: the
+// session's while dangerously allowed, else maxSteps. 0 means none.
+func callLimit(a agent.Agent, now time.Time) int {
+	if a.DangerActive(now) && a.Danger.Calls != 0 {
+		if a.Danger.Calls == agent.NoCallLimit {
+			return 0
+		}
+		return a.Danger.Calls
+	}
+	return maxSteps
+}
 
 // SystemPrompt is fixed per agent so every turn of a conversation sends the
 // same system prompt (a requirement for replaying thinking blocks and for
@@ -457,8 +470,8 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		if conv[len(conv)-1].From == agent.FromAgent {
 			return // answered; a queued wake-up found nothing new
 		}
-		if step >= maxSteps {
-			fail(fmt.Sprintf("Stopped after %d model calls in a row. Send a message to let the agent continue.", maxSteps))
+		if limit := callLimit(a, time.Now()); limit > 0 && step >= limit {
+			fail(fmt.Sprintf("Stopped after %d model calls in a row. Send a message to let the agent continue.", limit))
 			return
 		}
 		if adapter == nil {

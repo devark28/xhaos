@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBranchLock(t *testing.T) {
@@ -91,5 +92,21 @@ func TestCurrentBranchInASubmodule(t *testing.T) {
 	os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/uvc\n"), 0o644)
 	if b, err := CurrentBranch(sub); b != "feature/uvc" || err != nil {
 		t.Fatalf("branch = %q %v", b, err)
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	for text, want := range map[string]time.Duration{
+		"10s": 10 * time.Second, "15m": 15 * time.Minute, "1h": time.Hour, "10h": 10 * time.Hour,
+		"1d": 24 * time.Hour, "1h30m": 90 * time.Minute, " 2H ": 2 * time.Hour, "7d": 7 * 24 * time.Hour,
+	} {
+		if got, err := ParseDuration(text); err != nil || got != want {
+			t.Errorf("%q = %v %v, want %v", text, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "9s", "8d", "1w", "15", "m", "1h and 2m", "-5m", "99999999999h"} {
+		if got, err := ParseDuration(bad); err == nil {
+			t.Errorf("%q accepted as %v", bad, got)
+		}
 	}
 }

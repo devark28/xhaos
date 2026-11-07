@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,8 +37,39 @@ import (
 	"github.com/devark28/xhaos/app/sandbox"
 )
 
-// Durations the owner can choose, in minutes.
-var Durations = []int{15, 60, 240}
+// How long a session may last.
+const (
+	MinDuration = 10 * time.Second
+	MaxDuration = 7 * 24 * time.Hour
+)
+
+// MaxCalls is the highest call limit a session may set (or NoCallLimit).
+const MaxCalls = 1000
+
+var durationPart = regexp.MustCompile(`(?i)(\d+)\s*(s|m|h|d)`)
+
+// ParseDuration reads <n><unit> parts: 10s, 15m, 2h, 1d, or combined (1h30m).
+// Units are s, m, h and d; the total must be 10 s to 7 days.
+func ParseDuration(text string) (time.Duration, error) {
+	text = strings.TrimSpace(text)
+	parts := durationPart.FindAllStringSubmatchIndex(text, -1)
+	if text == "" || len(parts) == 0 || strings.TrimSpace(durationPart.ReplaceAllString(text, "")) != "" {
+		return 0, fmt.Errorf("%w: %q is not a duration: write a number and a unit, like 10s, 15m, 2h or 1d", apperr.Invalid, text)
+	}
+	var total time.Duration
+	for _, p := range parts {
+		n, err := strconv.Atoi(text[p[2]:p[3]])
+		if err != nil || n > 100000 {
+			return 0, fmt.Errorf("%w: %q is too long", apperr.Invalid, text)
+		}
+		unit := map[string]time.Duration{"s": time.Second, "m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[strings.ToLower(text[p[4]:p[5]])]
+		total += time.Duration(n) * unit
+	}
+	if total < MinDuration || total > MaxDuration {
+		return 0, fmt.Errorf("%w: choose between 10 seconds and 7 days (%s given)", apperr.Invalid, total)
+	}
+	return total, nil
+}
 
 // Protected branches are never pushed to, and never the locked branch.
 func Protected(branch string) bool {
@@ -166,8 +198,14 @@ type Request struct {
 	WorkspaceID string `json:"workspaceId"`
 	AgentID     int64  `json:"agentId"`
 	Passphrase  string `json:"passphrase"`
-	Minutes     int    `json:"minutes"` // 15, 60 or 240
-	Off         bool   `json:"off"`
+	// Duration is how long: <n><unit> parts such as 15m, 1h, 1d or 1h30m.
+	Duration string `json:"duration"`
+	// Minutes is the older form of Duration, used when Duration is empty.
+	Minutes int `json:"minutes,omitempty"`
+	// Calls is the session's limit on model calls in a row: 0 keeps the
+	// normal limit, agent.NoCallLimit lifts it, else 1 to MaxCalls.
+	Calls int  `json:"calls,omitempty"`
+	Off   bool `json:"off"`
 }
 
 // Set turns dangerously allow on for Minutes (after checking the
@@ -186,8 +224,16 @@ func (s *Service) Set(req Request) (agent.Agent, error) {
 	if a.Status == agent.StatusTerminated {
 		return agent.Agent{}, fmt.Errorf("%w: agent #%d is terminated", apperr.Invalid, a.ID)
 	}
-	if !slices.Contains(Durations, req.Minutes) {
-		return agent.Agent{}, fmt.Errorf("%w: choose 15, 60 or 240 minutes", apperr.Invalid)
+	text := req.Duration
+	if text == "" && req.Minutes > 0 {
+		text = strconv.Itoa(req.Minutes) + "m"
+	}
+	length, err := ParseDuration(text)
+	if err != nil {
+		return agent.Agent{}, err
+	}
+	if req.Calls != 0 && req.Calls != agent.NoCallLimit && (req.Calls < 1 || req.Calls > MaxCalls) {
+		return agent.Agent{}, fmt.Errorf("%w: the call limit is 1 to %d, or none", apperr.Invalid, MaxCalls)
 	}
 	if s.Verify != nil {
 		if err := s.Verify(req.WorkspaceID, req.Passphrase); err != nil {
@@ -211,7 +257,7 @@ func (s *Service) Set(req Request) (agent.Agent, error) {
 			branch = next
 		}
 	}
-	d := &agent.Danger{Until: s.now().Add(time.Duration(req.Minutes) * time.Minute), Branch: branch}
+	d := &agent.Danger{Until: s.now().Add(length), Branch: branch, Calls: req.Calls}
 	if err := s.store.SetDanger(req.WorkspaceID, a.ID, d); err != nil {
 		return agent.Agent{}, err
 	}
