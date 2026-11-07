@@ -45,10 +45,11 @@ func TestBindingsExposeNoAgentSideMethods(t *testing.T) {
 // workspace, so the sign-in middleware can hold a session to its own.
 var serverWide = map[string]bool{
 	"health.Service.Status":        true,
-	"workspace.Service.Workspaces": true,                            // names only, as the picker shows them
-	"tool.Service.Catalog":         true,                            // tool descriptions
-	"dictation.Service.Enabled":    true,                            // whether a speech sidecar is configured
-	"prefs.Service.Get":            true, "prefs.Service.Set": true, // appearance, shared by the server
+	"workspace.Service.Workspaces": true,                                                                                   // names only, as the picker shows them
+	"tool.Service.Catalog":         true,                                                                                   // tool descriptions
+	"dictation.Service.Enabled":    true,                                                                                   // whether a speech sidecar is configured
+	"dictation.Service.Keeping":    true, "dictation.Service.SetKeeping": true, "dictation.Service.DeleteRecordings": true, // the Developer setting: keep recordings
+	"prefs.Service.Get": true, "prefs.Service.Set": true, // appearance, shared by the server
 	"usage.Service.Prices": true, "usage.Service.SetPrice": true, "usage.Service.ResetPrice": true, "usage.Service.PriceOf": true, // model prices
 }
 

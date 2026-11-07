@@ -119,6 +119,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"memory", memory.Migrate},
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
+		{"dictation", dictation.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {

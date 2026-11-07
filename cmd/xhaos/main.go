@@ -68,6 +68,7 @@ func main() {
 	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty)")
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
+	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 15 s plus half the utterance's length)")
 	flag.Parse()
 	var proxies []netip.Prefix
 	for _, p := range strings.Split(*trustedProxies, ",") {
@@ -111,9 +112,15 @@ func main() {
 		Version:    version,
 		Passphrase: true,
 		Sandbox:    *sandboxMode,
-		Dictation:  dictation.Config{Program: *dictationCmd, Args: *dictationArgs, Model: *dictationModel},
-		Publish:    func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
-		Notify:     func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
+		Dictation: dictation.Config{
+			Program:    *dictationCmd,
+			Args:       *dictationArgs,
+			Model:      *dictationModel,
+			Timeout:    *dictationTimeout,
+			Recordings: filepath.Join(filepath.Dir(*dbPath), "dictation-debug"),
+		},
+		Publish: func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
+		Notify:  func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
 	})
 	if err != nil {
 		log.Fatal(err)
