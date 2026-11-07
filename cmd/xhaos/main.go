@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
@@ -181,9 +182,21 @@ func middleware(authed func(http.Handler) http.Handler) func(http.Handler) http.
 		return strings.HasPrefix(p, "/xhaos/") || p == "/wails/runtime" || p == "/wails/events" || p == "/health"
 	}
 	return func(next http.Handler) http.Handler {
-		return serve.Compress(authed(serve.ETag(dynamic, next)))
+		h := serve.Compress(authed(serve.ETag(dynamic, next)))
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Runtime calls may run long (transcribing minutes of speech, a
+			// slow model answer): the server's 30-second write timeout would
+			// cut their answer off, which the page reads as an empty result.
+			if r.URL.Path == "/wails/runtime" {
+				_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(callTimeout))
+			}
+			h.ServeHTTP(w, r)
+		})
 	}
 }
+
+// callTimeout is how long a runtime call may take to answer.
+const callTimeout = 10 * time.Minute
 
 // noCache makes browsers revalidate frontend files on every load. They are
 // served straight from disk during development, so a heuristically cached
