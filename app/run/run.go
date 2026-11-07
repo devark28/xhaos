@@ -72,6 +72,9 @@ type Runner struct {
 	OnFinal func(a agent.Agent, answer string)
 	// Sandbox confines agents' shell commands (package sandbox).
 	Sandbox sandbox.Config
+	// Guard keeps protected git state as it was around a dangerously allowed
+	// agent's commands (package danger).
+	Guard *danger.Service
 	// Skills lists skills in the system prompt and gives bash calls their
 	// folders (package skill).
 	Skills *skill.Service
@@ -173,12 +176,13 @@ func (r *Runner) skillDirs(ws string, a agent.Agent, call tool.Call) (sandbox.Ex
 	return x, nil
 }
 
-// lockBreak says why a call breaks a dangerously allowed agent's git lock.
+// lockBreak says why a dangerously allowed agent's command would do what
+// cannot be undone afterwards (see danger.CheckCommand).
 func lockBreak(a agent.Agent, call tool.Call) string {
 	if call.Name != "bash" || a.Danger == nil {
 		return ""
 	}
-	return danger.CheckCommand(call.Summary, a.Danger.Branch)
+	return danger.CheckCommand(call.Summary)
 }
 
 // sealed runs a bash call that holds secrets: values as environment
@@ -289,6 +293,24 @@ func sshSetup(scratch string, keys []string, values map[string]string, use secre
 }
 
 func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+	// While dangerously allowed, git is checked around each command: what it
+	// did to protected branches or the project's checkout is undone.
+	if call.Name == "bash" && r.Guard != nil && a.DangerActive(time.Now()) {
+		before, err := r.Guard.Capture(root)
+		out, runErr := r.run(ctx, root, ws, a, call)
+		if err == nil {
+			if note := r.Guard.Repair(root, before); note != "" {
+				out = strings.TrimRight(out, "\n") + "\n\n" + note
+			}
+		}
+		return out, runErr
+	}
+	return r.run(ctx, root, ws, a, call)
+}
+
+// run runs a call: an extra tool, a sealed command (with secrets), or a
+// built-in tool.
+func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}

@@ -23,7 +23,7 @@ const left = (ms: number) => formatDuration(ms / 1000);
 export function DangerBadge({ agent }: { agent: Agent }) {
   const ms = dangerLeft(agent, useNow(1_000));
   if (ms <= 0) return null;
-  return <span data-danger-badge={agent.id} title={`Dangerously allowed: calls run without asking for ${left(ms)} more${agent.danger?.branch ? `; git locked to ${agent.danger.branch}` : ''}; ${callsText(agent.danger?.calls)}`} {...stylex.props(s.badge)}>⚠ {left(ms)}</span>;
+  return <span data-danger-badge={agent.id} title={`Dangerously allowed: calls run without asking for ${left(ms)} more${agent.danger?.branch ? `; the checkout stays on ${agent.danger.branch}` : ''}; ${callsText(agent.danger?.calls)}`} {...stylex.props(s.badge)}>⚠ {left(ms)}</span>;
 }
 
 // callsText says what a session does to the limit on model calls in a row.
@@ -61,7 +61,7 @@ export function DangerDialog() {
     try {
       if ('error' in parsed) return;
       const a = await call<{ danger?: { branch?: string; calls?: number } }>('danger', 'Set', { workspaceId: get().active, agentId: agent.id, passphrase: pass, duration: durationText, calls: callsSetting(limitOn, calls) });
-      toast(`#${agent.id} is dangerously allowed for ${formatDuration(parsed.seconds)}; ${callsText(a.danger?.calls)}${a.danger?.branch ? `; git locked to ${a.danger.branch}` : ''}.`);
+      toast(`#${agent.id} is dangerously allowed for ${formatDuration(parsed.seconds)}; ${callsText(a.danger?.calls)}${a.danger?.branch ? `; the checkout stays on ${a.danger.branch}` : ''}.`);
       close();
     } catch (error) { toast(errorText(error)); } finally { setBusy(false); }
   };
@@ -72,7 +72,7 @@ export function DangerDialog() {
         <p {...stylex.props(s.text)}>For the time you choose, <strong>{agent.title}</strong> runs every call that would wait for you: writes, any command, commits and pushes, MCP tools.</p>
         <ul {...stylex.props(s.list)}>
           <li>It stays in the sandbox: only its project folder.</li>
-          <li>Git is locked to its current branch (a new <code>xhaos/…</code> branch if it is on main): no switching branches, no force push, no pushing elsewhere.</li>
+          <li>Nothing is switched. It works on its own branches (worktrees under <code>.worktrees/</code>); protected branches like <code>main</code> and the project's checkout are put back if a command changes them. No force pushes, no deleting branches, no pushing to protected branches, and every push names its branch.</li>
           <li>Secrets still ask each use unless you trusted them to it; channels to agents outside its family still ask.</li>
           <li>Its subagents do not get it. You can turn it off any time from its menu.</li>
         </ul>

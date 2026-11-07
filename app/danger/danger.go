@@ -8,16 +8,22 @@
 //   - secrets (a command using one still asks unless the secret was trusted
 //     to the agent), and channels to agents outside its family (still ask);
 //   - denials (a read-only agent stays read-only; blocked commits stay blocked);
-//   - git is locked to one branch: the one checked out when it was turned on
-//     (a new xhaos/… branch when that was main or master). Switching branch,
-//     force pushes, deleting remote branches, and pushing anywhere but that
-//     branch are refused.
+//   - protected branches (main, master, trunk, develop, production,
+//     release…) and the project's own checkout stay as they were. Turning it
+//     on switches nothing: the agent works on its own feature branches (in
+//     worktrees under .worktrees/). Two guards keep the rest safe:
+//   - before a command runs, its text is checked for what cannot be undone
+//     afterwards: pushing to a protected branch, force or delete pushes,
+//     pushes that do not name their branch, deleting or renaming branches;
+//   - around every command, git itself is checked: if a protected branch
+//     moved (or appeared, or went), it is put back, and if the project's
+//     checkout changed branch it is switched back. The agent is told.
 //
-// The branch lock reads commands as text: it stops mistakes, not an agent
-// set on getting around it (it could write a script that pushes). Pushing
-// needs credentials the agent does not have (the sandbox hides SSH keys and
-// the SSH agent; a token comes only as a secret you grant), and branch
-// protection on the remote is the real guard.
+// The text check stops mistakes, not an agent set on getting around it (it
+// could write a script that pushes); the git check catches local changes
+// however they were made. Pushing needs credentials the agent does not have
+// (the sandbox hides SSH keys and the SSH agent; a token comes only as a
+// secret you grant), and branch protection on the remote is the real guard.
 package danger
 
 import (
@@ -27,7 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -81,44 +87,19 @@ func Protected(branch string) bool {
 }
 
 var (
-	gitSwitch = regexp.MustCompile(`\bgit\b[^;&|\n]*?\b(switch|checkout)\b([^;&|\n]*)`)
 	gitPush   = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bpush\b([^;&|\n]*)`)
 	gitBranch = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bbranch\b([^;&|\n]*)`)
 )
 
-// CheckCommand returns why command breaks the branch lock, or "".
-func CheckCommand(command, branch string) string {
-	if branch == "" {
-		return "" // not a git project
-	}
-	for _, m := range gitSwitch.FindAllStringSubmatch(command, -1) {
-		args := strings.Fields(m[2])
-		if len(args) == 0 {
-			continue
-		}
-		if args[0] == "--" || (m[1] == "checkout" && slices.Contains(args, "--")) {
-			continue // checking out files, not a branch
-		}
-		target := ""
-		for _, a := range args {
-			if a == "-c" || a == "-C" || a == "-b" || a == "-B" || a == "--create" || a == "--orphan" || a == "--detach" {
-				return fmt.Sprintf("git is locked to branch %s while dangerously allowed: no new or other branches", branch)
-			}
-			if !strings.HasPrefix(a, "-") && target == "" {
-				target = a
-			}
-		}
-		if target != "" && target != branch {
-			if m[1] == "checkout" {
-				return fmt.Sprintf("git is locked to branch %s while dangerously allowed; to restore files use git restore (or git checkout -- <file>)", branch)
-			}
-			return fmt.Sprintf("git is locked to branch %s while dangerously allowed", branch)
-		}
-	}
+// CheckCommand returns why a command would do what dangerously allow cannot
+// undo afterwards (a push to a protected branch, a force or delete push, a
+// push that does not name its branch, deleting or renaming branches), or "".
+// Local changes are guarded by Capture and Repair instead.
+func CheckCommand(command string) string {
 	for _, m := range gitBranch.FindAllStringSubmatch(command, -1) {
 		for _, a := range strings.Fields(m[1]) {
 			if a == "-d" || a == "-D" || a == "--delete" || a == "-m" || a == "-M" || a == "--move" || a == "-f" || a == "--force" {
-				return fmt.Sprintf("deleting, renaming or forcing branches is refused while dangerously allowed (locked to %s)", branch)
+				return "deleting, renaming or forcing branches is refused while dangerously allowed"
 			}
 		}
 	}
@@ -127,29 +108,31 @@ func CheckCommand(command, branch string) string {
 		for _, a := range strings.Fields(m[1]) {
 			switch {
 			case a == "-f" || strings.HasPrefix(a, "--force") || a == "--delete" || a == "-d" || a == "--mirror" || a == "--all" || a == "--prune" || a == "--tags":
-				return fmt.Sprintf("git push %s is refused while dangerously allowed: push only branch %s, without force", a, branch)
+				return fmt.Sprintf("git push %s is refused while dangerously allowed: push one branch by name, without force", a)
 			case strings.HasPrefix(a, "-"):
 			default:
 				plain = append(plain, a)
 			}
 		}
-		// plain: [remote] [refspec…]
-		if len(plain) > 1 {
-			for _, ref := range plain[1:] {
-				if strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, ":") {
-					return fmt.Sprintf("force or delete refspec %q is refused while dangerously allowed", ref)
-				}
-				dst := ref
-				if _, after, ok := strings.Cut(ref, ":"); ok {
-					dst = after
-				}
-				dst = strings.TrimPrefix(dst, "refs/heads/")
-				if dst == "HEAD" {
-					dst = branch
-				}
-				if dst != branch {
-					return fmt.Sprintf("pushing to %s is refused while dangerously allowed: only %s", dst, branch)
-				}
+		// plain: [remote] [refspec…]; the branch must be named, so the
+		// destination is known before anything leaves this machine.
+		if len(plain) < 2 {
+			return "name the branch to push while dangerously allowed: git push origin <branch>"
+		}
+		for _, ref := range plain[1:] {
+			if strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, ":") {
+				return fmt.Sprintf("force or delete refspec %q is refused while dangerously allowed", ref)
+			}
+			dst := ref
+			if _, after, ok := strings.Cut(ref, ":"); ok {
+				dst = after
+			}
+			dst = strings.TrimPrefix(dst, "refs/heads/")
+			if dst == "HEAD" || dst == "@" {
+				return "name the branch to push while dangerously allowed, not HEAD: git push origin <branch>"
+			}
+			if Protected(dst) {
+				return fmt.Sprintf("pushing to %s is refused while dangerously allowed: it is a protected branch", dst)
 			}
 		}
 	}
@@ -246,16 +229,10 @@ func (s *Service) Set(req Request) (agent.Agent, error) {
 		if err != nil {
 			return agent.Agent{}, err
 		}
-		if branch, err = CurrentBranch(root); err != nil {
-			return agent.Agent{}, fmt.Errorf("%w: %v", apperr.Invalid, err)
-		}
-		if Protected(branch) {
-			next := fmt.Sprintf("xhaos/%d-%s", a.ID, slug(a.Title))
-			if err := s.git(root, "git switch -c "+next+" || git switch "+next); err != nil {
-				return agent.Agent{}, fmt.Errorf("could not move off %s to a branch of its own (%s): %v", branch, next, err)
-			}
-			branch = next
-		}
+		// Recorded, not changed: the checkout stays on its branch (Repair
+		// switches it back if a command moves it). A detached checkout is
+		// guarded by its commit, so it records no branch.
+		branch, _ = CurrentBranch(root)
 	}
 	d := &agent.Danger{Until: s.now().Add(length), Branch: branch, Calls: req.Calls}
 	if err := s.store.SetDanger(req.WorkspaceID, a.ID, d); err != nil {
@@ -265,30 +242,111 @@ func (s *Service) Set(req Request) (agent.Agent, error) {
 }
 
 // git runs a git command in root inside the sandbox (a project's git config
-// can run programs, so never as the server itself).
-func (s *Service) git(root, command string) error {
+// can run programs, so never as the server itself) and returns its output.
+func (s *Service) git(root, command string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd, err := s.Sandbox.Command(ctx, root, command)
 	if err != nil {
-		return err
+		return "", err
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return string(out), nil
 }
 
-var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
+// Guard is what dangerously allow keeps as it was in a project: the branch
+// its checkout is on, and where each protected branch points.
+type Guard struct {
+	Git       bool              // a git project (else nothing is guarded)
+	Head      string            // "refs/heads/main", or a commit when detached
+	Protected map[string]string // protected branch → commit
+}
 
-func slug(title string) string {
-	s := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(title), "-"), "-")
-	if len(s) > 30 {
-		s = strings.TrimRight(s[:30], "-")
+// safeRef is a branch name that can go into a command line unquoted.
+var safeRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
+// Capture records root's guarded state, before a command runs.
+func (s *Service) Capture(root string) (Guard, error) {
+	if dirs := sandbox.GitDirs(root); len(dirs) == 0 {
+		return Guard{}, nil
 	}
-	if s == "" {
-		s = "work"
+	out, err := s.git(root, "git symbolic-ref -q HEAD || git rev-parse HEAD; echo ---; git for-each-ref --format='%(refname:short) %(objectname)' refs/heads")
+	if err != nil {
+		return Guard{}, err
 	}
-	return s
+	head, refs, _ := strings.Cut(out, "---\n")
+	g := Guard{Git: true, Head: strings.TrimSpace(head), Protected: map[string]string{}}
+	for _, line := range strings.Split(refs, "\n") {
+		name, commit, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if ok && Protected(name) {
+			g.Protected[name] = commit
+		}
+	}
+	return g, nil
+}
+
+// Repair puts root back as before was: protected branches to where they
+// pointed (a new one removed, a deleted one restored), and the checkout to
+// its branch. It returns what it undid, for the agent, or "".
+func (s *Service) Repair(root string, before Guard) string {
+	if !before.Git {
+		return ""
+	}
+	after, err := s.Capture(root)
+	if err != nil {
+		return "Dangerously allow could not check git after this command: " + err.Error()
+	}
+	var notes []string
+	names := map[string]bool{}
+	for n := range before.Protected {
+		names[n] = true
+	}
+	for n := range after.Protected {
+		names[n] = true
+	}
+	for name := range names {
+		was, now := before.Protected[name], after.Protected[name]
+		if was == now {
+			continue
+		}
+		if !safeRef.MatchString(name) {
+			notes = append(notes, fmt.Sprintf("protected branch %q changed and could not be put back automatically: tell the owner", name))
+			continue
+		}
+		var cmd, done string
+		switch {
+		case was == "":
+			cmd, done = "git update-ref -d refs/heads/"+name+" "+now, fmt.Sprintf("removed the new protected branch %s", name)
+		case now == "":
+			cmd, done = "git update-ref refs/heads/"+name+" "+was, fmt.Sprintf("restored the deleted protected branch %s at %.7s", name, was)
+		default:
+			cmd, done = "git update-ref refs/heads/"+name+" "+was+" "+now, fmt.Sprintf("put %s back at %.7s (it had moved to %.7s; those commits are still in git reflog)", name, was, now)
+		}
+		if _, err := s.git(root, cmd); err != nil {
+			notes = append(notes, fmt.Sprintf("could not undo the change to %s: %v", name, err))
+			continue
+		}
+		notes = append(notes, done)
+	}
+	if after.Head != before.Head {
+		branch, ok := strings.CutPrefix(before.Head, "refs/heads/")
+		switch {
+		case !ok || !safeRef.MatchString(branch):
+			notes = append(notes, "the project's checkout moved off "+before.Head+" and could not be switched back automatically: tell the owner")
+		default:
+			if _, err := s.git(root, "git switch -q "+branch); err != nil {
+				notes = append(notes, fmt.Sprintf("the project's checkout moved off %s and switching it back failed (%v): tell the owner", branch, err))
+			} else {
+				notes = append(notes, "switched the project's checkout back to "+branch+" (work on your own branch in a worktree under .worktrees/)")
+			}
+		}
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	sort.Strings(notes)
+	return "Dangerously allow undid what this command did to protected git state: " + strings.Join(notes, "; ") + "."
 }
