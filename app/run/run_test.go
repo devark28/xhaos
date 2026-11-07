@@ -1743,6 +1743,44 @@ func TestSpawnLimitsAndPausedRecipients(t *testing.T) {
 const maxChildrenForTest = 8
 
 // /btw also sees channels and memories, and skips compaction summaries.
+// A channel can hold only its creator: published, it is an inbox whose
+// outside messages wake that one agent (no silent subagent needed).
+func TestChannelOfOneIsAnInbox(t *testing.T) {
+	h := setup(t, func(turn llm.Turn) (llm.Result, error) { return llm.Result{Text: "noted", StopReason: "end_turn"}, nil })
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "solo", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	c, err := h.s.Channels.Create(a, "intake", nil, "")
+	if err != nil || len(c.Members) != 1 || c.Members[0] != a.ID {
+		t.Fatalf("solo channel = %+v %v", c, err)
+	}
+	if _, err := h.s.Channels.Send(a, c.ID, "inbox open"); err != nil {
+		t.Fatalf("send to a channel of one: %v", err)
+	}
+	pub, err := h.s.Channels.Owner().Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h.s.Channels.Links())
+	defer srv.Close()
+	req, _ := http.NewRequest("POST", srv.URL+channel.LinkPath(ws, c.ID), strings.NewReader(`{"from":"script","body":"here is a file"}`))
+	req.Header.Set("Authorization", "Bearer "+pub.Passphrase)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusCreated {
+		t.Fatalf("outside POST = %v %v", res, err)
+	}
+	res.Body.Close()
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	msgs, _ := agent.NewStore(h.s.DB(), nil).Messages(ws, a.ID)
+	found := false
+	for _, m := range msgs {
+		found = found || (m.From == agent.FromChannel && strings.HasSuffix(m.Body, "here is a file"))
+	}
+	if !found {
+		t.Fatalf("the creator did not get the outside message: %+v", msgs)
+	}
+}
+
 func TestBtwDigestIncludesChannelsAndMemories(t *testing.T) {
 	h := setup(t, func(llm.Turn) (llm.Result, error) { return llm.Result{Text: "answer", StopReason: "end_turn"}, nil })
 	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})

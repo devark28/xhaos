@@ -350,9 +350,8 @@ func (s *Service) Create(creator agent.Agent, subject string, members []int64, k
 		}
 		set[m] = true
 	}
-	if len(set) < 2 {
-		return Channel{}, errors.New("a channel needs at least one other member")
-	}
+	// A channel may hold only its creator: an inbox that outside programs
+	// reach once it is published (see link.go).
 	ids := make([]int64, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
@@ -677,8 +676,8 @@ func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
 		{Name: "agents_list", Description: "List the agents you can talk to through channels: their ID, title, project, and status.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
-		{Name: "channel_create", Description: "Open a channel with other agents (see agents_list for who you may include). Messages sent there reach every member and wake them. A channel with agents outside your own family (your parent, siblings, and subagents) waits for the user's approval, so say in message who you are and why you are reaching out.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"subject": str, "members": map[string]any{"type": "array", "items": integer, "description": "Agent IDs to include besides you."}, "message": map[string]any{"type": "string", "description": "Optional first message, sent when the channel opens."}}, Required: []string{"subject", "members"}}},
+		{Name: "channel_create", Description: "Open a channel with other agents (see agents_list for who you may include), or with no one else (members: []) as an inbox the user can publish as a link for outside programs, whose messages then reach you. Messages sent there reach every member and wake them. A channel with agents outside your own family (your parent, siblings, and subagents) waits for the user's approval, so say in message who you are and why you are reaching out.",
+			Schema: llm.ToolSchema{Properties: map[string]any{"subject": str, "members": map[string]any{"type": "array", "items": integer, "description": "Agent IDs to include besides you; empty for a channel only you are in."}, "message": map[string]any{"type": "string", "description": "Optional first message, sent when the channel opens."}}, Required: []string{"subject", "members"}}},
 		{Name: "channel_send", Description: "Send a message to a channel you are in. Every other member receives it and wakes up; their replies come back to you the same way.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"channel": integer, "message": str}, Required: []string{"channel", "message"}}},
 		{Name: "channel_list", Description: "List the channels you are in, with their subjects and members.",
