@@ -1,6 +1,7 @@
 // The Go backend connection and startup. The connection object lives here,
 // not in the store: it holds the Wails runtime, which must not be frozen.
 import { connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
+import { onBoardEvent } from './boards.ts';
 import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
@@ -162,6 +163,7 @@ async function startBackend(connection: Backend, workspaceId: string) {
     s.ready = true;
   }); void refreshChannels(); if (synced) void refreshMemories(); synced = true; };
   const onEvent = (event: BackendEvent) => {
+    if (onBoardEvent(event)) return; // boards keep their own state (state/boards.ts)
     if (event.kind === 'agent.message' && event.data?.from !== 'owner') usageSoon();
     if (event.kind === 'agent.message' && event.data?.from === 'agent') saved.set(event.agentId, (saved.get(event.agentId) || 0) + 1);
     update(s => {
