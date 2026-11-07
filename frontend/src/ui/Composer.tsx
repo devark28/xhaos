@@ -18,7 +18,9 @@ import {
 } from './state/composer.ts';
 import { detachRecipient } from './state/agents.ts';
 import { detachProject } from './state/projects.ts';
-import { showMessageComposer, showDraw, dictate } from './state/panels.ts';
+import { showMessageComposer, showDraw } from './state/panels.ts';
+import { toggleDictation } from './state/dictation.ts';
+import { Waveform } from './Waveform.tsx';
 import type { XhaosInput } from '../rich-input.ts';
 import { useNarrow } from './narrow.ts';
 
@@ -175,10 +177,11 @@ function ComposerForm() {
         <ModelPicker />
       </div>
       <div {...stylex.props(form.actions)}>
-        <Button variant="icon" id="dictate" aria-label="Dictate command" onClick={dictate} chosen={recording}><Icon name="mic" size={16} /></Button>
+        <Button variant="icon" id="dictate" aria-label={recording ? 'Stop dictation' : 'Dictate command'} aria-pressed={recording} onClick={toggleDictation} chosen={recording}><Icon name="mic" size={16} /></Button>
         <Button variant="send" type="submit" id="send" aria-label="Send command"><Icon name="send" size={15} /></Button>
       </div>
       <CommandMenu />
+      <Waveform />
     </form>
   );
 }
