@@ -284,9 +284,13 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// Only the kinds a reader takes from the snapshot: the agents' messages
+	// and tool calls (viewFromSnapshot, btw's digest). Status, title and
+	// danger come in the Agent entries; other workspace events (channels,
+	// boards, memories, skills, secrets) reach the pages by their own paths.
 	snap.Transcript = []eventlog.Event{}
 	for _, e := range events {
-		if e.Kind != EventCreated {
+		if e.Kind == EventMessage || e.Kind == EventTool {
 			snap.Transcript = append(snap.Transcript, e)
 		}
 	}

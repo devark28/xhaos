@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/devark28/xhaos/app/agent"
 	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/policy"
 	"github.com/devark28/xhaos/app/workspace"
@@ -156,5 +158,38 @@ func TestNoProjectNoAgents(t *testing.T) {
 	}
 	if _, err := s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "x"}); err == nil || !strings.Contains(err.Error(), "Files tab") {
 		t.Fatalf("Create without a project = %v", err)
+	}
+}
+
+// A workspace's boards never reach the agent snapshot: its transcript holds
+// only agent messages and tool calls, however many board changes happen.
+func TestSnapshotHasNoBoardEvents(t *testing.T) {
+	s, _, _ := open(t)
+	mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "p", Prompt: "Hello"})
+	b, err := s.Boards.Create(board.CreateRequest{WorkspaceID: ws, Name: "Sketch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Boards.Rename(board.RenameRequest{WorkspaceID: ws, ID: b.ID, Name: "Renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	el := json.RawMessage(`{"id":"a","version":1,"versionNonce":1,"type":"rectangle"}`)
+	if _, err := s.Boards.Save(board.SaveRequest{WorkspaceID: ws, ID: b.ID, Source: "p", Elements: []json.RawMessage{el}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Boards.Delete(ws, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Agents.Snapshot(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Transcript) != 1 {
+		t.Fatalf("transcript = %d events, want the one agent message", len(snap.Transcript))
+	}
+	for _, e := range snap.Transcript {
+		if strings.HasPrefix(e.Kind, "board.") {
+			t.Errorf("snapshot carries %s", e.Kind)
+		}
 	}
 }
