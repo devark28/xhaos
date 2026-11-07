@@ -47,6 +47,7 @@ var serverWide = map[string]bool{
 	"health.Service.Status":        true,
 	"workspace.Service.Workspaces": true,                            // names only, as the picker shows them
 	"tool.Service.Catalog":         true,                            // tool descriptions
+	"dictation.Service.Enabled":    true,                            // whether a speech sidecar is configured
 	"prefs.Service.Get":            true, "prefs.Service.Set": true, // appearance, shared by the server
 	"usage.Service.Prices": true, "usage.Service.SetPrice": true, "usage.Service.ResetPrice": true, "usage.Service.PriceOf": true, // model prices
 }

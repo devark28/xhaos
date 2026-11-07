@@ -25,6 +25,7 @@ import (
 
 	"github.com/devark28/xhaos/app/auth"
 	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/dictation"
 	"github.com/devark28/xhaos/app/egress"
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/health"
@@ -63,6 +64,9 @@ func main() {
 	sandboxMode := flag.String("sandbox", sandbox.Auto, "confine agents' commands with Landlock: auto (when the kernel supports it), on (refuse commands without it), off")
 	publicHosts := flag.String("public-host", "", "domain names a reverse proxy serves this server under (comma-separated, e.g. xhaos.example.com); needed when it listens on localhost behind the proxy")
 	trustedProxies := flag.String("trusted-proxy", "", "reverse proxies whose X-Forwarded-For and X-Forwarded-Proto headers are trusted (comma-separated addresses or CIDRs, e.g. 127.0.0.1,::1)")
+	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty)")
+	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
+	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	flag.Parse()
 	var proxies []netip.Prefix
 	for _, p := range strings.Split(*trustedProxies, ",") {
@@ -106,6 +110,7 @@ func main() {
 		Version:    version,
 		Passphrase: true,
 		Sandbox:    *sandboxMode,
+		Dictation:  dictation.Config{Program: *dictationCmd, Args: *dictationArgs, Model: *dictationModel},
 		Publish:    func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
 		Notify:     func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
 	})
@@ -220,5 +225,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Danger),
 		application.NewService(s.Skills),
 		application.NewService(s.Web),
+		application.NewService(s.Dictation),
 	}
 }
