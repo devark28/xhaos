@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/devark28/xhaos/app/apperr"
-	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/sqlitedb"
 )
 
@@ -96,6 +95,7 @@ func (s *Service) Load(workspaceID string, id int64) (Board, error) {
 type SaveRequest struct {
 	WorkspaceID string            `json:"workspaceId"`
 	ID          int64             `json:"id"`
+	Source      string            `json:"source"`   // the page saving, echoed in the notice
 	Elements    []json.RawMessage `json:"elements"` // the page's elements, deleted ones included
 	AppState    json.RawMessage   `json:"appState"`
 }
@@ -106,13 +106,6 @@ type SaveRequest struct {
 type SaveResult struct {
 	UpdatedAt time.Time         `json:"updatedAt"`
 	Newer     []json.RawMessage `json:"newer"`
-}
-
-// savedEvent is the body of EventSaved: the elements the save changed.
-type savedEvent struct {
-	ID        int64             `json:"id"`
-	UpdatedAt time.Time         `json:"updatedAt"`
-	Elements  []json.RawMessage `json:"elements"`
 }
 
 // Save merges the page's elements into the board, one by one: an element
@@ -186,18 +179,11 @@ func (s *Service) Save(req SaveRequest) (SaveResult, error) {
 	if _, err := tx.Exec(`UPDATE boards SET app_state = ? WHERE id = ?`, appStateOrEmpty(req.AppState), req.ID); err != nil {
 		return SaveResult{}, err
 	}
-	var ev eventlog.Event
-	if len(accepted) > 0 {
-		ev, err = eventlog.Append(tx, req.WorkspaceID, 0, EventSaved, savedEvent{ID: req.ID, UpdatedAt: updated, Elements: accepted}, now)
-		if err != nil {
-			return SaveResult{}, err
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return SaveResult{}, err
 	}
 	if len(accepted) > 0 {
-		s.publish(ev)
+		s.notify(req.WorkspaceID, Notice{Kind: NoticeSaved, WorkspaceID: req.WorkspaceID, ID: req.ID, Source: req.Source, UpdatedAt: updated, Elements: accepted})
 	}
 	return SaveResult{UpdatedAt: updated, Newer: newer}, nil
 }

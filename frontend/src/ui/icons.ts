@@ -11,6 +11,8 @@ export const iconPaths = {
   chat: '<path d="M4 4h16v13H9l-5 4V4Z"/>',
   // A side answer (/btw): a speech bubble with an aside mark.
   aside: '<path d="M4 4h16v13H9l-5 4V4Z"/><path d="M9 9h6M9 12.5h3.5"/>',
+  // A board: a sheet with a pen stroke across it.
+  board: '<rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M7 14c2-3 3.5 1 5.5-1.5S16 10 17 9"/><path d="M8 21h8"/>',
   memory: '<path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3m6-16a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3M9 3v18m6-18v18M9 8h6m-6 8h6"/>',
   settings: '<path d="M9.2 3.5 9.8 2h4.4l.6 1.5.4 1.6 1.5.9 1.6-.5 1.6.2 2.2 3.8-.8 1.3-1.2 1.1v1.8l1.2 1.1.8 1.3-2.2 3.8-1.6.2-1.6-.5-1.5.9-.4 1.6-.6 1.5H9.8l-.6-1.5-.4-1.6-1.5-.9-1.6.5-1.6-.2-2.2-3.8.8-1.3 1.2-1.1v-1.8l-1.2-1.1-.8-1.3 2.2-3.8 1.6-.2 1.6.5 1.5-.9.4-1.6Z"/><circle cx="12" cy="12" r="3"/>',
   check: '<path d="m5 12 4 4L19 6"/>',

@@ -25,6 +25,7 @@ type fixture struct {
 	dir   string
 	other string // a second workspace
 	seen  []eventlog.Event
+	notes []Notice
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -48,7 +49,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{db: db, dir: filepath.Join(dir, "boards"), other: "other"}
-	f.svc = NewService(db, func(e eventlog.Event) { f.seen = append(f.seen, e) }, f.dir)
+	f.svc = NewService(db, func(e eventlog.Event) { f.seen = append(f.seen, e) }, func(_ string, n Notice) { f.notes = append(f.notes, n) }, f.dir)
 	return f
 }
 
@@ -252,23 +253,55 @@ func TestDeletionIsATombstoneThatWins(t *testing.T) {
 	}
 }
 
-func TestSaveEventCarriesOnlyChanges(t *testing.T) {
+func TestSaveNoticeCarriesOnlyChanges(t *testing.T) {
 	f := newFixture(t)
 	b, _ := f.svc.Create(CreateRequest{WorkspaceID: workspace.DefaultID})
 	ws := workspace.DefaultID
-	f.seen = nil
-	f.svc.Save(SaveRequest{WorkspaceID: ws, ID: b.ID, Elements: []json.RawMessage{el("a", 1, 1, ""), el("b", 1, 1, "")}})
-	f.svc.Save(SaveRequest{WorkspaceID: ws, ID: b.ID, Elements: []json.RawMessage{el("a", 1, 1, ""), el("b", 2, 1, "")}})
-	if len(f.seen) != 2 || f.seen[0].Kind != EventSaved {
-		t.Fatalf("events = %v", kinds(f.seen))
+	f.notes = nil
+	f.svc.Save(SaveRequest{WorkspaceID: ws, ID: b.ID, Source: "page-1", Elements: []json.RawMessage{el("a", 1, 1, ""), el("b", 1, 1, "")}})
+	f.svc.Save(SaveRequest{WorkspaceID: ws, ID: b.ID, Source: "page-1", Elements: []json.RawMessage{el("a", 1, 1, ""), el("b", 2, 1, "")}})
+	if len(f.notes) != 2 {
+		t.Fatalf("notices = %d, want 2", len(f.notes))
 	}
-	var body struct {
-		ID       int64             `json:"id"`
-		Elements []json.RawMessage `json:"elements"`
+	n := f.notes[1]
+	if n.Kind != NoticeSaved || n.ID != b.ID || n.Source != "page-1" || strings.Join(ids(n.Elements), ",") != "b" {
+		t.Errorf("second notice = %+v, want only b from page-1", n)
 	}
-	json.Unmarshal(f.seen[1].Data, &body)
-	if body.ID != b.ID || strings.Join(ids(body.Elements), ",") != "b" {
-		t.Errorf("second event carries %s, want only b", f.seen[1].Data)
+}
+
+// Saves reach other pages live and are not stored: after many saves the
+// workspace's event log (the agent snapshot's transcript) is what it was, with
+// no board events in it.
+func TestSavesAreNotStored(t *testing.T) {
+	f := newFixture(t)
+	ws := workspace.DefaultID
+	b, _ := f.svc.Create(CreateRequest{WorkspaceID: ws})
+	before, err := eventlog.List(f.db, ws, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.notes = nil
+	const saves = 200
+	for i := 1; i <= saves; i++ {
+		// Each save changes one element, so the event body would grow with it.
+		if _, err := f.svc.Save(SaveRequest{WorkspaceID: ws, ID: b.ID, Source: "page-1", Elements: []json.RawMessage{el("a", int64(i), int64(i), `,"points":[[0,0],[1,1]]`)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := eventlog.List(f.db, ws, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("event log grew by %d after %d saves: %v", len(after)-len(before), saves, kinds(after[len(before):]))
+	}
+	for _, e := range after {
+		if strings.HasPrefix(e.Kind, "board.saved") {
+			t.Errorf("a save was stored as %s", e.Kind)
+		}
+	}
+	if len(f.notes) != saves {
+		t.Errorf("notices = %d, want %d", len(f.notes), saves)
 	}
 }
 

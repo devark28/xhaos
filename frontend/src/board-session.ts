@@ -2,7 +2,12 @@
 // scene's changes back (debounced), fetches the images the scene needs, and
 // merges the changes other pages made. It holds no Excalidraw code: the page
 // gives it a SceneHost, so the merge logic can be tested with a fake scene.
-import { changedElements, elementKey, keepAppState, missingFiles, referencedFiles, dataURLBase64, dataURLFor, type SceneElement, type SceneFile } from './board.ts';
+import { changedElements, editOf, keepAppState, missingFiles, referencedFiles, sameEdit, dataURLBase64, dataURLFor, type Edit, type SceneElement, type SceneFile } from './board.ts';
+import { newId } from './ids.ts';
+
+// pageId names this page in its saves: the server echoes it in the notice for
+// each save, so the page skips its own (see BoardSession.notice).
+export const pageId = newId();
 
 // BoardCall calls a method of the board service.
 export type BoardCall = (method: string, ...args: any[]) => Promise<any>;
@@ -29,6 +34,7 @@ export async function pushScene(
   boardId: number,
   scene: { elements: SceneElement[]; appState: Record<string, unknown>; files: Record<string, SceneFile> },
   uploaded: Set<string>,
+  source = pageId,
 ): Promise<SaveResult> {
   for (const fileId of referencedFiles(scene.elements)) {
     if (uploaded.has(fileId)) continue;
@@ -37,7 +43,7 @@ export async function pushScene(
     await call('AddImage', { workspaceId, boardId, fileId, created: file.created, data: dataURLBase64(file.dataURL) });
     uploaded.add(fileId);
   }
-  return call('Save', { workspaceId, id: boardId, elements: scene.elements, appState: keepAppState(scene.appState) });
+  return call('Save', { workspaceId, id: boardId, source, elements: scene.elements, appState: keepAppState(scene.appState) });
 }
 
 export interface SessionOptions {
@@ -46,16 +52,17 @@ export interface SessionOptions {
   boardId: number;
   host: SceneHost;
   onError?: (error: unknown) => void;
-  delay?: number; // ms of quiet before a save; 800 by default
+  interval?: number; // at most one save per interval while the scene changes; 120 ms by default
+  source?: string; // this page's ID in its saves; pageId by default
 }
 
 export class BoardSession {
-  private synced = new Map<string, string>(); // element ID -> the elementKey the server holds
+  private synced = new Map<string, Edit>(); // element ID -> the edit the server holds
   private uploaded = new Set<string>(); // image file IDs the server holds
   private images: BoardImage[] = [];
   private fetching = new Set<string>();
   private unavailable = new Set<string>(); // images the server does not have
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined; // the save that is due, if any
   private queue: Promise<void> = Promise.resolve(); // saves run one at a time
   private readonly o: SessionOptions;
 
@@ -82,7 +89,7 @@ export class BoardSession {
   private remember(images: BoardImage[], elements: SceneElement[]) {
     this.images = images;
     for (const image of images) this.uploaded.add(image.fileId);
-    this.synced = new Map(elements.map(e => [e.id, elementKey(e)]));
+    this.synced = new Map(elements.map(e => [e.id, editOf(e)]));
   }
 
   // receive merges elements another page changed (a live event, or a resync).
@@ -94,9 +101,16 @@ export class BoardSession {
     const now = new Map(this.o.host.elements().map(e => [e.id, e]));
     for (const e of remote) {
       const local = now.get(e.id);
-      if (local && elementKey(local) === elementKey(e)) this.synced.set(e.id, elementKey(e));
+      if (local && sameEdit(editOf(e), local)) this.synced.set(e.id, editOf(e));
     }
     void this.loadImages();
+  }
+
+  // notice applies a save another page made (the server's live notice for it).
+  // The page's own saves are skipped: their elements are already in the scene.
+  notice(n: { source?: string; elements: SceneElement[] }): void {
+    if (n.source === (this.o.source ?? pageId)) return;
+    this.receive(n.elements);
   }
 
   // loadImages fetches the images the open scene uses and the page lacks.
@@ -122,15 +136,19 @@ export class BoardSession {
     if (files.length) this.o.host.addFiles(files);
   }
 
-  // changed is called on every edit to the scene: the save waits for a pause.
+  // changed is called on every edit to the scene. A save is due one interval
+  // after the first edit that finds none pending, and it takes every edit made
+  // up to then: while the scene keeps changing (a stroke), the other pages get
+  // it about every interval, and the last edit is always saved.
   changed(): void {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => void this.flush(), this.o.delay ?? 800);
+    if (this.timer !== undefined) return;
+    this.timer = setTimeout(() => { this.timer = undefined; void this.flush(); }, this.o.interval ?? 120);
   }
 
   // flush saves what changed now, and resolves when the save has run.
   flush(): Promise<void> {
     clearTimeout(this.timer);
+    this.timer = undefined;
     this.queue = this.queue.then(() => this.save()).catch(error => this.o.onError?.(error));
     return this.queue;
   }
@@ -144,10 +162,10 @@ export class BoardSession {
     const host = this.o.host;
     const sent = changedElements(host.elements(), this.synced);
     if (!sent.length) return; // an app-state-only change waits for the next edit
-    const result = await pushScene(this.o.call, this.o.workspaceId, this.o.boardId, { elements: sent, appState: host.appState(), files: host.files() }, this.uploaded);
+    const result = await pushScene(this.o.call, this.o.workspaceId, this.o.boardId, { elements: sent, appState: host.appState(), files: host.files() }, this.uploaded, this.o.source ?? pageId);
     const newer = new Set(result.newer.map(e => e.id));
-    for (const e of sent) if (!newer.has(e.id)) this.synced.set(e.id, elementKey(e));
-    for (const e of result.newer) this.synced.set(e.id, elementKey(e));
+    for (const e of sent) if (!newer.has(e.id)) this.synced.set(e.id, editOf(e));
+    for (const e of result.newer) this.synced.set(e.id, editOf(e));
     if (result.newer.length) {
       host.merge(result.newer);
       void this.loadImages();

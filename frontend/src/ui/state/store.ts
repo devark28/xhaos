@@ -16,7 +16,7 @@ enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
-export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation' | 'btw';
+export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'boards' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation' | 'btw';
 export interface Panel { kind: PanelKind; section?: string; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];

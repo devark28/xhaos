@@ -18,10 +18,12 @@ import { Skills } from './Skills.tsx';
 import { WebSettings } from './WebSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
+import { BoardList } from './Boards.tsx';
 import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { visibleCommands, developerMode, closeBtw } from './state/composer.ts';
+import { newBoard } from './state/boards.ts';
 import { restore } from './state/agents.ts';
 import {
   openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, startDictation, type ProviderForm,
@@ -573,6 +575,7 @@ export function Panel() {
   else if (panel.kind === 'files') body = <Shell title="Files"><Files /></Shell>;
   else if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
   else if (panel.kind === 'channels') body = <Channels channelId={panel.channelId} />;
+  else if (panel.kind === 'boards') body = <Shell title="Boards" action={<Button id="new-board" onClick={() => void newBoard()}>New board</Button>}><BoardList /></Shell>;
   else if (panel.kind === 'providers') body = <Settings focus="models" message={panel.message} testing={panel.testing} />;
   else if (panel.kind === 'history') body = <History />;
   else if (panel.kind === 'status') body = <Status />;

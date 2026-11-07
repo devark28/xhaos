@@ -20,15 +20,21 @@ export interface SceneFile {
   created: number;
 }
 
-// The key of an element's edit: a version and its tie-breaking nonce. Two
-// elements with the same key are the same edit.
-export const elementKey = (e: SceneElement) => `${e.version ?? 0}:${e.versionNonce ?? 0}`;
+// An element's edit: its version and tie-breaking nonce. Two elements with the
+// same edit are the same edit.
+export interface Edit { version: number; nonce: number }
+export const editOf = (e: SceneElement): Edit => ({ version: e.version ?? 0, nonce: e.versionNonce ?? 0 });
+
+// sameEdit reports whether element e is the edit held. It compares numbers and
+// allocates nothing: a save runs it over the whole scene.
+export const sameEdit = (held: Edit | undefined, e: SceneElement): boolean =>
+  held !== undefined && held.version === (e.version ?? 0) && held.nonce === (e.versionNonce ?? 0);
 
 // changedElements returns the elements whose edit differs from the one last
-// synced for their id (synced maps id to elementKey). Deleted elements count:
+// synced for their id (synced maps id to its edit). Deleted elements count:
 // their tombstones are part of the merge.
-export function changedElements(elements: readonly SceneElement[], synced: ReadonlyMap<string, string>): SceneElement[] {
-  return elements.filter(e => synced.get(e.id) !== elementKey(e));
+export function changedElements(elements: readonly SceneElement[], synced: ReadonlyMap<string, Edit>): SceneElement[] {
+  return elements.filter(e => !sameEdit(synced.get(e.id), e));
 }
 
 // referencedFiles lists the image file IDs the live elements use, once each.
@@ -91,4 +97,20 @@ export function keepAppState(appState: Record<string, unknown>): Record<string, 
   const out: Record<string, unknown> = {};
   for (const key of KEPT_APP_STATE) if (appState[key] !== undefined) out[key] = appState[key];
   return out;
+}
+
+// nextUntitled names a new board: "Untitled N", where N is one more than the
+// highest such number among the names in use (1 when there is none).
+export function nextUntitled(names: readonly string[]): string {
+  let highest = 0;
+  for (const name of names) {
+    const m = /^Untitled (\d+)$/.exec(name.trim());
+    if (m) highest = Math.max(highest, Number(m[1]));
+  }
+  return `Untitled ${highest + 1}`;
+}
+
+// boardRows lists the boards for the Boards panel, each marked open or not.
+export function boardRows<T extends { id: number }>(list: readonly T[], openId: number | null): (T & { open: boolean })[] {
+  return list.map(b => ({ ...b, open: b.id === openId }));
 }

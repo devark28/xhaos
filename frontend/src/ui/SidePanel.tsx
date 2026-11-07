@@ -17,6 +17,7 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
   { kind: 'questions', id: 'show-questions', icon: 'question', label: 'Questions' },
   { kind: 'files', id: 'files', icon: 'folder', label: 'Files' },
   { kind: 'channels', id: 'channels', icon: 'chat', label: 'Channels' },
+  { kind: 'boards', id: 'boards', icon: 'board', label: 'Boards' },
   { kind: 'memories', id: 'memories', icon: 'memory', label: 'Memories' },
   // Configuration you rarely reach for (models, tools and MCP) lives under Settings.
   { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings', also: ['providers', 'tools'] },

@@ -26,6 +26,7 @@ import (
 
 	"github.com/devark28/xhaos/app/auth"
 	"github.com/devark28/xhaos/app/backend"
+	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/egress"
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/health"
@@ -44,6 +45,9 @@ const EventName = "xhaos:event"
 
 // DeltaEventName carries live, unpersisted reply text (run.Delta).
 const DeltaEventName = "xhaos:delta"
+
+// BoardEventName carries live board saves (board.Notice), not stored.
+const BoardEventName = "xhaos:board"
 
 func defaultDBPath() string {
 	dir := os.Getenv("XDG_DATA_HOME")
@@ -109,6 +113,7 @@ func main() {
 		Sandbox:    *sandboxMode,
 		Publish:    func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
 		Notify:     func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
+		BoardLive:  func(ws string, n board.Notice) { hub.Publish(ws, BoardEventName, n) },
 	})
 	if err != nil {
 		log.Fatal(err)

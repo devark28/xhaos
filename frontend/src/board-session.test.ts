@@ -86,7 +86,7 @@ test('a save sends only what changed, and the images it uses first, once', async
   const server = fakeServer();
   server.elements.set('a', el('a', 1));
   const scene = fakeHost([el('a', 1)]);
-  const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, delay: 5 });
+  const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, interval: 5 });
   await session.load();
   scene.files.f1 = png('f1');
   scene.set([el('a', 1), el('b', 1, 1, { type: 'image', fileId: 'f1' })]);
@@ -138,10 +138,10 @@ test('a remote change merges into the scene and does not come back as a save', a
   assert.equal(server.calls.filter(c => c.method === 'Save').length, 0);
 });
 
-test('debounced saves: a burst of edits makes one save', async () => {
+test('a burst of edits within one interval makes one save', async () => {
   const server = fakeServer();
   const scene = fakeHost([]);
-  const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, delay: 10 });
+  const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, interval: 10 });
   await session.load();
   for (let i = 1; i <= 3; i++) {
     scene.set([el('a', i)]);
@@ -151,6 +151,24 @@ test('debounced saves: a burst of edits makes one save', async () => {
   await flushed();
   assert.equal(server.calls.filter(c => c.method === 'Save').length, 1);
   assert.equal(server.elements.get('a')?.version, 3);
+});
+
+test('while the scene keeps changing, saves go out about once per interval, and the last edit is saved', async () => {
+  const server = fakeServer();
+  const scene = fakeHost([]);
+  const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, interval: 20 });
+  await session.load();
+  // A stroke: an edit every 2 ms for about 200 ms.
+  for (let i = 1; i <= 100; i++) {
+    scene.set([el('a', i)]);
+    session.changed();
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const saves = server.calls.filter(c => c.method === 'Save').length;
+  assert.ok(saves >= 4, `saves during the stroke: ${saves}`); // live, not one at the end
+  assert.ok(saves <= 16, `saves during the stroke: ${saves}`); // no more than one per interval
+  assert.equal(server.elements.get('a')?.version, 100, 'the last edit is on the server');
 });
 
 test('a failed save is reported and tried again on the next flush', async () => {

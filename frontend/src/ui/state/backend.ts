@@ -1,7 +1,7 @@
 // The Go backend connection and startup. The connection object lives here,
 // not in the store: it holds the Wails runtime, which must not be frozen.
-import { connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
-import { onBoardEvent } from './boards.ts';
+import { BOARD_EVENT_NAME, connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
+import { onBoardEvent, onBoardNotice, refreshBoards, resyncOpenBoard } from './boards.ts';
 import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
@@ -177,6 +177,8 @@ async function startBackend(connection: Backend, workspaceId: string) {
   (globalThis as any).xhaos = { ...connection, sync }; // for console use
   syncing = sync;
   try { update(s => { s.backendVersion = connection.status.version; }); await refreshProviders(); } catch { /* providers stay empty */ }
+  // Live board saves from other pages (not stored; see board.Notice).
+  connection.events?.On?.(BOARD_EVENT_NAME, event => onBoardNotice(event?.data ?? event));
   // Live reply text: apply at most once per frame while replies stream.
   // Each streamed piece belongs to the reply being written when it arrived;
   // once that reply is saved, pieces still waiting for the next frame are
@@ -195,15 +197,16 @@ async function startBackend(connection: Backend, workspaceId: string) {
   installHashNavigation(); // the agents are loaded: #agents= links find their cards
   // After the snapshot: until then the active workspace is the prototype's.
   try { await refreshProjects(); } catch { /* projects stay empty */ }
+  await refreshBoards(); // the Boards panel lists them whether or not Draw was opened
   restoreDraft(); // after agents and projects, so its attachments find them
   // The stream reconnects by itself; catch up on what it missed meanwhile,
   // and if it dropped because the session ended, show the sign-in screen.
-  connection.events?.onOpen?.(() => { void sync.catchUp(); });
+  connection.events?.onOpen?.(() => { void sync.catchUp(); resyncOpenBoard(); });
   connection.events?.onLost?.(() => { void fetch('/xhaos/auth').then(r => r.json()).then(a => { if (!a.signedIn) location.reload(); }).catch(() => {}); });
   await refreshChannels();
   await refreshMemories();
   void refreshUsage();
-  const resync = () => { if (document.visibilityState === 'visible') sync.catchUp(); };
+  const resync = () => { if (document.visibilityState === 'visible') { sync.catchUp(); resyncOpenBoard(); } };
   document.addEventListener('visibilitychange', resync);
   addEventListener('online', resync);
   document.documentElement.dataset.backend = connection.status.version;

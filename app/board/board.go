@@ -5,13 +5,16 @@
 // each, as files named by their content hash, and a board refers to them by
 // the ID the scene uses (images.go).
 //
-// Boards are not part of an agent's snapshot: the page loads one when the
-// Draw tab opens. Changes reach other open pages as events on the
-// workspace's event stream, which carry the changed elements and no images.
+// Boards are not part of an agent's snapshot and are not in the event log: the
+// page loads one when the Draw tab opens. A save reaches the workspace's other
+// open pages as a Notice on the live stream, which carries the changed
+// elements and is not stored. Create, rename and delete are stored events
+// (they carry no scene data).
 package board
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,10 +30,28 @@ const (
 	EventCreated = "board.created"
 	EventRenamed = "board.renamed"
 	EventDeleted = "board.deleted"
-	EventSaved   = "board.saved" // changed elements; the page applies them with reconcileElements
+
+	// NoticeSaved is the Kind of a Notice for a save.
+	NoticeSaved = "board.saved"
 
 	maxName = 200
 )
+
+// Notice is a save's changed elements, sent live to the workspace's open pages.
+// It is not stored: the board's tables are the record, and a page that misses a
+// notice (its stream dropped) reloads the open board.
+type Notice struct {
+	Kind        string            `json:"kind"`
+	WorkspaceID string            `json:"workspaceId"`
+	ID          int64             `json:"id"`
+	Source      string            `json:"source"` // the page that saved; it skips its own notices
+	UpdatedAt   time.Time         `json:"updatedAt"`
+	Elements    []json.RawMessage `json:"elements"`
+}
+
+// Notifier delivers a Notice to the open pages of a workspace. It must not
+// block.
+type Notifier func(workspaceID string, n Notice)
 
 // Summary is a board without its scene, as the picker lists it.
 type Summary struct {
@@ -85,16 +106,20 @@ func Migrate(db *sql.DB) error {
 type Service struct {
 	db      *sql.DB
 	publish eventlog.Publisher
+	notify  Notifier
 	dir     string
 	now     func() time.Time
 	mu      sync.Mutex // serializes image files with their cleanup
 }
 
-func NewService(db *sql.DB, publish eventlog.Publisher, dir string) *Service {
+func NewService(db *sql.DB, publish eventlog.Publisher, notify Notifier, dir string) *Service {
 	if publish == nil {
 		publish = func(eventlog.Event) {}
 	}
-	return &Service{db: db, publish: publish, dir: dir, now: time.Now}
+	if notify == nil {
+		notify = func(string, Notice) {}
+	}
+	return &Service{db: db, publish: publish, notify: notify, dir: dir, now: time.Now}
 }
 
 // checkWorkspace refuses IDs that could name a path. Every method calls it
