@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/devark28/xhaos/app/attachment"
 	"github.com/devark28/xhaos/app/auth"
+	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/btw"
 	"github.com/devark28/xhaos/app/channel"
 	"github.com/devark28/xhaos/app/dictation"
@@ -42,10 +43,11 @@ import (
 
 // Options configures Open. Zero values are fine for tests.
 type Options struct {
-	Publish  eventlog.Publisher // committed events
-	Notify   run.Notifier       // live, unpersisted reply deltas
-	Adapters []llm.Adapter      // nil: the real adapters (Anthropic)
-	Root     string             // a folder to register as a project at startup (optional)
+	Publish   eventlog.Publisher // committed events
+	Notify    run.Notifier       // live, unpersisted reply deltas
+	BoardLive board.Notifier     // live, unpersisted board saves
+	Adapters  []llm.Adapter      // nil: the real adapters (Anthropic)
+	Root      string             // a folder to register as a project at startup (optional)
 	// DisableRuns stops owner messages from starting model turns (storage tests).
 	DisableRuns bool
 	// Passphrase guards the server and its secrets with the owner's
@@ -77,6 +79,7 @@ type Services struct {
 	Channels   *channel.Service
 	Files      *attachment.Service
 	Memories   *memory.Service
+	Boards     *board.Service
 	Usage      *usage.Service
 	Prefs      *prefs.Service
 	Secrets    *secret.Service
@@ -117,6 +120,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"mcp", mcp.Migrate},
 		{"attachment", attachment.Migrate},
 		{"memory", memory.Migrate},
+		{"board", board.Migrate},
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
 		{"dictation", dictation.Migrate},
@@ -293,6 +297,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Channels:   channels,
 		Files:      attachment.NewService(files),
 		Memories:   memories,
+		Boards:     board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards")),
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,
