@@ -26,6 +26,7 @@ const services = {
   skill: 'github.com/devark28/xhaos/app/skill.Service',
   web: 'github.com/devark28/xhaos/app/web.Service',
   board: 'github.com/devark28/xhaos/app/board.Service',
+  dictation: 'github.com/devark28/xhaos/app/dictation.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

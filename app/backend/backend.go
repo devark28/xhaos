@@ -11,6 +11,7 @@ import (
 	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/btw"
 	"github.com/devark28/xhaos/app/channel"
+	"github.com/devark28/xhaos/app/dictation"
 	"github.com/devark28/xhaos/app/llm/openai"
 	"github.com/devark28/xhaos/app/llm/sim"
 	"github.com/devark28/xhaos/app/mcp"
@@ -59,6 +60,8 @@ type Options struct {
 	// Sandbox is how agents' shell commands are confined: sandbox.Auto,
 	// On or Off ("" is Off, for tests).
 	Sandbox string
+	// Dictation is the speech-to-text sidecar (zero Program: dictation off).
+	Dictation dictation.Config
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -83,6 +86,7 @@ type Services struct {
 	Danger     *danger.Service
 	Skills     *skill.Service
 	Web        *web.Service
+	Dictation  *dictation.Service
 	mcp        *mcp.Manager
 	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
@@ -119,6 +123,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"board", board.Migrate},
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
+		{"dictation", dictation.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -299,6 +304,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Danger:     risky,
 		Skills:     skills,
 		Web:        webs,
+		Dictation:  dictation.NewService(db, opts.Dictation),
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,
