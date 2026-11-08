@@ -77,6 +77,10 @@ xhaos-input :is(em, i) { font-style: italic; }
    fills the window. The transcript can be scaled again on its own. */
 #app { zoom: var(--x-zoom, 1); }
 [data-transcript] { zoom: var(--x-transcript-zoom, 1); }
+/* Excalidraw maps the pointer to the canvas without knowing about CSS zoom,
+   so under the text size a stroke lands away from the pointer. Undo the
+   page's zoom on the canvas: the board keeps its own zoom control. */
+[data-draw-canvas] { zoom: calc(1 / var(--x-zoom, 1)); }
 /* Comfortable density: more air between rows, cards and lines. */
 [data-density="comfortable"] [data-agent-header] { padding-block: 3px; }
 [data-density="comfortable"] [data-agent-card] { margin-block: 3px; }

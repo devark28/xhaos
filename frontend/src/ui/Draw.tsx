@@ -87,7 +87,7 @@ export default function Draw() {
 
   return (
     <div data-draw {...stylex.props(styles.root)}>
-      <div {...stylex.props(styles.canvas)}>
+      <div data-draw-canvas {...stylex.props(styles.canvas)}>
         {board ? (
           <Excalidraw
             key={board.id}
