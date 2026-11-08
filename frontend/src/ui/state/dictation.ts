@@ -132,7 +132,10 @@ async function finish(reason?: string) {
   const said = (message: string) => (reason ? `${reason} ${message}` : message);
   try {
     if (s.samples < MIN_SAMPLES) { toast(said('Nothing recorded. Hold the mic a little longer.')); return; }
-    const estimate = transcribeEstimate(length, measuredRate);
+    // The server's own speed, from its recent takes (it outlives a reload);
+    // until it has one, this page's last take, else a laptop's speed.
+    const measured = await call<number>('dictation', 'Estimate', length).catch(() => 0);
+    const estimate = measured > 0 ? Math.round(measured) : transcribeEstimate(length, measuredRate);
     update(d => { d.transcribing = true; d.transcribeEstimate = estimate; d.transcribingSince = Date.now(); });
     toast(said(transcribingText(0, estimate)));
     const started = performance.now();

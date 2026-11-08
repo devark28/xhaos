@@ -75,7 +75,7 @@ Xhaos runs the program named by `-dictation-cmd` once per take, with the take as
 - `-dictation-cmd`: the program. Empty turns dictation off.
 - `-dictation-args`: the argument template, split on spaces. `{wav}` is the WAV path, `{model}` the model directory, `{language}` the dictation language (`en` by default, or `auto`), and `{prompt}` the workspace's hints. A field with `{prompt}` inside it (such as `--prompt={prompt}`) gets the hints as one argument, spaces and all.
 - `-dictation-model`: the model directory, for `{model}`.
-- `-dictation-timeout`: a fixed time limit per take. By default it is 60 seconds plus one and a half times the take's length (8.5 minutes for five minutes), so a slower server has room to load the model and transcribe. On timeout the sidecar's process group is killed. This is a limit, not an estimate: the estimate shown while transcribing comes from the speed of earlier takes.
+- `-dictation-timeout`: a fixed time limit per take. By default it is 60 seconds plus one and a half times the take's length (8.5 minutes for five minutes), so a slower server has room to load the model and transcribe. On timeout the sidecar's process group is killed. This is a limit, not an estimate: the estimate shown while transcribing comes from this server's last 8 takes (a fixed start-up part plus a per-second rate, kept in the database so it survives a reload and a restart); before the first take it assumes a laptop's speed.
 
 `scripts/dictation/stt.py` is the reference sidecar, using faster-whisper with the CTranslate2 build of a Whisper model. Install it with `pip install faster-whisper`, then start Xhaos with the model directory:
 

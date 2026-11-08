@@ -167,6 +167,14 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 		err = fmt.Errorf("dictation timed out after %s", timeout)
 	}
 	text := strings.TrimSpace(out)
+	// Each finished or timed-out take tells the server its speed (other
+	// failures are quick and say nothing about it).
+	if cut := ctx.Err() == context.DeadlineExceeded; err == nil || cut {
+		length := float64(len(pcm16le)) / float64(SampleRate*bytesPerSample)
+		if serr := s.recordSpeed(length, took.Seconds(), cut); serr != nil {
+			log.Printf("WARN dictation: could not record the speed: %v", serr)
+		}
+	}
 	if keep {
 		// A failed save only goes to the server log: the transcript still returns.
 		if kerr := s.keepRecording(pcm16le, text, err, started, took); kerr != nil {
