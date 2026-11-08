@@ -27,8 +27,11 @@
 // (faster-whisper). It reads a 16 kHz WAV and prints the transcript on stdout.
 // Nothing in this package downloads a model.
 //
-// The sidecar's limit is 15 s plus half the utterance length (165 s for a
-// five-minute take), unless -dictation-timeout is set. On timeout its whole
+// The sidecar's limit is 60 s plus one and a half times the utterance length
+// (8.5 minutes for a five-minute take, inside the page's 10-minute call
+// limit), unless -dictation-timeout is set. It is generous on purpose: the
+// sidecar loads the model for every take, and a small server's CPU can take
+// longer than the speech itself. On timeout its whole
 // process group is killed.
 package dictation
 
@@ -66,8 +69,8 @@ const MaxDuration = 5 * time.Minute
 const MaxBytes = int(MaxDuration/time.Second) * SampleRate * bytesPerSample
 
 const (
-	timeoutBase  = 15 * time.Second // the sidecar's limit for any utterance
-	timeoutShare = 0.5              // plus this fraction of the utterance's length
+	timeoutBase  = 60 * time.Second // the sidecar's limit for any utterance (loading the model)
+	timeoutShare = 1.5              // plus this multiple of the utterance's length
 	waitDelay    = 5 * time.Second  // after a kill, wait this long for pipes to close
 	maxOutput    = 1 << 20          // stdout kept, in bytes
 	maxErrText   = 500              // stderr quoted in errors, in bytes
@@ -190,7 +193,7 @@ func checkAudio(pcm []byte) error {
 }
 
 // timeout is the sidecar's limit: the configured one, else timeoutBase plus
-// half the utterance's length.
+// timeoutShare times the utterance's length.
 func (s *Service) timeout(n int) time.Duration {
 	if s.cfg.Timeout > 0 {
 		return s.cfg.Timeout

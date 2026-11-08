@@ -27,7 +27,7 @@ export function recordingTimer(elapsed: number, cap = DICTATION_MAX_SECONDS): { 
 
 // DEFAULT_RATE is the sidecar's speed assumed until a take has been timed: 15 s
 // of work per minute of speech (large-v3-turbo on a laptop CPU measured about
-// 14 s per minute). It is not the server's time limit, which is 15 s plus half
+// 14 s per minute). It is not the server's time limit, which is 60 s plus 1.5 times
 // the take's length.
 export const DEFAULT_RATE = 0.25;
 

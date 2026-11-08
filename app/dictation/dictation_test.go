@@ -179,10 +179,14 @@ func TestTimeoutScalesWithLength(t *testing.T) {
 		n    int
 		want time.Duration
 	}{
-		"1 s":     {second, 15*time.Second + 500*time.Millisecond},
-		"10 s":    {10 * second, 20 * time.Second},
-		"5 min":   {MaxBytes, 165 * time.Second},
-		"0 bytes": {0, 15 * time.Second},
+		"1 s":     {second, 61*time.Second + 500*time.Millisecond},
+		"10 s":    {10 * second, 75 * time.Second},
+		"5 min":   {MaxBytes, 510 * time.Second},
+		"0 bytes": {0, 60 * time.Second},
+	}
+	// The longest take's limit stays inside the page's call limit (10 min).
+	if got := s.timeout(MaxBytes); got >= 10*time.Minute {
+		t.Errorf("5 min take: limit %s reaches the 10-minute call limit", got)
 	}
 	for name, c := range cases {
 		if got := s.timeout(c.n); got != c.want {

@@ -72,7 +72,7 @@ func main() {
 	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty)")
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
-	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 15 s plus half the utterance's length)")
+	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
