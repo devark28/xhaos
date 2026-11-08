@@ -11,6 +11,7 @@ import (
 	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/btw"
 	"github.com/devark28/xhaos/app/channel"
+	"github.com/devark28/xhaos/app/classifier"
 	"github.com/devark28/xhaos/app/dictation"
 	"github.com/devark28/xhaos/app/llm/openai"
 	"github.com/devark28/xhaos/app/llm/sim"
@@ -62,6 +63,8 @@ type Options struct {
 	Sandbox string
 	// Dictation is the speech-to-text sidecar (zero Program: dictation off).
 	Dictation dictation.Config
+	// Classifier is the local command classifier (zero URL: no model; the built-in list still applies).
+	Classifier classifier.Config
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -87,6 +90,9 @@ type Services struct {
 	Skills     *skill.Service
 	Web        *web.Service
 	Dictation  *dictation.Service
+	// Classifier decides ordinary commands for the runner; the page binds
+	// its Owner view.
+	Classifier *classifier.Classifier
 	mcp        *mcp.Manager
 	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
@@ -124,6 +130,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
 		{"dictation", dictation.Migrate},
+		{"classifier", classifier.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -191,6 +198,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	runner.Files = files
 	counter := usage.NewRecorder(db)
 	runner.Usage = counter
+	runner.Classifier = classifier.New(db, opts.Classifier)
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)
@@ -314,6 +322,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Skills:     skills,
 		Web:        webs,
 		Dictation:  dictation.NewService(db, opts.Dictation),
+		Classifier: runner.Classifier,
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,

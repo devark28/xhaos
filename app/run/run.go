@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/classifier"
 	"github.com/devark28/xhaos/app/danger"
 	"github.com/devark28/xhaos/app/egress"
 	"github.com/devark28/xhaos/app/llm"
@@ -83,7 +84,11 @@ type Runner struct {
 	Secrets *secret.Sealer
 	Egress  *egress.Proxy
 	// Usage, when set, counts the tokens of every model call.
-	Usage   *usage.Recorder
+	Usage *usage.Recorder
+	// Classifier, when set, may allow an ordinary command the policy would
+	// ask about (package classifier); it never overrules a deny.
+	Classifier *classifier.Classifier
+
 	titling map[key]bool // titles asked for since start (at most once each)
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -681,6 +686,20 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					verdict, reason, by = policy.Allow, "", "danger"
 				}
 			}
+			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy}
+			creq := classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
+			if verdict == policy.Ask && r.Classifier != nil {
+				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model
+					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+classifier.ListReason(name), classifier.By
+				}
+			}
+			if verdict == policy.Ask && r.Classifier != nil && classifier.Eligible(cc) {
+				if ok, why := r.Classifier.Decide(ctx, creq); ok {
+					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+why, classifier.By
+				} else if why != "" {
+					reason = "the local classifier asks: " + why
+				}
+			}
 			d.Reason = reason
 			switch verdict {
 			case policy.Allow:
@@ -704,7 +723,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 	for _, c := range reply.Calls {
 		d := states[c.ID]
 		if d.State == agent.ToolAllowed {
-			d.By, d.Reason = "", ""
+			if d.By != classifier.By { // the classifier's reason stays with the result
+				d.By, d.Reason = "", ""
+			}
 			if ctx.Err() != nil {
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {

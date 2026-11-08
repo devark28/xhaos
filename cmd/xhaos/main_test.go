@@ -51,6 +51,9 @@ var serverWide = map[string]bool{
 	"dictation.Service.Enabled":    true,                                        // whether a speech sidecar is configured
 	"dictation.Service.Language":   true, "dictation.Service.SetLanguage": true, // the dictation language, shared by the server
 	"dictation.Service.Keeping": true, "dictation.Service.SetKeeping": true, "dictation.Service.DeleteRecordings": true, // the Developer setting: keep recordings
+	"classifier.Service.Enabled": true, "classifier.Service.Health": true, // whether a local classifier is configured, and its model server's state
+	"classifier.Service.On": true, "classifier.Service.SetOn": true, // the server-wide classifier switch
+	"classifier.Service.DeveloperLog": true, "classifier.Service.SetDeveloperLog": true, "classifier.Service.DeleteLog": true, // the Developer setting: log every decision
 	"prefs.Service.Get": true, "prefs.Service.Set": true, // appearance, shared by the server
 	"usage.Service.Prices": true, "usage.Service.SetPrice": true, "usage.Service.ResetPrice": true, "usage.Service.PriceOf": true, // model prices
 }
