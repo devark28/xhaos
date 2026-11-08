@@ -26,6 +26,9 @@ import sys
 import wave
 
 SAMPLE_RATE = 16000
+# More threads than this was slower in every measurement: a laptop (4 beat 8)
+# and an 8-vCPU VPS (84 s with 4 threads, 140 s with 8, for a 66 s take).
+MAX_DEFAULT_THREADS = 4
 
 
 def physical_cores() -> int:
@@ -93,12 +96,12 @@ def main() -> int:
     parser.add_argument("--model", required=True, help="model directory (or a faster-whisper model name)")
     parser.add_argument("--language", default="en", help="language code such as en, or auto to detect it (default: en)")
     parser.add_argument("--prompt", default="", help="dictation hints: a punctuated sentence with the expected words")
-    parser.add_argument("--threads", type=int, default=0, help="CPU threads (default: the physical cores)")
+    parser.add_argument("--threads", type=int, default=0, help=f"CPU threads (default: the physical cores, at most {MAX_DEFAULT_THREADS})")
     args = parser.parse_args()
     if not os.path.exists(args.wav):
         print(f"no such file: {args.wav}", file=sys.stderr)
         return 2
-    threads = args.threads if args.threads > 0 else physical_cores()
+    threads = args.threads if args.threads > 0 else min(physical_cores(), MAX_DEFAULT_THREADS)
     try:
         text = transcribe(args.wav, args.model, args.language.strip().lower(), args.prompt.strip(), threads)
     except ImportError as err:

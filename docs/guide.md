@@ -85,7 +85,7 @@ xhaos -dictation-cmd /usr/bin/python3 \
       -dictation-model /opt/models/whisper-large-v3-turbo-ct2
 ```
 
-The script runs on the CPU with int8 weights and uses the machine's physical cores by default (`--threads` overrides it). It checks that the WAV is 16 kHz mono 16-bit and prints the transcript. Nothing is downloaded at dictation time: the model must already be on disk. The script has been checked with a stub library; its real transcription path still needs a run on a machine with faster-whisper and a model installed.
+The script runs on the CPU with int8 weights and uses the machine's physical cores by default, at most 4 (`--threads` overrides it): more threads were slower in every measurement so far, on a laptop and on an 8-vCPU server, where 8 threads took 140 s for a take that 4 did in 84 s. It checks that the WAV is 16 kHz mono 16-bit and prints the transcript. Nothing is downloaded at dictation time: the model must already be on disk. The script has been checked with a stub library; its real transcription path still needs a run on a machine with faster-whisper and a model installed.
 
 ## Channels
 
