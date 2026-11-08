@@ -40,6 +40,8 @@ export function setLayout(layout: Layout) {
   const a = { ...loadAppearance(), layout };
   saveAppearance(a); void pushAppearance(a);
 }
+// toggleAgentsOnly hides the composer and the side panel, or shows them again.
+export function toggleAgentsOnly() { update(s => { s.agentsOnly = !s.agentsOnly; }); }
 export function clearSearch() { update(s => { s.search = ''; }); }
 
 // ---- memories --------------------------------------------------------------

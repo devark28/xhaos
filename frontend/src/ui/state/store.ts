@@ -46,6 +46,7 @@ export interface State {
   openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
   layout: Layout;
+  agentsOnly: boolean; // full screen for the agents: no composer, no side panel
   search: string;
   collapsed: Set<number>;
   focusAgent: number | null; // the card opened last (#agent= in the link)
@@ -101,6 +102,7 @@ function initial(): State {
     boards: [],
     boardId: null,
     openDirs: new Set(),
+    agentsOnly: false,
     layout: (() => { try { return (JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').layout as Layout) || 'grid'; } catch { return 'grid' as Layout; } })(),
     search: '',
     collapsed: new Set(workspaces.flatMap(w => flatten(w.agents)).map(a => a.id)),

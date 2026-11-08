@@ -81,6 +81,9 @@ xhaos-input :is(em, i) { font-style: italic; }
    so under the text size a stroke lands away from the pointer. Undo the
    page's zoom on the canvas: the board keeps its own zoom control. */
 [data-draw-canvas] { zoom: calc(1 / var(--x-zoom, 1)); }
+/* Agents only (App): the side panel stays mounted, just hidden. */
+main[data-agents-only] > #side { display: none; }
+main[data-agents-only] #command-center { visibility: hidden; overflow: hidden; padding: 0; }
 /* Comfortable density: more air between rows, cards and lines. */
 [data-density="comfortable"] [data-agent-header] { padding-block: 3px; }
 [data-density="comfortable"] [data-agent-card] { margin-block: 3px; }

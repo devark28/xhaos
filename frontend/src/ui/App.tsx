@@ -10,7 +10,7 @@ import { AgentCard } from './AgentCard.tsx';
 import { ComposerArea } from './Composer.tsx';
 import { useApp, workspaceOf, flushAfterCommit } from './state/store.ts';
 import { toggleCollapseAll, notifyAttention } from './state/agents.ts';
-import { setLayout, clearSearch } from './state/panels.ts';
+import { setLayout, clearSearch, toggleAgentsOnly } from './state/panels.ts';
 import { SidePanel } from './SidePanel.tsx';
 import { useNarrow } from './narrow.ts';
 
@@ -21,6 +21,7 @@ function AgentsToolbar() {
   const layout = useApp(s => s.layout);
   const search = useApp(s => s.search);
   const narrow = useNarrow();
+  const only = useApp(s => s.agentsOnly);
   return (
     <div data-agents-toolbar {...stylex.props(board.toolbar)}>
       {search && <span {...stylex.props(board.search)}>Search: {search}<Button variant="icon" id="clear-search" aria-label="Clear search" onClick={clearSearch}><Icon name="close" size={12} /></Button></span>}
@@ -30,6 +31,8 @@ function AgentsToolbar() {
           <Button variant="icon" data-layout="list" aria-label="One column" chosen={layout === 'list'} onClick={() => setLayout('list')}><Icon name="list" size={14} /></Button>
           <Button variant="icon" data-layout="grid" aria-label="Two columns" chosen={layout === 'grid'} onClick={() => setLayout('grid')}><Icon name="grid" size={14} /></Button>
           <Button variant="icon" data-layout="three" aria-label="Three columns" chosen={layout === 'three'} onClick={() => setLayout('three')}><Icon name="columns" size={14} /></Button>
+          <Button variant="icon" id="agents-only" aria-pressed={only} aria-label={only ? 'Show the composer and the side panel' : 'Agents only: hide the composer and the side panel'}
+            title={only ? 'Show the composer and the side panel' : 'Agents only'} onClick={toggleAgentsOnly}><Icon name={only ? 'shrink' : 'expand'} size={14} /></Button>
         </>}
       </div>
     </div>
@@ -37,7 +40,7 @@ function AgentsToolbar() {
 }
 
 function AgentsSection() {
-  const scroller = useRef<HTMLElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const search = useApp(s => s.search);
   const narrow = useNarrow();
   const layout = useApp(s => (narrow ? 'list' : s.layout));
@@ -47,9 +50,11 @@ function AgentsSection() {
   const columns = layout === 'list' ? 1 : layout === 'three' ? 3 : 2;
   // Independent sticky columns: recalculated after every render.
   useLayoutEffect(() => watchStickyColumns(scroller.current!, [...scroller.current!.querySelectorAll<HTMLElement>('[data-sticky-column]')]));
+  // The toolbar stays above the scrolling list (#agents), so it never scrolls away.
   return (
-    <section id="agents" aria-label="Agents" ref={scroller} {...stylex.props(board.section, drawing && board.hidden)}>
+    <section aria-label="Agents" {...stylex.props(board.section, drawing && board.hidden)}>
       <AgentsToolbar />
+      <div id="agents" ref={scroller} {...stylex.props(board.scroll)}>
       <div data-layout={layout} {...stylex.props(board.grid, layout === 'list' ? board.list : layout === 'three' ? board.three : board.two)}>
         {!agents.length
           ? <div data-empty-board {...stylex.props(board.empty)}>{search ? 'No matching agents.' : 'No agents yet. Describe a task in the composer and press Enter.'}</div>
@@ -58,6 +63,7 @@ function AgentsSection() {
               {agents.filter((_, index) => columns === 1 || index % columns === column).map(agent => <AgentCard key={agent.id} agent={agent} />)}
             </div>
           ))}
+      </div>
       </div>
     </section>
   );
@@ -86,10 +92,11 @@ export function App() {
   const narrow = useNarrow();
   const view = useApp(s => s.mobileView);
   const workspaceName = useApp(s => s.workspaceName);
+  const only = useApp(s => s.agentsOnly) && !narrow && !drawing;
   if (!ready) return <Toast />;
   return (
-    <main data-mobile-view={narrow ? view : undefined} {...stylex.props(page.main, narrow && page.phone)}>
-      <div {...stylex.props(page.left, drawing && !narrow && page.drawing, narrow && page.phoneLeft, narrow && view === 'panel' && page.gone)}>
+    <main data-mobile-view={narrow ? view : undefined} data-agents-only={only || undefined} {...stylex.props(page.main, narrow && page.phone, only && page.only)}>
+      <div {...stylex.props(page.left, drawing && !narrow && page.drawing, narrow && page.phoneLeft, narrow && view === 'panel' && page.gone, only && page.onlyLeft)}>
         <section id="command-center" aria-label="Command center" {...stylex.props(page.command, drawing && page.clip)}>
           <ComposerArea />
         </section>
@@ -127,6 +134,10 @@ const page = stylex.create({
     paddingBottom: 'calc(56px + env(safe-area-inset-bottom))',
     boxSizing: 'border-box',
   },
+  // Agents only: one column, no composer row, no side panel (hidden, not
+  // unmounted, so it reopens as it was).
+  only: { gridTemplateColumns: 'minmax(0, 1fr)' },
+  onlyLeft: { gridTemplateRows: '0 minmax(0, 1fr)' },
   phoneLeft: { gridArea: 'view', gridTemplateRows: 'max(150px, 22dvh) minmax(0, 1fr)' },
   gone: { display: 'none' },
   command: { display: 'flex', flexDirection: 'column', minHeight: 0, paddingTop: 8, position: 'relative', zIndex: 5 },
@@ -152,17 +163,16 @@ const page = stylex.create({
 });
 
 const board = stylex.create({
-  section: {
-    display: 'flex',
-    flexDirection: 'column',
+  section: { display: 'flex', flexDirection: 'column', minHeight: 0, paddingTop: 4 },
+  scroll: {
+    flexGrow: 1,
     minHeight: 0,
     overflow: 'auto',
-    paddingTop: 4,
     paddingBottom: 16,
     paddingInline: { default: 16, [breakpoints.tablet]: 10 },
   },
   hidden: { display: 'none' },
-  toolbar: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 28, marginBottom: 6, flexShrink: 0 },
+  toolbar: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 28, marginBottom: 6, flexShrink: 0, paddingInline: { default: 16, [breakpoints.tablet]: 10 } },
   search: { display: 'flex', alignItems: 'center', gap: 4, color: colors.textDim, fontSize: 10 },
   tools: { display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto' },
   grid: { display: { default: 'grid', [breakpoints.tablet]: 'flex' }, flexDirection: 'column', gap: 10, alignItems: 'start', flexShrink: 0, width: '100%' },
