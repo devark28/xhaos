@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boardRows, changedElements, dataURLBase64, dataURLFor, editOf, keepAppState, missingFiles, nextAfterDelete, nextUntitled, parseLegacyScene, referencedFiles, type SceneElement } from './board.ts';
+import { boardRows, changedElements, deleteBoardText, dataURLBase64, dataURLFor, editOf, keepAppState, missingFiles, nextAfterDelete, nextUntitled, parseLegacyScene, referencedFiles, type SceneElement } from './board.ts';
 
 const el = (id: string, version: number, versionNonce = 1, extra: Partial<SceneElement> = {}): SceneElement => ({ id, type: 'rectangle', version, versionNonce, ...extra });
 
@@ -72,4 +72,8 @@ test('the Boards panel marks only the open board', () => {
   assert.deepEqual(rows.map(r => [r.id, r.open]), [[1, false], [2, true]]);
   assert.deepEqual(boardRows([{ id: 1, name: 'A' }], null).map(r => r.open), [false]);
   assert.deepEqual(boardRows([], 3), []);
+});
+
+test('the delete dialog names the board and says who loses it', () => {
+  assert.equal(deleteBoardText('Untitled 3'), "Delete board 'Untitled 3'? Its drawing and images are removed for everyone in this workspace.");
 });

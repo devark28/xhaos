@@ -1,14 +1,16 @@
 // The Boards panel: the workspace's boards, the open one marked. A click opens
 // a board in the Draw tab (not on phones, which have no canvas). Rename,
-// Delete and Attach work from each row, open or not.
+// Delete and Attach work from each row, open or not. Delete asks first, in
+// Xhaos's own dialog (Confirm.tsx).
 import { useState, type FormEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
+import { ConfirmDialog } from './Confirm.tsx';
 import { useApp, toast } from './state/store.ts';
 import { attachBoard, deleteBoard, openBoard, renameBoard } from './state/boards.ts';
 import { useNarrow } from './narrow.ts';
-import { boardRows } from '../board.ts';
+import { boardRows, deleteBoardText } from '../board.ts';
 import type { BoardSummary } from '../types.ts';
 
 export function BoardList() {
@@ -17,7 +19,10 @@ export function BoardList() {
   const narrow = useNarrow();
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
+  const [deleting, setDeleting] = useState<number | null>(null); // the board the dialog asks about
+  const [busy, setBusy] = useState(false);
   const rows = boardRows(boards, openId);
+  const asked = rows.find(b => b.id === deleting); // gone (deleted elsewhere): the dialog closes
   if (!rows.length) {
     return <p {...stylex.props(styles.muted)}>No boards yet. New board makes an empty one and opens it.</p>;
   }
@@ -28,9 +33,10 @@ export function BoardList() {
     if (!name) { toast('A board needs a name.'); return; }
     if (name !== board.name) void renameBoard(board.id, name);
   };
-  const remove = (board: BoardSummary) => {
-    if (!confirm(`Delete the board "${board.name}"? Its drawing is removed from the server.`)) return;
-    void deleteBoard(board.id);
+  const remove = async () => {
+    if (!asked || busy) return;
+    setBusy(true);
+    try { await deleteBoard(asked.id); } finally { setBusy(false); setDeleting(null); }
   };
   return (
     <div data-board-list {...stylex.props(styles.list)}>
@@ -55,13 +61,15 @@ export function BoardList() {
             )}
             <div {...stylex.props(styles.actions)}>
               <Button data-rename-board={b.id} onClick={() => { setDraft(b.name); setEditing(b.id); }}>Rename</Button>
-              <Button data-delete-board={b.id} onClick={() => remove(b)}>Delete</Button>
+              <Button data-delete-board={b.id} onClick={() => setDeleting(b.id)}>Delete</Button>
               <Button data-attach-png={b.id} title="Add the board to your next message as a picture" onClick={() => void attachBoard(b.id, 'png')}>Attach PNG</Button>
               <Button data-attach-scene={b.id} title="Add the board's Excalidraw data to your next message" onClick={() => void attachBoard(b.id, 'scene')}>Attach Excalidraw</Button>
             </div>
           </section>
         );
       })}
+      <ConfirmDialog open={asked !== undefined} text={asked ? deleteBoardText(asked.name) : ''} action="Delete" busy={busy}
+        onConfirm={() => void remove()} onCancel={() => setDeleting(null)} />
     </div>
   );
 }

@@ -114,3 +114,7 @@ export function nextUntitled(names: readonly string[]): string {
 export function boardRows<T extends { id: number }>(list: readonly T[], openId: number | null): (T & { open: boolean })[] {
   return list.map(b => ({ ...b, open: b.id === openId }));
 }
+
+// deleteBoardText is what the delete dialog asks.
+export const deleteBoardText = (name: string) =>
+  `Delete board '${name}'? Its drawing and images are removed for everyone in this workspace.`;
