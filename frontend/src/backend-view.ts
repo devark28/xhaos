@@ -175,7 +175,7 @@ export function prependOlder(view: Workspace, agentId: number, page: TranscriptP
     if (item && !(item.callId && calls.has(item.callId))) addEntry(older, item);
   }
   agent.activity = [...older.activity!, ...now];
-  agent.older = page.more && page.events.length ? page.events[0].seq : undefined;
+  agent.older = page.more ? page.before ?? page.events[0]?.seq : undefined;
   return true;
 }
 
@@ -207,6 +207,7 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
     if (!agent) return null;
     agent.status = statuses[event.data?.status] || agent.status;
     if (agent.status === 'terminated') agent.archivedAt ||= event.at || new Date().toISOString();
+    else delete agent.archivedAt; // restored
     if (agent.status !== 'running') delete agent.live;
     return { tree: true, agentId: agent.id };
   }

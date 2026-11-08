@@ -213,6 +213,7 @@ export interface Snapshot {
 export interface TranscriptPage {
   events: BackendEvent[];
   more: boolean;
+  before?: number; // where the next page starts (its events can be fewer than read)
 }
 
 export interface Delta {

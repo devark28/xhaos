@@ -177,10 +177,11 @@ const TranscriptPage = 50
 var transcriptKinds = []string{EventMessage, EventTool}
 
 // Page is a run of one agent's older transcript events, in seq order. More
-// says there are older ones still: ask again with Before = Events[0].Seq.
+// says there are older ones still: ask again with Before.
 type Page struct {
 	Events []eventlog.Event `json:"events"`
 	More   bool             `json:"more"`
+	Before int64            `json:"before,omitempty"`
 }
 
 type CreateRequest struct {
@@ -381,12 +382,52 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 			}
 		}
 	}
-	snap.Transcript = append(waiting, recent...)
+	snap.Transcript = slim(append(waiting, recent...))
 	slices.SortStableFunc(snap.Transcript, func(a, b eventlog.Event) int { return cmp.Compare(a.Seq, b.Seq) })
 	if snap.Transcript == nil {
 		snap.Transcript = []eventlog.Event{}
 	}
 	return snap, nil
+}
+
+// forReaders slims a transcript event for the pages (and /btw): they show a
+// reply's text, not what the model needs to replay it. A tool result message
+// is dropped (each tool call shows its own output); an agent reply loses its
+// provider-native copy (thinking included) and its calls' arguments, keeping
+// their names. The log itself is unchanged; the model still gets it all.
+func forReaders(e eventlog.Event) (eventlog.Event, bool) {
+	if e.Kind != EventMessage {
+		return e, true
+	}
+	var m MessageData
+	if json.Unmarshal(e.Data, &m) != nil {
+		return e, true
+	}
+	if m.From == FromTool {
+		return e, false
+	}
+	if m.Raw == nil && m.Prefix == "" && len(m.Calls) == 0 {
+		return e, true
+	}
+	m.Raw, m.Provider, m.Prefix, m.Seen, m.Stop = nil, "", "", 0, ""
+	for i := range m.Calls {
+		m.Calls[i].Input = nil
+	}
+	if data, err := json.Marshal(m); err == nil {
+		e.Data = data
+	}
+	return e, true
+}
+
+// slim applies forReaders to a run of events.
+func slim(events []eventlog.Event) []eventlog.Event {
+	out := events[:0]
+	for _, e := range events {
+		if e, ok := forReaders(e); ok {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // TranscriptBefore returns the page of an agent's transcript before seq
@@ -405,6 +446,12 @@ func (s *Service) TranscriptBefore(workspaceID string, agentID, before int64, li
 	if page.More {
 		page.Events = events[1:]
 	}
+	// Where the next page starts is the first event read, even when slimming
+	// drops it (a tool result).
+	if len(page.Events) > 0 {
+		page.Before = page.Events[0].Seq
+	}
+	page.Events = slim(page.Events)
 	return page, nil
 }
 
@@ -712,6 +759,43 @@ func (s *Service) Terminate(req ControlRequest) ([]eventlog.Event, error) {
 				}
 			}
 		}
+	}
+	return out, nil
+}
+
+// Restore brings a terminated agent back, idle, with its history: the next
+// owner message continues it. Its subagents stay terminated (restore each
+// on its own); a subagent comes back only after its parent.
+func (s *Service) Restore(req ControlRequest) (eventlog.Event, error) {
+	var out eventlog.Event
+	replayed, err := idempotency.Run(s.db, "agent.Restore", req.IdempotencyKey, req, &out, func(tx *sql.Tx) error {
+		a, err := get(tx, req.WorkspaceID, req.AgentID)
+		if err != nil {
+			return err
+		}
+		if a.Status != StatusTerminated {
+			return fmt.Errorf("%w: agent #%d is not terminated", apperr.Conflict, a.ID)
+		}
+		if a.ParentID != 0 {
+			parent, err := get(tx, req.WorkspaceID, a.ParentID)
+			if err != nil {
+				return err
+			}
+			if parent.Status == StatusTerminated {
+				return fmt.Errorf("%w: agent #%d's parent #%d is terminated; restore #%d first", apperr.Conflict, a.ID, parent.ID, parent.ID)
+			}
+		}
+		if _, err := tx.Exec(`UPDATE agents SET status = ? WHERE workspace_id = ? AND id = ?`, StatusIdle, req.WorkspaceID, a.ID); err != nil {
+			return err
+		}
+		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventStatus, StatusData{Status: StatusIdle}, s.now())
+		return err
+	})
+	if err != nil {
+		return eventlog.Event{}, err
+	}
+	if !replayed {
+		s.emit([]eventlog.Event{out})
 	}
 	return out, nil
 }

@@ -1,11 +1,16 @@
 package agent_test
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/eventlog"
+	"github.com/devark28/xhaos/app/llm"
 )
 
 // A snapshot carries each agent's last TranscriptPage events; older ones
@@ -85,7 +90,7 @@ func TestSnapshotPagesTranscripts(t *testing.T) {
 			}
 			break
 		}
-		before = page.Events[0].Seq
+		before = page.Before
 	}
 	if got+agent.TranscriptPage != 131 {
 		t.Errorf("paged %d + %d events, want 131", got, agent.TranscriptPage)
@@ -135,3 +140,92 @@ func TestSnapshotLeavesOutTerminatedHistory(t *testing.T) {
 		t.Fatalf("opening its card: %+v %v, want its prompt", page, err)
 	}
 }
+
+// A restored agent is idle and takes messages again; its subagents stay
+// terminated, and one comes back only after its parent.
+func TestRestore(t *testing.T) {
+	s, _, _ := open(t)
+	parent := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "p", Prompt: "Parent"})
+	child := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "c", ParentID: parent.ID, Title: "Child"})
+	if _, err := s.Agents.Terminate(agent.ControlRequest{IdempotencyKey: "t", WorkspaceID: ws, AgentID: parent.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m0", WorkspaceID: ws, AgentIDs: []int64{parent.ID}, Body: "hi"}); err == nil {
+		t.Fatal("a terminated agent took a message")
+	}
+	if _, err := s.Agents.Restore(agent.ControlRequest{IdempotencyKey: "r0", WorkspaceID: ws, AgentID: child.ID}); !errors.Is(err, apperr.Conflict) || !strings.Contains(err.Error(), "restore #1 first") {
+		t.Fatalf("restoring the child first: %v", err)
+	}
+	ev, err := s.Agents.Restore(agent.ControlRequest{IdempotencyKey: "r1", WorkspaceID: ws, AgentID: parent.ID})
+	if err != nil || ev.Kind != agent.EventStatus || !strings.Contains(string(ev.Data), agent.StatusIdle) {
+		t.Fatalf("restore = %+v %v", ev, err)
+	}
+	if again, err := s.Agents.Restore(agent.ControlRequest{IdempotencyKey: "r1", WorkspaceID: ws, AgentID: parent.ID}); err != nil || again.Seq != ev.Seq {
+		t.Fatalf("a retried restore: %+v %v, want the same event", again, err)
+	}
+	if _, err := s.Agents.Restore(agent.ControlRequest{IdempotencyKey: "r2", WorkspaceID: ws, AgentID: parent.ID}); !errors.Is(err, apperr.Conflict) {
+		t.Fatalf("restoring an agent that isn't terminated: %v", err)
+	}
+	snap, _ := s.Agents.Snapshot(ws)
+	status := map[int64]string{}
+	for _, a := range snap.Agents {
+		status[a.ID] = a.Status
+	}
+	if status[parent.ID] != agent.StatusIdle || status[child.ID] != agent.StatusTerminated {
+		t.Fatalf("statuses = %v", status)
+	}
+	if _, ok := snap.Older[parent.ID]; ok && len(snap.Transcript) == 0 {
+		t.Errorf("the restored agent's history is not in the snapshot")
+	}
+	if _, err := s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m1", WorkspaceID: ws, AgentIDs: []int64{parent.ID}, Body: "carry on"}); err != nil {
+		t.Fatalf("message after restore: %v", err)
+	}
+	if _, err := s.Agents.Restore(agent.ControlRequest{IdempotencyKey: "r3", WorkspaceID: ws, AgentID: child.ID}); err != nil {
+		t.Fatalf("restoring the child after its parent: %v", err)
+	}
+}
+
+// Pages get a reply's text, not what the model replays: tool results are
+// left out, replies lose their native copy and their calls' arguments.
+func TestSnapshotSlimsReplies(t *testing.T) {
+	s, _, _ := open(t)
+	store := agent.NewStore(s.DB(), nil)
+	a := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "a", Prompt: "Write it"})
+	big := strings.Repeat("x", 20000)
+	reply := agent.MessageData{From: agent.FromAgent, Body: "Writing the file.", Provider: "anthropic", Raw: json.RawMessage(`{"thinking":"` + big + `"}`),
+		Calls: []llm.ToolCall{{ID: "c1", Name: "write_file", Input: json.RawMessage(`{"content":"` + big + `"}`)}}}
+	for _, m := range []agent.MessageData{reply, {From: agent.FromTool, Body: big}} {
+		if err := store.Append(ws, a.ID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap, err := s.Agents.Snapshot(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []agent.MessageData
+	size := 0
+	for _, e := range snap.Transcript {
+		var m agent.MessageData
+		json.Unmarshal(e.Data, &m)
+		got = append(got, m)
+		size += len(e.Data)
+	}
+	if len(got) != 2 || got[1].From != agent.FromAgent {
+		t.Fatalf("transcript = %+v, want the prompt and the reply (no tool result)", got)
+	}
+	r := got[1]
+	if r.Body != "Writing the file." || !empty(r.Raw) || len(r.Calls) != 1 || r.Calls[0].Name != "write_file" || !empty(r.Calls[0].Input) {
+		t.Errorf("reply as sent = %+v", r)
+	}
+	if size > 1000 {
+		t.Errorf("snapshot carries %d bytes of transcript for a short exchange", size)
+	}
+	// The model still has everything.
+	msgs, _ := store.Messages(ws, a.ID)
+	if last := msgs[len(msgs)-1]; last.From != agent.FromTool || len(msgs[len(msgs)-2].Raw) < 20000 {
+		t.Errorf("the log lost data: %d messages", len(msgs))
+	}
+}
+
+func empty(j json.RawMessage) bool { return len(j) == 0 || string(j) == "null" }

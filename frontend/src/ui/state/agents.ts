@@ -92,7 +92,18 @@ export async function terminateAgent(id: number) {
   }
   toast(`Agent #${id} terminated. View retained history with /history.`);
 }
-export function restore(id: number) { update(s => { restoreAgent(workspaceOf(s).agents, id); }); save(); }
+// restore brings a terminated agent back. On the server it becomes idle (its
+// status event shows the card again); a sample or prototype agent is only
+// shown again.
+export async function restore(id: number) {
+  if (connected() && !isSample(id)) {
+    try { await call('agent', 'Restore', { idempotencyKey: idempotencyKey(), workspaceId: get().active, agentId: id }); }
+    catch (error) { toast(errorText(error)); return; }
+    toast(`Agent #${id} restored. Message it to continue.`);
+    return;
+  }
+  update(s => { restoreAgent(workspaceOf(s).agents, id); }); save();
+}
 
 // Ctrl/Cmd+Alt+N and bare /new: detach recipients so Enter creates a new agent.
 export function focusNewAgent() {
