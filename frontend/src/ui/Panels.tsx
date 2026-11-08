@@ -6,6 +6,9 @@ import { markdown } from '../markdown.ts';
 import { flatten } from '../model.ts';
 import { colors, fonts } from './theme/tokens.stylex.ts';
 import { Button, StatusDot } from './kit.tsx';
+import { useNow } from './Danger.tsx';
+import { PublishLinkDialog, type Issued } from './PublishLink.tsx';
+import { linkTag, expiryNote } from '../channel-link.ts';
 import { Icon } from './Icon.tsx';
 import { labels } from './AgentCard.tsx';
 import { AttachedFiles } from './Transcript.tsx';
@@ -164,7 +167,7 @@ function Channels({ channelId }: { channelId?: string }) {
                   <span data-channel-id {...stylex.props(channel.num)}>#{c.id}</span>
                   <span {...stylex.props(channel.subject)}>{c.subject}</span>
                   {unread && <span data-unread title="New messages" {...stylex.props(channel.dot)} />}
-                  {c.closed ? <span {...stylex.props(channel.tag)}>closed</span> : c.published && <span {...stylex.props(channel.tag, channel.tagOn)}>published</span>}
+                  {c.closed ? <span {...stylex.props(channel.tag)}>closed</span> : c.published && <LinkTag c={c} />}
                   <span {...stylex.props(channel.when)}>{last ? formatTime(last.timestamp) : ''}</span>
                 </span>
                 <span {...stylex.props(channel.sub)}>{c.participants.length === 1 ? 'agent ' : 'agents '}{c.participants.map(id => `#${id}`).join(' · ')}{last && <> — <span {...stylex.props(channel.preview)}>{name(last.writer)}: {plain(last.text).slice(0, 140)}</span></>}</span>
@@ -178,15 +181,24 @@ function Channels({ channelId }: { channelId?: string }) {
   );
 }
 
+// LinkTag is the list's tag on a published channel: "published · 3h left", or
+// "link expired" (the channel stays published until published again or
+// unpublished). It counts down on its own; the rest of the list stays put.
+function LinkTag({ c }: { c: ChannelView }) {
+  const text = linkTag(c, useNow(1_000));
+  return <span data-link-tag={c.id} data-link-expired={text === 'link expired' || undefined} {...stylex.props(channel.tag, text === 'link expired' ? channel.tagExpired : channel.tagOn)}>{text}</span>;
+}
+
 function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | string): string; name(id: number | string): string }) {
-  const [issued, setIssued] = useState<{ passphrase: string; path: string } | null>(null);
+  const [issued, setIssued] = useState<Issued | null>(null), [publishing, setPublishing] = useState(false);
   const log = useRef<HTMLDivElement>(null);
   // Start at the newest message, and follow new ones while at the bottom.
   const pinned = useRef(true);
   useLayoutEffect(() => { const el = log.current; if (el && pinned.current) el.scrollTop = el.scrollHeight; }, [c.messages.length]);
   // The list has only each channel's last message: load the rest on opening.
   useEffect(() => { if (c.loaded === false) void loadChannel(c.id); }, [c.id, c.loaded]);
-  const issue = async () => { const r = await publishChannel(c.id); if (r) setIssued(r); };
+  // The dialog's Publish: a new passphrase and expiry; it closes when it worked.
+  const issue = async (duration: string | null) => { const r = await publishChannel(c.id, duration); if (r) { setIssued(r); setPublishing(false); } };
   return (
     <div id={`channel-body-${c.id}`} data-channel-head={c.id} {...stylex.props(channel.body)}>
       <div {...stylex.props(channel.bar)}>
@@ -199,14 +211,15 @@ function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | st
         <div data-channel-actions {...stylex.props(channel.actions)}>
           {!c.closed && <>
             {c.published
-              ? <><Button data-reset-link={c.id} title="Issue a new passphrase; the old one stops working" onClick={issue}>Reset</Button>
+              ? <><Button data-publish-again={c.id} title="Choose a new expiry and issue a new passphrase; the old one stops working at once" onClick={() => setPublishing(true)}>Publish again</Button>
                   <Button data-unpublish={c.id} title="Take the channel off its link" onClick={() => { setIssued(null); void unpublishChannel(c.id); }}>Unpublish</Button></>
-              : <Button data-publish={c.id} title="Let programs outside Xhaos (a script, another Claude Code session) read this channel and message its agents, with a passphrase shown once" onClick={issue}>Publish</Button>}
+              : <Button data-publish={c.id} title="Let programs outside Xhaos (a script, another Claude Code session) read this channel and message its agents, with a passphrase shown once" onClick={() => setPublishing(true)}>Publish</Button>}
             <Button data-close-channel={c.id} title="Tell the members and refuse further messages" onClick={() => closeChannel(c.id)}>Close</Button>
           </>}
         </div>
       </div>
-      {issued && <ChannelSecret id={c.id} passphrase={issued.passphrase} path={issued.path} onDone={() => setIssued(null)} />}
+      {publishing && <PublishLinkDialog id={c.id} again={Boolean(c.published)} onClose={() => setPublishing(false)} onPublish={issue} />}
+      {issued && <ChannelSecret id={c.id} passphrase={issued.passphrase} path={issued.path} expiresAt={issued.channel.expiresAt} onDone={() => setIssued(null)} />}
       <div ref={log} data-channel-log onScroll={e => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} {...stylex.props(channel.log)}>
         {c.loaded === false ? <P muted>Loading messages…</P> : c.messages.length ? c.messages.map((message, index) => (
           <article key={index} {...stylex.props(channel.message)}>
@@ -224,12 +237,13 @@ function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | st
 }
 
 // ChannelSecret shows a just-issued passphrase, once, with how to use it.
-function ChannelSecret({ id, passphrase, path, onDone }: { id: string; passphrase: string; path: string; onDone(): void }) {
+function ChannelSecret({ id, passphrase, path, expiresAt, onDone }: { id: string; passphrase: string; path: string; expiresAt?: string; onDone(): void }) {
   const url = `${location.origin}${path}`;
   const example = `curl -s -X POST ${url} \\\n  -H 'Authorization: Bearer ${passphrase}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"from":"my script","body":"hello agents"}'\n\n# read it, waiting up to 30s for new messages:\ncurl -s '${url}?after=0&wait=30' -H 'Authorization: Bearer ${passphrase}'`;
   return (
     <div data-channel-link={id} {...stylex.props(channel.secretBox)}>
       <P>Copy the passphrase now; it is not shown again.</P>
+      <P muted><span data-link-expiry>{expiryNote(expiresAt, useNow(1_000))}</span></P>
       <div {...stylex.props(channel.secretRow)}>
         <code data-passphrase {...stylex.props(channel.secret)}>{passphrase}</code>
         <Button data-copy-passphrase onClick={() => {
@@ -676,6 +690,7 @@ const channel = stylex.create({
   dot: { width: 6, height: 6, flexShrink: 0, borderRadius: '50%', backgroundColor: colors.brand },
   tag: { flexShrink: 0, fontSize: 9, paddingInline: 5, paddingBlock: 1, borderRadius: 3, color: colors.textFaint, backgroundColor: colors.card },
   tagOn: { color: colors.brand, backgroundColor: colors.brandSoft },
+  tagExpired: { color: colors.warn, backgroundColor: colors.card },
   when: { flexShrink: 0, fontSize: 9, color: colors.textGhost },
   sub: { paddingLeft: 15, fontSize: 10, color: colors.textFaint, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
   preview: { color: colors.textGhost },

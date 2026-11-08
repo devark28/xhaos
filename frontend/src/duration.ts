@@ -11,8 +11,9 @@ export const MAX_CALLS = 1000;
 
 const UNIT: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
 
-// parseDuration returns the length in seconds, or why the text is not one.
-export function parseDuration(text: string): { seconds: number } | { error: string } {
+// parseDurationIn returns the length in seconds, or why the text is not one,
+// for a total from min to max seconds (range: how the error names them).
+export function parseDurationIn(text: string, min: number, max: number, range: string): { seconds: number } | { error: string } {
   const t = text.trim();
   const parts = [...t.matchAll(/(\d+)\s*([smhd])/gi)];
   if (!t || !parts.length || t.replace(/(\d+)\s*([smhd])/gi, '').trim() !== '') {
@@ -23,9 +24,12 @@ export function parseDuration(text: string): { seconds: number } | { error: stri
     if (n.length > 6) return { error: 'That is too long.' };
     seconds += Number(n) * UNIT[unit.toLowerCase()];
   }
-  if (seconds < MIN_SECONDS || seconds > MAX_SECONDS) return { error: 'Choose between 10 seconds and 7 days.' };
+  if (seconds < min || seconds > max) return { error: `Choose between ${range}.` };
   return { seconds };
 }
+
+// parseDuration: the "dangerously allow" range, 10 seconds to 7 days.
+export const parseDuration = (text: string) => parseDurationIn(text, MIN_SECONDS, MAX_SECONDS, '10 seconds and 7 days');
 
 // formatDuration writes seconds the short way: 45s, 15m, 1h 30m, 2d 4h.
 export function formatDuration(seconds: number): string {
