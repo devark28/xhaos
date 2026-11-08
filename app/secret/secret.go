@@ -10,6 +10,10 @@
 // its output. A secret reaches an agent only after the owner grants it to
 // that agent, and every command using it waits for approval unless the
 // owner trusted it to that agent (which takes the passphrase).
+//
+// Three kinds: a token ($NAME is the value), an SSH key, and an env file (a
+// whole .env text: each KEY=value is a variable of the command, and the text is
+// a file at $XHAOS_ENV_FILE; see ParseEnv).
 package secret
 
 import (
@@ -68,7 +72,7 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	for _, col := range []string{`kind TEXT NOT NULL DEFAULT 'token'`, `known_hosts TEXT NOT NULL DEFAULT ''`} {
+	for _, col := range []string{`kind TEXT NOT NULL DEFAULT 'token'`, `known_hosts TEXT NOT NULL DEFAULT ''`, `keys TEXT NOT NULL DEFAULT '[]'`} {
 		if _, err := db.Exec(`ALTER TABLE secrets ADD COLUMN ` + col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
@@ -85,6 +89,10 @@ const (
 	// path and an ssh set up to use it through the proxy, to its hosts only
 	// ([user@]host[:port], port 22 by default).
 	KindSSH = "ssh"
+	// KindEnv is the text of a .env file (see ParseEnv): the command gets
+	// each KEY=value as an environment variable, and the whole text as a file
+	// at $XHAOS_ENV_FILE. The secret's own name is only a label.
+	KindEnv = "env"
 )
 
 // Grant modes.
@@ -95,12 +103,14 @@ const (
 
 // View is a secret as the page sees it: never the value.
 type View struct {
-	Name        string    `json:"name"`
-	Kind        string    `json:"kind"`
-	Description string    `json:"description"`
-	Hosts       []string  `json:"hosts"`
-	Grants      []Grant   `json:"grants"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	Description string   `json:"description"`
+	Hosts       []string `json:"hosts"`
+	// Keys are an env secret's variable names (never the values).
+	Keys      []string  `json:"keys"`
+	Grants    []Grant   `json:"grants"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type Grant struct {
@@ -229,19 +239,23 @@ func cleanHosts(kind string, hosts []string) ([]string, error) {
 
 // Secrets lists the workspace's secrets, names only, with their grants.
 func (s *Service) Secrets(workspaceID string) ([]View, error) {
-	rows, err := s.db.Query(`SELECT name, kind, description, hosts, updated_at FROM secrets WHERE workspace_id = ? ORDER BY name`, workspaceID)
+	rows, err := s.db.Query(`SELECT name, kind, description, hosts, keys, updated_at FROM secrets WHERE workspace_id = ? ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	out := []View{}
 	for rows.Next() {
 		var v View
-		var hosts, at string
-		if err := rows.Scan(&v.Name, &v.Kind, &v.Description, &hosts, &at); err != nil {
+		var hosts, keys, at string
+		if err := rows.Scan(&v.Name, &v.Kind, &v.Description, &hosts, &keys, &at); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(hosts), &v.Hosts)
+		_ = json.Unmarshal([]byte(keys), &v.Keys)
+		if v.Keys == nil {
+			v.Keys = []string{}
+		}
 		v.UpdatedAt = sqlitedb.ParseStamp(at)
 		v.Grants = []Grant{}
 		out = append(out, v)
@@ -270,7 +284,7 @@ func (s *Service) Secrets(workspaceID string) ([]View, error) {
 type SaveRequest struct {
 	WorkspaceID string `json:"workspaceId"`
 	Name        string `json:"name"`
-	Kind        string `json:"kind"` // token (default) or ssh; fixed once saved
+	Kind        string `json:"kind"` // token (default), ssh or env; fixed once saved
 	// KeyPassphrase unlocks an SSH key that has one. The unlocked key is
 	// stored (encrypted like every value); the passphrase is not kept.
 	KeyPassphrase string   `json:"keyPassphrase"`
@@ -289,8 +303,8 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 	if kind == "" {
 		kind = KindToken
 	}
-	if kind != KindToken && kind != KindSSH {
-		return View{}, fmt.Errorf("%w: a secret is a token or an ssh key", apperr.Invalid)
+	if kind != KindToken && kind != KindSSH && kind != KindEnv {
+		return View{}, fmt.Errorf("%w: a secret is a token, an ssh key or an env file", apperr.Invalid)
 	}
 	var saved string
 	if err := s.db.QueryRow(`SELECT kind FROM secrets WHERE workspace_id = ? AND name = ?`, req.WorkspaceID, name).Scan(&saved); err == nil && saved != kind {
@@ -314,7 +328,17 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 	if len(req.Value) > 64<<10 {
 		return View{}, fmt.Errorf("%w: a secret is at most 64 KB", apperr.Invalid)
 	}
+	keys := []string{}
+	if kind == KindEnv && req.Value != "" {
+		vars, err := ParseEnv(req.Value)
+		if err != nil {
+			return View{}, err
+		}
+		keys = EnvKeys(vars)
+		req.Value = strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(req.Value, "\ufeff"), "\r\n", "\n"), "\r", "\n")
+	}
 	hostsJSON, _ := json.Marshal(hosts)
+	keysJSON, _ := json.Marshal(keys)
 	at := sqlitedb.Stamp(s.now())
 	if req.Value == "" {
 		res, err := s.db.Exec(`UPDATE secrets SET description = ?, hosts = ?, updated_at = ? WHERE workspace_id = ? AND name = ?`, desc, string(hostsJSON), at, req.WorkspaceID, name)
@@ -329,9 +353,9 @@ func (s *Service) Save(req SaveRequest) (View, error) {
 		if err != nil {
 			return View{}, err
 		}
-		if _, err := s.db.Exec(`INSERT INTO secrets (workspace_id, name, kind, description, value, hosts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (workspace_id, name) DO UPDATE SET description = excluded.description, value = excluded.value, hosts = excluded.hosts, updated_at = excluded.updated_at`,
-			req.WorkspaceID, name, kind, desc, sealed, string(hostsJSON), at, at); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO secrets (workspace_id, name, kind, description, value, hosts, keys, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (workspace_id, name) DO UPDATE SET description = excluded.description, value = excluded.value, hosts = excluded.hosts, keys = excluded.keys, updated_at = excluded.updated_at`,
+			req.WorkspaceID, name, kind, desc, sealed, string(hostsJSON), string(keysJSON), at, at); err != nil {
 			return View{}, err
 		}
 	}
@@ -492,6 +516,19 @@ func (x *Sealer) Check(ws string, a agent.Agent, names []string) (Use, error) {
 	}
 	use := Use{Trusted: true, Kinds: map[string]string{}, Hosts: map[string][]string{}}
 	var lines []string
+	// owner[var] is the secret that sets an environment variable; two secrets
+	// in one command may not set the same one.
+	owner := map[string]string{}
+	claim := func(variable, secretName string) error {
+		if other, taken := owner[variable]; taken {
+			if other == secretName {
+				return nil
+			}
+			return fmt.Errorf("$%s is set by both %s and %s; use them in separate commands", variable, other, secretName)
+		}
+		owner[variable] = secretName
+		return nil
+	}
 	for _, name := range names {
 		i := slices.IndexFunc(list, func(v View) bool { return v.Name == name })
 		if i < 0 {
@@ -504,6 +541,15 @@ func (x *Sealer) Check(ws string, a agent.Agent, names []string) (Use, error) {
 		}
 		use.Trusted = use.Trusted && v.Grants[g].Mode == Trusted
 		use.Kinds[name] = v.Kind
+		vars := []string{name}
+		if v.Kind == KindEnv {
+			vars = v.Keys
+		}
+		for _, variable := range vars {
+			if err := claim(variable, name); err != nil {
+				return Use{}, err
+			}
+		}
 		for _, h := range v.Hosts {
 			if v.Kind == KindSSH {
 				_, host, port, _ := sshHost(h)
@@ -518,8 +564,12 @@ func (x *Sealer) Check(ws string, a agent.Agent, names []string) (Use, error) {
 			where = "can reach " + strings.Join(v.Hosts, ", ")
 		}
 		what := "secret"
-		if v.Kind == KindSSH {
+		switch v.Kind {
+		case KindSSH:
 			what = "SSH key"
+		case KindEnv:
+			what = "env file"
+			where = fmt.Sprintf("%d variables: %s; %s", len(v.Keys), strings.Join(v.Keys, ", "), where)
 		}
 		lines = append(lines, fmt.Sprintf("%s %s (%s)", what, name, where))
 	}
@@ -563,7 +613,9 @@ func Scrub(text string, values map[string]string) string {
 		if len(v) < 4 {
 			continue
 		}
-		mark := "[secret:" + name + "]"
+		// A name may carry a "|…" suffix to give one secret several forms.
+		mark, _, _ := strings.Cut(name, "|")
+		mark = "[secret:" + mark + "]"
 		// A key printed in part (head, grep) still hides each line.
 		if strings.Contains(v, "\n") {
 			for _, line := range strings.Split(v, "\n") {
@@ -631,12 +683,15 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, _ tool.Call
 			hosts = strings.Join(v.Hosts, ", ")
 		}
 		kind := "token ($" + v.Name + " is the value)"
-		if v.Kind == KindSSH {
+		switch v.Kind {
+		case KindSSH:
 			kind = "SSH key: run plain ssh/scp/sftp or git over ssh to its hosts ($" + v.Name + " is the key file's path; your own ~/.ssh is not available)"
+		case KindEnv:
+			kind = "env file: each of " + strings.Join(v.Keys, ", ") + " is an environment variable of the command, and $XHAOS_ENV_FILE is a file holding all of them (for tools that read a .env path); $" + v.Name + " itself is not set"
 		}
 		fmt.Fprintf(&b, "%s: %s\n  kind: %s\n  hosts: %s\n  you: %s\n", v.Name, firstNonEmpty(v.Description, "(no description)"), kind, hosts, access)
 	}
-	b.WriteString("\nTo use one: bash with `secrets: [\"NAME\"]`, and $NAME in the command (e.g. curl -H \"Authorization: Bearer $NAME\" https://host/…). The command can reach only those hosts, over HTTPS through a proxy that is set for it; the project is read-only for it.")
+	b.WriteString("\nTo use one: bash with `secrets: [\"NAME\"]`, and $NAME (for an env file, its variables) in the command (e.g. curl -H \"Authorization: Bearer $NAME\" https://host/…). The command can reach only those hosts, over HTTPS through a proxy that is set for it; the project is read-only for it.")
 	return b.String(), nil
 }
 

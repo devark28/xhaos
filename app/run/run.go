@@ -195,28 +195,65 @@ func (r *Runner) sealed(ctx context.Context, root, ws string, a agent.Agent, cal
 	}
 	proxyURL, release := r.Egress.Lease(use.Rules)
 	defer release()
-	env := []string{"GIT_TERMINAL_PROMPT=0", "NO_PROXY=", "no_proxy=", "XHAOS_PROXY=" + proxyURL}
+	// What the scrubber removes from the output. An env secret contributes
+	// each of its values (and as written in the file), not the whole text.
+	scrubbed := map[string]string{}
+	var env, keys, envFiles []string
+	for name, v := range values {
+		switch use.Kinds[name] {
+		case secret.KindSSH:
+			keys = append(keys, name)
+			scrubbed[name] = v
+		case secret.KindEnv:
+			vars, err := secret.ParseEnv(v)
+			if err != nil {
+				return "", fmt.Errorf("cannot read secret %s: %w", name, err)
+			}
+			envFiles = append(envFiles, name)
+			for _, x := range vars {
+				env = append(env, x.Key+"="+x.Value)
+				scrubbed[name+"."+x.Key] = x.Value
+				if x.Literal != x.Value {
+					scrubbed[name+"."+x.Key+"|literal"] = x.Literal
+				}
+			}
+		default:
+			env = append(env, name+"="+v)
+			scrubbed[name] = v
+		}
+	}
+	// The proxy settings come last, so nothing above can replace them.
+	env = append(env, "GIT_TERMINAL_PROMPT=0", "NO_PROXY=", "no_proxy=", "XHAOS_PROXY="+proxyURL)
 	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"} {
 		env = append(env, k+"="+proxyURL)
 	}
-	var keys []string
-	for name, v := range values {
-		if use.Kinds[name] == secret.KindSSH {
-			keys = append(keys, name)
-			continue
-		}
-		env = append(env, name+"="+v)
-	}
 	sort.Strings(keys)
+	sort.Strings(envFiles)
 	extra, err := r.skillDirs(ws, a, call)
 	if err != nil {
 		return "", err
 	}
 	sealed := sandbox.Sealed{Env: env, ProxyPort: r.Egress.Port(), Extra: extra}
-	if len(keys) > 0 {
+	if len(keys) > 0 || len(envFiles) > 0 {
 		sealed.Setup = func(scratch string) ([]string, error) {
-			return sshSetup(scratch, keys, values, use, r.Secrets.KnownHosts(ws, keys[0]))
+			var more []string
+			if len(keys) > 0 {
+				var err error
+				if more, err = sshSetup(scratch, keys, values, use, r.Secrets.KnownHosts(ws, keys[0])); err != nil {
+					return nil, err
+				}
+			}
+			if len(envFiles) > 0 {
+				path, err := envFile(scratch, envFiles, values)
+				if err != nil {
+					return nil, err
+				}
+				more = append(more, "XHAOS_ENV_FILE="+path)
+			}
+			return more, nil
 		}
+	}
+	if len(keys) > 0 {
 		sealed.Done = func(scratch string) {
 			if b, err := os.ReadFile(filepath.Join(scratch, "home", ".ssh", "known_hosts")); err == nil {
 				for _, k := range keys {
@@ -225,8 +262,28 @@ func (r *Runner) sealed(ctx context.Context, root, ws string, a agent.Agent, cal
 			}
 		}
 	}
-	scrub := func(s string) string { return secret.Scrub(strings.ReplaceAll(s, proxyURL, "[proxy]"), values) }
+	scrub := func(s string) string { return secret.Scrub(strings.ReplaceAll(s, proxyURL, "[proxy]"), scrubbed) }
 	return tool.ExecuteSealed(ctx, root, r.Sandbox, call, sealed, scrub)
+}
+
+// envFile writes the env secrets' texts, as saved, to one file in the
+// command's own scratch folder (mode 0600; it goes with the folder) and
+// returns its path. With several secrets each text follows a comment naming
+// it; Check has already refused two that set the same variable.
+func envFile(scratch string, names []string, values map[string]string) (string, error) {
+	dir := filepath.Join(scratch, "env")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, name := range names {
+		if len(names) > 1 {
+			fmt.Fprintf(&b, "# %s\n", name)
+		}
+		b.WriteString(strings.TrimRight(values[name], "\n") + "\n")
+	}
+	path := filepath.Join(dir, ".env")
+	return path, os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // sshSetup gives a sealed command its SSH keys: each key in a file ($NAME is
