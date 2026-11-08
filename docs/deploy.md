@@ -7,6 +7,33 @@ Xhaos is one static binary (pure Go, the page built in) plus a data folder. Run 
 
 Either way, put it behind an HTTPS reverse proxy before it is reachable from anywhere but your own machine.
 
+## The installer
+
+On a Linux server with systemd, `install.sh` does the steps in this guide for you, and updates later:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install.sh | sh
+```
+
+Run it as root or as a user with `sudo` (questions come from the terminal even under `curl | sh`). It:
+
+- downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
+- creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
+- writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), and **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+
+Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again.
+
+| Option | |
+|---|---|
+| `--yes` | answer yes to every question (unattended) |
+| `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation` |
+| `--without a,b` | skip these parts without asking |
+| `--no-restart` | never restart a running Xhaos (restart it yourself later) |
+| `--version vX.Y.Z` | install that release instead of the latest |
+
+The rest of this guide explains what the installer does, for doing it by hand or in a container.
+
 ## Requirements
 
 | | |

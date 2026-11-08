@@ -75,6 +75,10 @@ See [docs/architecture.md](docs/architecture.md) for the package map, and [docs/
 4. Update the documentation (`README.md`, `docs/`) when behaviour changes.
 5. Open a pull request describing what changed and how you tested it. Screenshots help for UI changes; please check both the dark and light themes, a phone-sized window, and Firefox as well as Chrome.
 
+## Releases
+
+A release is a version tag: pushing `vX.Y.Z` runs `.github/workflows/release.yml`, which builds the linux/amd64 and linux/arm64 archives with `scripts/release.sh` (the page built in, plus `install.sh` and the dictation sidecar) and publishes them with `SHA256SUMS`. `install.sh` installs and updates from the latest release, so test it on a throwaway machine or container before tagging: it should install fresh, change nothing when run twice, update from the previous release, and refuse an archive that doesn't match `SHA256SUMS`.
+
 ## Reporting bugs
 
 Open an issue with what you did, what you expected, what happened, and your OS, kernel (`uname -r`), browser, and Xhaos version (shown in the page's toast and at `/health`). Server logs help; run with `-verbose` for more. Remove API keys, secrets and private paths before posting.

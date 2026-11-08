@@ -73,7 +73,12 @@ func main() {
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 15 s plus half the utterance's length)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	var proxies []netip.Prefix
 	for _, p := range strings.Split(*trustedProxies, ",") {
 		if p = strings.TrimSpace(p); p == "" {

@@ -36,7 +36,15 @@ Open http://localhost:5180, name your first workspace and choose its passphrase,
 
 ### On a server
 
-Build a static binary with the page built in:
+On a Linux server with systemd (Debian or Ubuntu for the optional parts), the installer sets up everything and updates it later:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install.sh | sh
+```
+
+It installs the latest release (checksum verified), creates the `xhaos` user and a systemd service, and offers optional parts: build tools and languages, browsers for UI tests, rootless Podman, and speech dictation with a local Whisper model. Run it again to update. See [docs/deploy.md](docs/deploy.md#the-installer).
+
+Or build a static binary with the page built in yourself:
 
 ```sh
 scripts/release.sh            # release/xhaos-<version>-linux-{amd64,arm64}.tar.gz

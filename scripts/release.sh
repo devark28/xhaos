@@ -26,7 +26,9 @@ for target in $TARGETS; do
   mkdir -p "$OUT/$name"
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch "$GO" build -trimpath -tags server,embed \
     -ldflags "-s -w -X main.version=$VERSION" -o "$OUT/$name/xhaos" ./cmd/xhaos
-  cp README.md LICENSE "$OUT/$name/" && mkdir -p "$OUT/$name/docs" && cp docs/deploy.md docs/guide.md "$OUT/$name/docs/"
+  cp README.md LICENSE install.sh "$OUT/$name/" && mkdir -p "$OUT/$name/docs" "$OUT/$name/dictation" && cp docs/deploy.md docs/guide.md "$OUT/$name/docs/"
+  # The reference dictation sidecar, which install.sh sets up.
+  cp scripts/dictation/stt.py "$OUT/$name/dictation/"
   tar -C "$OUT" -czf "$OUT/$name.tar.gz" "$name"
   rm -rf "${OUT:?}/$name"
 done
