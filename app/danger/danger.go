@@ -57,6 +57,12 @@ var durationPart = regexp.MustCompile(`(?i)(\d+)\s*(s|m|h|d)`)
 // ParseDuration reads <n><unit> parts: 10s, 15m, 2h, 1d, or combined (1h30m).
 // Units are s, m, h and d; the total must be 10 s to 7 days.
 func ParseDuration(text string) (time.Duration, error) {
+	return ParseDurationBetween(text, MinDuration, MaxDuration)
+}
+
+// ParseDurationBetween reads the same <n><unit> text, but accepts totals from
+// min to max (published channel links use their own range).
+func ParseDurationBetween(text string, min, max time.Duration) (time.Duration, error) {
 	text = strings.TrimSpace(text)
 	parts := durationPart.FindAllStringSubmatchIndex(text, -1)
 	if text == "" || len(parts) == 0 || strings.TrimSpace(durationPart.ReplaceAllString(text, "")) != "" {
@@ -71,10 +77,27 @@ func ParseDuration(text string) (time.Duration, error) {
 		unit := map[string]time.Duration{"s": time.Second, "m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[strings.ToLower(text[p[4]:p[5]])]
 		total += time.Duration(n) * unit
 	}
-	if total < MinDuration || total > MaxDuration {
-		return 0, fmt.Errorf("%w: choose between 10 seconds and 7 days (%s given)", apperr.Invalid, total)
+	if total < min || total > max {
+		return 0, fmt.Errorf("%w: choose between %s and %s (%s given)", apperr.Invalid, spell(min), spell(max), total)
 	}
 	return total, nil
+}
+
+// spell writes a bound the way the dialogs do: 10 seconds, 10 minutes, 7 days.
+func spell(d time.Duration) string {
+	for _, u := range []struct {
+		d    time.Duration
+		name string
+	}{{24 * time.Hour, "day"}, {time.Hour, "hour"}, {time.Minute, "minute"}, {time.Second, "second"}} {
+		if d%u.d == 0 {
+			n := int(d / u.d)
+			if n == 1 {
+				return "1 " + u.name
+			}
+			return fmt.Sprintf("%d %ss", n, u.name)
+		}
+	}
+	return d.String()
 }
 
 // Protected branches are never pushed to, and never the locked branch.

@@ -7,8 +7,14 @@ package channel
 // them like any channel message, marked as coming from outside.
 //
 // The passphrase is random (192 bits), so it is stored as a plain SHA-256
-// hash: there is nothing to guess and nothing to salt. Publishing again, or
-// resetting, replaces it; unpublishing deletes it.
+// hash: there is nothing to guess and nothing to salt. Publishing again
+// always replaces it (and the expiry); unpublishing deletes it.
+//
+// A link lasts as long as the owner chose when publishing, or has no expiry
+// (expires_at NULL, which must be chosen explicitly). An expired link is
+// refused like a wrong passphrase, but its row stays, so the channel still
+// shows as published ("link expired") until the owner publishes again or
+// unpublishes.
 
 import (
 	"crypto/rand"
@@ -28,6 +34,7 @@ import (
 
 	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/auth"
+	"github.com/devark28/xhaos/app/danger"
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/sqlitedb"
 )
@@ -36,7 +43,8 @@ const linkSchema = `
 CREATE TABLE IF NOT EXISTS channel_links (
 	channel_id INTEGER PRIMARY KEY REFERENCES channels(id),
 	pass_hash  TEXT NOT NULL,
-	created_at TEXT NOT NULL
+	created_at TEXT NOT NULL,
+	expires_at TEXT -- NULL: no expiry
 );`
 
 // migrateLinks adds the links table, and lets channel messages come from
@@ -44,6 +52,11 @@ CREATE TABLE IF NOT EXISTS channel_links (
 // messages table is rebuilt once with sender_id nullable.
 func migrateLinks(db *sql.DB) error {
 	if _, err := db.Exec(linkSchema); err != nil {
+		return err
+	}
+	// Older databases have no expires_at: the column is added NULL, so links
+	// already published keep working without an expiry.
+	if _, err := db.Exec(`ALTER TABLE channel_links ADD COLUMN expires_at TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
 	var has int
@@ -90,8 +103,25 @@ type Published struct {
 	Passphrase string  `json:"passphrase"`
 }
 
-// publish gives a channel a new passphrase (the old one, if any, stops working).
-func (s *Service) issueLink(ws string, id int64) (Published, error) {
+// A link's own duration range; "no expiry" is the only way past the top.
+const (
+	MinLinkDuration = 10 * time.Minute
+	MaxLinkDuration = 30 * 24 * time.Hour
+)
+
+// PublishRequest publishes a channel (or publishes it again). Duration is how
+// long the link works, <n><unit> like 1h or 7d (10 minutes to 30 days);
+// NoExpiry: it never expires. Exactly one of the two must be given.
+type PublishRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+	ChannelID   int64  `json:"channelId"`
+	Duration    string `json:"duration,omitempty"`
+	NoExpiry    bool   `json:"noExpiry,omitempty"`
+}
+
+// issueLink gives a channel a new passphrase and expiry (the old ones, if
+// any, stop working); no expiry when expiry is zero.
+func (s *Service) issueLink(ws string, id int64, expiry time.Duration) (Published, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Published{}, err
@@ -110,8 +140,16 @@ func (s *Service) issueLink(ws string, id int64) (Published, error) {
 	}
 	pass := passPrefix + base64.RawURLEncoding.EncodeToString(raw)
 	at := s.now()
-	if _, err := tx.Exec(`INSERT INTO channel_links (channel_id, pass_hash, created_at) VALUES (?, ?, ?)
-		ON CONFLICT (channel_id) DO UPDATE SET pass_hash = excluded.pass_hash, created_at = excluded.created_at`, id, hashPass(pass), sqlitedb.Stamp(at)); err != nil {
+	var expires any // NULL: no expiry
+	c.ExpiresAt = nil
+	if expiry > 0 {
+		t := at.Add(expiry)
+		c.ExpiresAt = &t
+		expires = sqlitedb.Stamp(t)
+	}
+	if _, err := tx.Exec(`INSERT INTO channel_links (channel_id, pass_hash, created_at, expires_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (channel_id) DO UPDATE SET pass_hash = excluded.pass_hash, created_at = excluded.created_at, expires_at = excluded.expires_at`,
+		id, hashPass(pass), sqlitedb.Stamp(at), expires); err != nil {
 		return Published{}, err
 	}
 	c.Published = true
@@ -142,7 +180,7 @@ func (s *Service) dropLink(ws string, id int64) (Channel, error) {
 	if _, err := tx.Exec(`DELETE FROM channel_links WHERE channel_id = ?`, id); err != nil {
 		return Channel{}, err
 	}
-	c.Published = false
+	c.Published, c.ExpiresAt = false, nil
 	ev, err := eventlog.Append(tx, ws, 0, EventLink, c, s.now())
 	if err != nil {
 		return Channel{}, err
@@ -154,11 +192,26 @@ func (s *Service) dropLink(ws string, id int64) (Channel, error) {
 	return c, nil
 }
 
-// Publish puts a channel on its link with a new passphrase, returned this
-// once (only its hash is kept). On a published channel it is the reset: the
-// old passphrase stops working.
-func (o *Owner) Publish(req CloseRequest) (Published, error) {
-	return o.s.issueLink(req.WorkspaceID, req.ChannelID)
+// Publish puts a channel on its link with a new passphrase and expiry; the
+// passphrase is returned this once (only its hash is kept). On a published
+// channel, expired or not, it is the same action again: the old passphrase
+// stops working at once.
+func (o *Owner) Publish(req PublishRequest) (Published, error) {
+	var expiry time.Duration
+	switch {
+	case req.NoExpiry && strings.TrimSpace(req.Duration) != "":
+		return Published{}, fmt.Errorf("%w: give a duration or no expiry, not both", apperr.Invalid)
+	case req.NoExpiry:
+	case strings.TrimSpace(req.Duration) == "":
+		return Published{}, fmt.Errorf("%w: choose how long the link lasts (a duration like 1d), or no expiry", apperr.Invalid)
+	default:
+		d, err := danger.ParseDurationBetween(req.Duration, MinLinkDuration, MaxLinkDuration)
+		if err != nil {
+			return Published{}, err
+		}
+		expiry = d
+	}
+	return o.s.issueLink(req.WorkspaceID, req.ChannelID, expiry)
 }
 
 // Unpublish takes a channel off its link; its passphrase stops working.
@@ -168,11 +221,16 @@ func (o *Owner) Unpublish(req CloseRequest) (Channel, error) {
 
 var errPass = errors.New("wrong or missing passphrase, or the channel is not published")
 
-// linked loads a published channel whose passphrase is pass.
+// linked loads a published channel whose passphrase is pass and whose link
+// has not expired (expiry is judged by the service's clock).
 func (s *Service) linked(ws string, id int64, pass string) (Channel, error) {
 	var stored string
-	err := s.db.QueryRow(`SELECT l.pass_hash FROM channel_links l JOIN channels c ON c.id = l.channel_id WHERE c.workspace_id = ? AND c.id = ?`, ws, id).Scan(&stored)
+	var expires sql.NullString
+	err := s.db.QueryRow(`SELECT l.pass_hash, l.expires_at FROM channel_links l JOIN channels c ON c.id = l.channel_id WHERE c.workspace_id = ? AND c.id = ?`, ws, id).Scan(&stored, &expires)
 	if err != nil || subtle.ConstantTimeCompare([]byte(stored), []byte(hashPass(pass))) != 1 {
+		return Channel{}, errPass
+	}
+	if expires.Valid && !s.now().Before(sqlitedb.ParseStamp(expires.String)) {
 		return Channel{}, errPass
 	}
 	return s.load(s.db, ws, id)
@@ -201,8 +259,10 @@ func (s *Service) sendOutside(c Channel, from, body string) (Message, error) {
 //	                                          wait (up to 60) holds the request until one arrives
 //	POST {"from": "name", "body": "text"}     sends a message (a text/plain body works too)
 //
-// Both need "Authorization: Bearer <passphrase>". Wrong passphrases are
-// counted per address and slowed down like sign-in attempts.
+// Both need "Authorization: Bearer <passphrase>". Wrong passphrases (and
+// expired links, which are refused the same way) are counted per address and
+// slowed down like sign-in attempts. A waiting GET checks the link again each
+// half second, so a link that expires or is replaced stops it there.
 func (s *Service) Links() http.Handler {
 	var limits auth.Limiter
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +294,7 @@ func (s *Service) Links() http.Handler {
 			s.servePost(w, r, c)
 			return
 		}
-		s.serveGet(w, r, c)
+		s.serveGet(w, r, c, strings.TrimSpace(pass))
 	})
 }
 
@@ -278,14 +338,22 @@ func (s *Service) servePost(w http.ResponseWriter, r *http.Request, c Channel) {
 	replyJSON(w, http.StatusCreated, map[string]any{"message": outsideView(msg, s, c.WorkspaceID)})
 }
 
-func (s *Service) serveGet(w http.ResponseWriter, r *http.Request, c Channel) {
+func (s *Service) serveGet(w http.ResponseWriter, r *http.Request, c Channel, pass string) {
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	wait, _ := strconv.Atoi(r.URL.Query().Get("wait"))
 	deadline := time.Now().Add(time.Duration(min(max(wait, 0), 60)) * time.Second)
 	if wait > 0 {
 		_ = http.NewResponseController(w).SetWriteDeadline(deadline.Add(10 * time.Second))
 	}
-	for {
+	for first := true; ; first = false {
+		// The handler just checked the link; a wait checks it again on each
+		// loop (not counted as a wrong try: the caller held a good passphrase).
+		if !first {
+			if _, err := s.linked(c.WorkspaceID, c.ID, pass); err != nil {
+				replyJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 		msgs, err := s.messagesAfter(c.WorkspaceID, c.ID, after, 200)
 		if err != nil {
 			replyJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

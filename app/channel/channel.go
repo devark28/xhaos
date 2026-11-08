@@ -64,6 +64,10 @@ type Channel struct {
 	// Published: the user put it on a link, where anyone with its
 	// passphrase can read it and send messages from outside Xhaos.
 	Published bool `json:"published,omitempty"`
+	// ExpiresAt: when the link stops working; nil: it never does. Past it,
+	// the channel stays published (the page says "link expired") until the
+	// owner publishes again or unpublishes.
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 type Message struct {
@@ -126,6 +130,11 @@ type Service struct {
 	Price  func(model string) (input, output float64, ok bool)
 	now    func() time.Time
 }
+
+// SetClock replaces the clock (tests move it past a link's expiry). Call it
+// before the service is in use; the function itself must be safe to call
+// from any goroutine.
+func (s *Service) SetClock(now func() time.Time) { s.now = now }
 
 func NewService(db *sql.DB, agents *agent.Service, store *agent.Store, publish eventlog.Publisher) *Service {
 	if publish == nil {
@@ -291,10 +300,16 @@ func (s *Service) Close(workspaceID string, channelID int64) (Channel, error) {
 func (s *Service) load(q sqlitedb.Querier, ws string, id int64) (Channel, error) {
 	var c Channel
 	var at, closed string
+	var expires sql.NullString
 	err := q.QueryRow(`SELECT id, workspace_id, subject, kind, creator_id, created_at, closed_at,
-		EXISTS (SELECT 1 FROM channel_links l WHERE l.channel_id = channels.id) FROM channels WHERE workspace_id = ? AND id = ?`, ws, id).
-		Scan(&c.ID, &c.WorkspaceID, &c.Subject, &c.Kind, &c.CreatorID, &at, &closed, &c.Published)
+		EXISTS (SELECT 1 FROM channel_links l WHERE l.channel_id = channels.id),
+		(SELECT l.expires_at FROM channel_links l WHERE l.channel_id = channels.id) FROM channels WHERE workspace_id = ? AND id = ?`, ws, id).
+		Scan(&c.ID, &c.WorkspaceID, &c.Subject, &c.Kind, &c.CreatorID, &at, &closed, &c.Published, &expires)
 	c.Closed = closed != ""
+	if expires.Valid {
+		t := sqlitedb.ParseStamp(expires.String)
+		c.ExpiresAt = &t
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, fmt.Errorf("%w: channel #%d", apperr.NotFound, id)
 	}
