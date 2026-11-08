@@ -118,7 +118,7 @@ type Classifier struct {
 	now    func() time.Time
 
 	mu    sync.Mutex
-	cache map[cacheKey]verdict // successful answers, for the server's lifetime
+	cache *verdictCache // successful answers, for the server's lifetime (at most maxCached)
 
 	logMu sync.Mutex // one developer log line at a time
 }
@@ -132,7 +132,7 @@ type verdict struct {
 
 // New returns the classifier. db holds its settings (see Migrate).
 func New(db *sql.DB, cfg Config) *Classifier {
-	c := &Classifier{db: db, cfg: cfg, now: time.Now, cache: map[cacheKey]verdict{}}
+	c := &Classifier{db: db, cfg: cfg, now: time.Now, cache: newVerdictCache(maxCached)}
 	if cfg.URL != "" {
 		c.client = NewClient(cfg.URL, cfg.Timeout)
 	}
@@ -173,7 +173,7 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 	started := c.now()
 	key := cacheKey{r.Project, r.Command}
 	c.mu.Lock()
-	v, hit := c.cache[key]
+	v, hit := c.cache.get(key)
 	c.mu.Unlock()
 	if !hit {
 		var err error
@@ -183,7 +183,7 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 			log.Printf("WARN classifier: %v", err)
 		} else {
 			c.mu.Lock()
-			c.cache[key] = v
+			c.cache.put(key, v)
 			c.mu.Unlock()
 		}
 	}
