@@ -29,6 +29,7 @@ type parsed struct {
 	line     string     // as given
 	plain    string     // quote marks and backslashes dropped
 	segments [][]string // simple commands (split on ; & | newlines and parentheses), each split into words
+	root     string     // the project folder, for the runners (see runner.go); "" when unknown
 }
 
 // floor is the whole deny floor, in one table (see floor_test.go).
@@ -61,7 +62,7 @@ var floor = []rule{
 			after(c, is("go"), word("install")) ||
 			after(c, is("apt", "apt-get"), word("install"))
 	}},
-	{"npx can download and run a package from the network", func(c parsed) bool { return anyWord(c, is("npx", "pnpx", "bunx")) }},
+	{"npx can download and run a package from the network", func(c parsed) bool { return anyWord(c, is(runnerNames...)) && !installedRunners(c) }},
 	{"it pushes to or fetches from a remote, which can change or read another machine", func(c parsed) bool {
 		return after(c, is("git"), word("push", "fetch", "pull", "clone"))
 	}},
@@ -79,8 +80,15 @@ var floor = []rule{
 }
 
 // Floor returns why the deny floor refuses command, or "" when it does not.
-func Floor(command string) string {
+// It does not know the project folder, so a runner (npx and the like) is
+// refused; see FloorIn.
+func Floor(command string) string { return FloorIn("", command) }
+
+// FloorIn is Floor for the project folder root: a runner is allowed when the
+// tool it runs is installed there (see runner.go).
+func FloorIn(root, command string) string {
 	c := parse(command)
+	c.root = root
 	for _, r := range floor {
 		if r.match(c) {
 			return r.why

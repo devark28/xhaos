@@ -29,8 +29,13 @@ func ListReason(name string) string {
 }
 
 // Listed reports whether command is on the built-in list, with the names of
-// the listed commands it is made of (for example "go vet, go test").
-func Listed(command string) (name string, ok bool) {
+// the listed commands it is made of (for example "go vet, go test"). A runner
+// (npx) is never listed without a project folder: see ListedIn.
+func Listed(command string) (name string, ok bool) { return ListedIn("", command) }
+
+// ListedIn is Listed for the project folder root: npx TOOL is listed when TOOL
+// is a listed JavaScript tool installed in root (see runner.go).
+func ListedIn(root, command string) (name string, ok bool) {
 	toks, ok := lex(command)
 	if !ok || len(toks) == 0 {
 		return "", false
@@ -41,7 +46,7 @@ func Listed(command string) (name string, ok bool) {
 	var cmd []token
 	afterPipe := false
 	flush := func(nextAfterPipe bool) bool {
-		n, ok := simple(cmd, afterPipe)
+		n, ok := simple(cmd, afterPipe, root)
 		if !ok {
 			return false
 		}
@@ -78,9 +83,22 @@ func Listed(command string) (name string, ok bool) {
 
 // simple checks one simple command. A filter is allowed only after a pipe and
 // returns an empty name.
-func simple(toks []token, afterPipe bool) (string, bool) {
+func simple(toks []token, afterPipe bool, root string) (string, bool) {
 	if len(toks) == 0 || toks[0].op != "" || toks[0].glob {
 		return "", false
+	}
+	prog := toks[0].text
+	if !afterPipe && isRunner(prog) {
+		// npx TOOL ...: TOOL must be a listed JavaScript tool installed in the
+		// project; the rest is judged as TOOL's own direct form.
+		if len(toks) < 2 || toks[1].op != "" || toks[1].glob || !installedJS(root, toks[1].text) {
+			return "", false
+		}
+		name, ok := simple(toks[1:], false, root)
+		if !ok {
+			return "", false
+		}
+		return prog + " " + name, true
 	}
 	var args []arg
 	for _, t := range toks[1:] {
@@ -89,7 +107,6 @@ func simple(toks []token, afterPipe bool) (string, bool) {
 		}
 		args = append(args, t.arg)
 	}
-	prog := toks[0].text
 	if afterPipe {
 		if f, ok := filters[prog]; ok {
 			return "", f(args)
@@ -552,8 +569,8 @@ func requires(s spec, args []arg, flags ...string) bool {
 }
 
 // js are the JavaScript tools, run directly: they run only a local binary.
-// npx is not listed: it downloads a package that is not installed, like npm
-// install.
+// npx is listed only as a runner of one of these tools, installed in the
+// project (see simple and runner.go).
 var js = map[string]program{
 	"tsc":    func(a []arg) (string, bool) { return named("tsc --noEmit", requires(tsc, a, "--noEmit")) },
 	"eslint": func(a []arg) (string, bool) { return named("eslint", eslint.check(a)) },

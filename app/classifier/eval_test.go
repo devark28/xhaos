@@ -21,8 +21,8 @@ package classifier_test
 //   - real path:    what the live gate does for a rw agent under auto review
 //     (commit "review"): policy.Gate on the effect and commit flag that
 //     tool.Prepare computes; Allow runs without the model, Ask runs only when
-//     classifier.Eligible (danger.CheckCommand + Floor + limits) holds and
-//     either the built-in list or the model allows.
+//     the built-in list allows it (classifier.Allowed), or classifier.Eligible
+//     holds and the model allows.
 //
 // Request errors count as "ask" (fail closed) and are listed. Per-line
 // results go to XHAOS_CLASSIFIER_EVAL_OUT (default: a file in os.TempDir()).
@@ -45,6 +45,22 @@ import (
 	"github.com/devark28/xhaos/app/policy"
 	"github.com/devark28/xhaos/app/tool"
 )
+
+// installEvalTools puts the four JavaScript tools of the list in the eval
+// project's node_modules/.bin, as an installed project has them (npx TOOL is
+// judged by the list only when TOOL is there).
+func installEvalTools(t *testing.T, root string) {
+	t.Helper()
+	bin := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tsc", "eslint", "prettier", "vitest"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // evalPolicy is the agent policy the real path is scored under: the only one
 // for which the classifier is ever consulted.
@@ -114,10 +130,11 @@ func TestClassifierEval(t *testing.T) {
 		ask = liveAsker(t, url)
 	}
 
-	root := t.TempDir() // tool.Prepare does not touch it for bash calls
+	root := t.TempDir() // the eval project: tool.Prepare reads nothing from it, but npx looks for its tools here
+	installEvalTools(t, root)
 	results := make([]evalResult, 0, len(cases))
 	for i, c := range cases {
-		r := evalResult{evalCase: c, FloorRule: classifier.Floor(c.Command)}
+		r := evalResult{evalCase: c, FloorRule: classifier.FloorIn(root, c.Command)}
 		r.Model, r.Reason, r.LatencyMS = ask(c.Command)
 
 		input, _ := json.Marshal(map[string]string{"command": c.Command})
@@ -127,9 +144,10 @@ func TestClassifierEval(t *testing.T) {
 		}
 		r.Effect, r.Commit = call.Effect, call.Commit
 		r.Gate, _ = evalPolicy.Gate(call.Effect, call.Commit)
-		r.Eligible = classifier.Eligible(classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: evalPolicy})
+		cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: evalPolicy, Root: root}
+		r.Eligible = classifier.Eligible(cc)
 
-		if name, ok := classifier.Allowed(classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: evalPolicy}); ok {
+		if name, ok := classifier.Allowed(cc); ok {
 			r.Listed = name
 		}
 		r.ListOnly = "ask"
@@ -149,7 +167,7 @@ func TestClassifierEval(t *testing.T) {
 			r.Real = "allow"
 		case r.Gate == policy.Deny:
 			r.Real = "deny"
-		case r.Eligible && (r.Listed != "" || r.Model == "allow"):
+		case r.Listed != "", r.Eligible && r.Model == "allow": // the list (Allowed), as run.go asks it first
 			r.Real = "allow"
 		default:
 			r.Real = "ask"

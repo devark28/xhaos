@@ -686,7 +686,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					verdict, reason, by = policy.Allow, "", "danger"
 				}
 			}
-			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy}
+			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy, Root: root}
 			creq := classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
 			if verdict == policy.Ask && r.Classifier != nil {
 				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model

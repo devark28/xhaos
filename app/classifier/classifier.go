@@ -67,29 +67,36 @@ type Call struct {
 	Commit  bool          // a git commit or push
 	Command string        // the command line
 	Policy  policy.Policy // the agent's policy
+	Root    string        // the project's folder: npx finds its tools here
 }
 
-// Eligible reports whether the classifier may be asked about c: every hard
-// limit holds and the deny floor does not match. Otherwise the policy's
-// verdict stands.
-func Eligible(c Call) bool {
+// limits reports whether c passes every hard limit and the deny floor. Otherwise
+// the policy's verdict stands.
+func limits(c Call) bool {
 	return c.Name == "bash" &&
 		c.Effect == policy.EffectExec && // not read, write, git, secret, net or contact
 		c.Policy.Access == "rw" &&
 		c.Policy.Review == "auto" &&
 		!c.Commit &&
 		danger.CheckCommand(c.Command) == "" &&
-		Floor(c.Command) == ""
+		FloorIn(c.Root, c.Command) == ""
+}
+
+// Eligible reports whether the model may be asked about c: limits hold, and
+// the command runs no npx-style runner (those are the list's job alone, see
+// runner.go). Otherwise the policy's verdict stands.
+func Eligible(c Call) bool {
+	return limits(c) && !hasRunner(c.Command)
 }
 
 // Allowed reports whether c is allowed by the built-in list with no model:
-// every check of Eligible holds (hard limits, dangerously allow's check, the
-// deny floor) and the command is Listed. It returns the listed names.
+// limits hold (hard limits, dangerously allow's check, the deny floor) and the
+// command is listed in the project c.Root. It returns the listed names.
 func Allowed(c Call) (name string, ok bool) {
-	if !Eligible(c) {
+	if !limits(c) {
 		return "", false
 	}
-	return Listed(c.Command)
+	return ListedIn(c.Root, c.Command)
 }
 
 // List reports whether the built-in list allows call (see Allowed) while the
@@ -167,7 +174,7 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 	if on, err := c.on(); err != nil || !on {
 		return false, ""
 	}
-	if Floor(r.Command) != "" { // Eligible checked it; checked again so Decide alone never passes the floor
+	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) { // Eligible checked it; checked again so Decide alone never passes the floor or sees a runner
 		return false, ""
 	}
 	started := c.now()
