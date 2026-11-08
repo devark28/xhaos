@@ -1,6 +1,6 @@
 # Nodes (design)
 
-Status: proposal. Nothing here is built yet; [Phases](#phases) says what comes first.
+Status: phase 1 is built and tested locally, not yet on real Pis or dev-rw-07. Later phases are proposals; [Phases](#phases) lists them.
 
 Xhaos runs agents on the machine it is installed on. Real work often needs other machines: a strong PC with GPUs to compile on, a Raspberry Pi 5 and a Pi Zero 2 W to test the binary on, with their cameras plugged in. Those machines sit on private networks, behind NAT, often without a screen. A **node** is such a machine, joined to an Xhaos workspace, that agents can run commands on and copy files to and from, under the same approvals as everything else.
 
@@ -70,6 +70,52 @@ Then: flash Raspberry Pi OS Lite (64-bit) with Raspberry Pi Imager or `dd`, copy
 
 The files hold the Wi-Fi password and a join code, in plain text, on a partition any computer can read, and they stay there after first boot. The download says so next to the button. The code is single use and expires after 1 hour, used or not (other join codes keep 15 minutes; flashing a card and a Pi Zero 2 W's first boot take longer); after the Pi has joined, the code on the card is worthless, but the Wi-Fi password is not. The plan is for the first boot to delete both files from the boot partition once the node has joined (see Open questions). Older images (Bookworm, `firstrun.sh`) are not supported: use a Trixie image. A Pi Zero 2 W runs the 64-bit image, so `linux/arm64` covers both Pis.
 
+## Easier blind setup (proposal, phase 2)
+
+The two-file path above needs a computer that can flash a card and copy files onto it. Three additions, in the order they would be built. None of them changes the protocol: each ends with the same `install-node.sh` join.
+
+What the Raspberry Pi documentation says (read for this design, not tried on our Pis):
+
+- The Zero 2 W boots from a USB mass-storage device (a USB stick) out of the box. The Pi 5 does too. Models older than the Pi 4 "have known issues which prevent booting with some USB devices", so some sticks will not work on the Zero 2 W.
+- Both try the SD card first. A stick boots only when the SD card is missing, blank or has nothing bootable on it. A card that already has Raspberry Pi OS on it boots instead.
+- On the Zero 2 W the stick goes in the data port (marked USB, not PWR) through an OTG adapter.
+- The Zero 2 W and the Pi 5 also support `rpiboot` with `mass-storage-gadget` (raspberrypi/usbboot). When the Pi is plugged into a computer by USB and does not boot from its card, the computer sends it a small Linux system, and the Pi shows its own SD card to that computer as a USB disk. The card can then be written without taking it out.
+
+### 1. One-command flasher: `flash-node.sh`
+
+A script for a Linux computer that does the flashing and the copying in one go. Add node → Raspberry Pi shows the command after the two downloads:
+
+```
+curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/flash-node.sh | sudo sh -s -- --files ~/Downloads
+```
+
+- It lists removable disks (USB card readers, `lsblk` `RM=1` or `TRAN=usb`). Disks that are mounted as `/`, `/boot` or swap are never listed. It asks you to type the chosen disk's name (`sdb`) to confirm. With `--disk /dev/sdX` it skips the menu, but still refuses non-removable disks.
+- It downloads Raspberry Pi OS Lite arm64 (latest, from downloads.raspberrypi.com), checks it against the published SHA-256, and caches it in `~/.cache/xhaos-node/`. `--image FILE` uses a local image.
+- It writes the card, mounts its boot partition, copies `user-data` and `network-config` from `--files`, syncs and ejects.
+- It takes the two downloaded files rather than the Wi-Fi password or code as options, so no secret ends up in shell history or `ps`.
+- `--rpiboot` first runs `rpiboot -d mass-storage-gadget64` so a Pi plugged in by USB shows its card as a disk, then continues the same way. This needs `rpiboot` installed (Debian/Ubuntu package `rpiboot`). It only works when the card in the Pi is blank or not bootable (see above).
+
+### 2. USB stick config on a running node
+
+This lets a node that is already set up get new settings without SSH or a screen: new Wi-Fi, or joining again after it was removed.
+
+- Make a stick with a FAT file system labelled `XHAOS`. Put `xhaos-node.conf` on it, with lines like `wifi_ssid=`, `wifi_password=`, `wifi_country=` and optionally `server=` with `code=` (a fresh join code from Add node).
+- `install-node.sh` adds a udev rule. When a filesystem labelled `XHAOS` appears, the rule starts a one-shot root service, `xhaos-node apply-usb /dev/…`, which mounts the stick read-write with `nosuid,nodev,noexec`.
+- That service adds the Wi-Fi with NetworkManager (`nmcli`) and joins again if a code is given; the old key is replaced only after the new join succeeds. Only this one-shot service runs as root; the node service stays unprivileged.
+- It writes `xhaos-node-result.txt` back to the stick: the time, the hostname, the IP addresses, the node's state and any errors. This is the feedback for blind setup: plug the stick in, wait for the LED, read the file on a computer.
+- It rewrites `xhaos-node.conf` without the password and the code, so the stick does not keep secrets. The password is then only in NetworkManager's root-only files.
+- `install-node.sh --no-usb-config` leaves the rule out. Anyone with the Pi in hand can already take its card, so the stick adds no new risk for a Pi. It might for a build PC, so the release notes should mention this option.
+
+### 3. USB installer stick (writes the SD card)
+
+This is for setting up a Pi from nothing without a second computer to flash cards.
+
+- One installer image for both Pis: a small Linux system (the Raspberry Pi OS arm64 kernel, which supports both the Zero 2 W and the Pi 5) and the Raspberry Pi OS Lite image. `xhaos.txt` goes on its FAT partition, with the same settings as `xhaos-node.conf`. Add node can download a ready `xhaos.txt`.
+- Boot the Pi with a blank card in it and the stick plugged in. The installer writes Raspberry Pi OS to the card and writes `user-data` and `network-config` from `xhaos.txt`. It writes a result file to the stick, removes the password from it, and powers off. Unplug the stick and power on again: the Pi boots from the card and joins.
+- Feedback without a screen: the activity LED (steady while writing, slow blink when done, fast blink on error) and the result file.
+- Cost: the image has to be built (pi-gen, or a buildroot initramfs like usbboot's `mass-storage-gadget`) and published with each release. It is about the size of Raspberry Pi OS Lite (about 500 MB compressed).
+- Limit: because the SD card boots first, the stick cannot replace a card that already boots. Making such a card unbootable from the running system, so the next boot falls through to the stick, is possible in principle but is left out until it has been tried on both Pis.
+
 ## On the node
 
 `xhaos-node` is small: no page, no database, no model code. Pure Go, static, for `linux/amd64` and `linux/arm64` (and `linux/arm` for 32-bit systems if needed). It runs as its own unprivileged user under systemd.
@@ -132,11 +178,13 @@ The version is checked on `hello`; a node too old for the server is told so and 
 ## Phases
 
 1. **Run and copy, and join a Pi without a screen.** `xhaos-node` (join, run as a service, exec, jobs, put/get, sandbox, devices); `app/node` with join codes, keys, sessions and grants; the four tools; the Nodes tab (add with a join command or the Raspberry Pi first-boot files, list, grant, remove, jobs); `install-node.sh`; release builds. Enough to build on a strong machine and test on Pis.
-2. **Hardware.** Hardware facts (cameras, GPUs, USB devices) on node cards; picking a node by label ("any `pi5`").
-3. **Projects on nodes.** A project can live on a node (node + folder), so an agent's ordinary tools (`read_file`, `edit_file`, `bash`…) run there. Incremental sync of a project to a node. Nodes update themselves when the server is updated.
+2. **Easier blind setup**, in this order: `flash-node.sh` (with `--rpiboot`), the USB stick config, then the USB installer stick (see [Easier blind setup](#easier-blind-setup-proposal-phase-2)).
+3. **Hardware.** Hardware facts (cameras, GPUs, USB devices) on node cards; picking a node by label ("any `pi5`").
+4. **Projects on nodes.** A project can live on a node (node + folder), so an agent's ordinary tools (`read_file`, `edit_file`, `bash`…) run there. Incremental sync of a project to a node. Nodes update themselves when the server is updated.
 
 ## Open questions
 
 - Does Raspberry Pi OS's kernel enable Landlock? If not, the Pis need `--unsandboxed` (or a kernel with it) before they run anything. Check on a real Pi first.
 - Can the first boot delete `user-data` and `network-config` from the boot partition without cloud-init treating the next boot as a new machine and redoing the network? Check on a real Pi; if it cannot, the download warning is the only guard.
+- USB boot on our hardware: which of our sticks the Zero 2 W boots from, and whether the Pi 5's bootloader on our units has USB in `BOOT_ORDER` (it is in the default). Check this before building the installer stick.
 - Should a node be shareable between workspaces? This design says no: one node, one workspace.
