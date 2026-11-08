@@ -10,13 +10,14 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
+import type { NodeList } from './nodes.ts';
 import type { Agent, BoardSummary, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace, UsageReport } from '../../types.ts';
 
 enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
-export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'boards' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'btw';
+export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'boards' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'btw' | 'nodes';
 export interface Panel { kind: PanelKind; section?: string; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];
@@ -43,6 +44,7 @@ export interface State {
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
   boards: BoardSummary[]; // the workspace's Draw boards, oldest first
   boardId: number | null; // the board open in the Draw tab
+  nodes: NodeList | null; // the workspace's nodes, loaded when the Nodes tab opens
   openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
   layout: Layout;
@@ -101,6 +103,7 @@ function initial(): State {
     files: {},
     boards: [],
     boardId: null,
+    nodes: null,
     openDirs: new Set(),
     agentsOnly: false,
     layout: (() => { try { return (JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').layout as Layout) || 'grid'; } catch { return 'grid' as Layout; } })(),

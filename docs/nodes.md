@@ -49,9 +49,9 @@ Xhaos learns this address from `-node-url https://nodes.example.com` (with `-pub
 
 1. **Nodes** tab → **Add node**: name (default `Node 1`, `Node 2`…), and labels. Xhaos makes a join code (random, single use, expires after 15 minutes whether used or not; only its hash is stored, and it is deleted when used or expired) and shows it once:
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install-node.sh | sh -s -- --server https://nodes.example.com --code XXXX-XXXX-XXXX
+   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install-node.sh | sudo sh -s -- --server https://nodes.example.com --code XXXX-XXXX-XXXX
    ```
-2. `install-node.sh` downloads `xhaos-node` for the machine's architecture from the GitHub release and checks it against the release's `SHA256SUMS`, as `install.sh` does. It then creates the `xhaos-node` system user and its root, installs a systemd service, and runs `xhaos-node join`.
+2. `install-node.sh` downloads `xhaos-node` for the machine's architecture from the GitHub release and checks it against the release's `SHA256SUMS`, as `install.sh` does. It then creates the `xhaos-node` system user (no password, no sudo) and its root (`/var/lib/xhaos-node/xhaos-work` unless `--root` says otherwise), runs `xhaos-node join` as that user, and installs a systemd service. A release server pins the node to its own release (`--version`). Run it again without `--code` to update.
 3. `xhaos-node join` makes an Ed25519 key pair (the private key stays in `/var/lib/xhaos-node/`, readable only by its user), sends the public key, the code and its facts. The server checks the code, burns it, and stores the node with its public key: the public key is the only credential kept on the server. The card turns online.
 4. Each later connection answers a fresh challenge from the server by signing it, and the server only talks to a node whose key it stored. The node keeps the server's URL; it only ever connects to that server, over HTTPS (it refuses plain HTTP except to `localhost`, for development).
 
@@ -102,9 +102,8 @@ A typical run: `node_copy` the project to `build-box:app/`, `node_run build-box 
 
 ## In the page
 
-- **Nodes** is a tab of the side panel: one card per node with its name, an online dot, OS/arch, kernel, last seen, sandbox state, labels, the agents it is granted to, and its running jobs (each with a spinner and a Stop). Card actions: rename inline, grant to agents, remove (with a confirm). **Add node** opens the join flow (command or Raspberry Pi files) with the code's time left; the card appears, waiting, and turns online when the machine joins.
-- Tool calls on a node show the node's name in the transcript and on approval cards.
-- Settings → Tools shows whether `xhaos-node` versions match the server.
+- **Nodes** is a tab of the side panel: one card per node with its name, a state dot (online, offline with last seen, waiting to join with the code's expiry), what it is (model or OS/arch, distro, CPUs, memory, `xhaos-node` version), its folder and sandbox state, devices, labels, the agents it is granted to (one chip per agent; pressed means granted), and its jobs (running ones with a Stop). Card actions: rename and relabel inline, remove (with a confirm); a waiting node also has **New code** and **Pi files**. **Add node** (the panel's heading) asks for a name and labels, with a switch for the Raspberry Pi first-boot files; the card appears, waiting, with the command or the files shown once on it, and turns online when the machine joins.
+- Tool calls on a node are summarised as `node: command` in the transcript and on approval cards.
 
 ## Protocol
 

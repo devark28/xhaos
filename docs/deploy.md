@@ -153,6 +153,39 @@ Keep the `Host` header as the browser sent it (Caddy does by default): Xhaos che
 
 Published channel links (`/xhaos/channel/<workspace>/<id>`) go through the same proxy; they carry their own passphrase instead of a session.
 
+## Nodes (remote machines)
+
+Nodes are machines your agents can run commands on: a build PC, a Raspberry Pi ([nodes.md](nodes.md)). Each one connects out to this server over one WebSocket at `/xhaos/node`, so the server needs a public HTTPS address for that path. The machines need no open port.
+
+When the page is already public behind the proxy above, nodes use the same address: `-node-url` defaults to `https://` plus the first `-public-host`. Caddy passes WebSockets through as it is. With nginx, add:
+
+```nginx
+    location = /xhaos/node {
+        proxy_pass http://127.0.0.1:5180;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 1h;
+    }
+```
+
+When the page stays private (reached over an SSH tunnel to `127.0.0.1:5180`), expose only the node path, on a domain of its own:
+
+```caddyfile
+nodes.example.com {
+	handle /xhaos/node {
+		reverse_proxy 127.0.0.1:5180
+	}
+	respond 404
+}
+```
+
+and start Xhaos with `-node-url https://nodes.example.com -public-host nodes.example.com -trusted-proxy 127.0.0.1`. The page and its API stay unreachable from that domain; a node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
+
+On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (for kernels without Landlock).
+
 ## In a container
 
 The repository's `Dockerfile` builds the page and the server and puts the binary in a small Debian image with `bash`, `git`, `curl`, `python3` and `ripgrep` for agents to use. It runs as an unprivileged user (uid 10001), keeps its data in `/data`, and expects projects under `/projects`.

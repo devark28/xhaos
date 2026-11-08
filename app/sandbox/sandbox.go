@@ -53,7 +53,15 @@ const (
 type Config struct {
 	Mode  string
 	Cache string // writable directory shared by sandboxed commands (HOME, tool caches)
+	// LimitDevices closes /dev except the harmless devices (null, zero,
+	// random, tty, shm) and Devices (xhaos-node: hardware is opt-in). Off,
+	// commands may use every device the user may (the server's commands).
+	LimitDevices bool
+	Devices      []string // device files or folders of them, e.g. /dev/video0, /dev/dri
 }
+
+// commonDevices are open to every command, even with LimitDevices.
+var commonDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/ptmx", "/dev/pts"}
 
 // Status describes the sandbox for the Tools panel.
 type Status struct {
@@ -93,6 +101,9 @@ type policy struct {
 	Read  []string `json:"read"`  // directories: read and execute
 	Files []string `json:"files"` // single files: read
 	Write []string `json:"write"` // directories: read, write, execute
+	// Devices: device files (or folders of them) to read, write and ioctl,
+	// when /dev itself is not in Write; /dev can then only be listed.
+	Devices []string `json:"devices,omitempty"`
 	// Sealed commands: the only TCP port they may connect to (the egress
 	// proxy), and no UDP (DNS lookups could carry a secret out).
 	Port    int  `json:"port,omitempty"`
@@ -278,6 +289,10 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 		Read:  []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/proc", "/sys", "/snap", "/nix", "/run/systemd/resolve", "/var/lib/ca-certificates"},
 		Write: []string{root, c.Cache, tmp, "/dev"},
 	}
+	if c.LimitDevices {
+		p.Write = []string{root, c.Cache, tmp, "/dev/shm"}
+		p.Devices = append(slices.Clone(commonDevices), c.Devices...)
+	}
 	// A submodule's or worktree's git data can live outside the project.
 	p.Write = append(p.Write, GitDirs(root)...)
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
@@ -371,7 +386,11 @@ func restrict(p policy) error {
 	rules := []landlock.Rule{
 		landlock.RODirs(p.Read...).IgnoreIfMissing(),
 		landlock.ROFiles(p.Files...).IgnoreIfMissing(),
-		landlock.RWDirs(p.Write...).WithIoctlDev().WithRefer(),
+		landlock.RWDirs(p.Write...).WithIoctlDev().WithRefer().IgnoreIfMissing(),
+	}
+	if len(p.Devices) > 0 {
+		rules = append(rules, landlock.RWFiles(p.Devices...).WithIoctlDev().IgnoreIfMissing(),
+			landlock.PathAccess(llsys.AccessFSReadDir, "/dev").IgnoreIfMissing())
 	}
 	if err := cfg.RestrictPaths(rules...); err != nil {
 		return fmt.Errorf("landlock paths: %w", err)

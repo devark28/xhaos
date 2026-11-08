@@ -19,6 +19,7 @@ const tabs: { kind: PanelKind; id: string; icon: IconName; label: string; also?:
   { kind: 'channels', id: 'channels', icon: 'chat', label: 'Channels' },
   { kind: 'boards', id: 'boards', icon: 'board', label: 'Boards' },
   { kind: 'memories', id: 'memories', icon: 'memory', label: 'Memories' },
+  { kind: 'nodes', id: 'nodes', icon: 'server', label: 'Nodes' },
   // Configuration you rarely reach for (models, tools and MCP) lives under Settings.
   { kind: 'settings', id: 'settings', icon: 'settings', label: 'Settings', also: ['providers', 'tools'] },
 ];
@@ -81,7 +82,8 @@ const side = stylex.create({
     justifyContent: 'space-around', gap: 0,
     borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: colors.lineFaint, backgroundColor: colors.bg,
   },
-  phoneTab: { width: 48, height: 44 },
+  // Up to 48px each, narrower when the tabs would not fit (360px phones).
+  phoneTab: { width: 'auto', flexGrow: 1, flexBasis: 0, minWidth: 0, maxWidth: 48, height: 44 },
   badge: {
     position: 'absolute',
     top: 0,

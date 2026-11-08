@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -32,6 +34,7 @@ import (
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/health"
 	"github.com/devark28/xhaos/app/live"
+	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/run"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/serve"
@@ -50,6 +53,10 @@ const DeltaEventName = "xhaos:delta"
 // BoardEventName carries live board saves (board.Notice), not stored.
 const BoardEventName = "xhaos:board"
 
+// NodeEventName carries nodes going online and offline and their jobs
+// (node.Notice), not stored.
+const NodeEventName = "xhaos:node"
+
 func defaultDBPath() string {
 	dir := os.Getenv("XDG_DATA_HOME")
 	if dir == "" {
@@ -62,6 +69,9 @@ func defaultDBPath() string {
 func main() {
 	sandbox.MaybeRun()    // started as the command sandbox helper: never returns
 	egress.MaybeConnect() // started as ssh's ProxyCommand in a sealed command: never returns
+	if len(os.Args) > 1 && os.Args[1] == "node" {
+		runNode(os.Args[2:]) // xhaos node …: like git, runs xhaos-node …
+	}
 	pageDir := flag.String("frontend", "", "serve the page from this directory (default: the page built into release binaries, else ./frontend)")
 	dbPath := flag.String("db", defaultDBPath(), "SQLite database path")
 	verbose := flag.Bool("verbose", false, "log every request and connection")
@@ -73,6 +83,7 @@ func main() {
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
+	nodeURL := flag.String("node-url", "", "public HTTPS address nodes connect to, where a reverse proxy passes /xhaos/node to this server (default: https:// and the first -public-host; see docs/nodes.md)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -101,6 +112,9 @@ func main() {
 		if h = strings.TrimSpace(h); h != "" {
 			hosts = append(hosts, h)
 		}
+	}
+	if *nodeURL == "" && len(hosts) > 0 {
+		*nodeURL = "https://" + hosts[0]
 	}
 	if m := *sandboxMode; m != sandbox.Auto && m != sandbox.On && m != sandbox.Off {
 		log.Fatalf("-sandbox must be auto, on or off")
@@ -131,6 +145,8 @@ func main() {
 		Publish:   func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
 		Notify:    func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
 		BoardLive: func(ws string, n board.Notice) { hub.Publish(ws, BoardEventName, n) },
+		NodeURL:   *nodeURL,
+		NodeLive:  func(ws string, n node.Notice) { hub.Publish(ws, NodeEventName, n) },
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -158,7 +174,7 @@ func main() {
 			Handler: noCache(application.AssetFileServerFS(page)),
 			// Sign-in, and a session for every runtime call and the event
 			// stream; responses compressed, static files revalidated by ETag.
-			Middleware: middleware(services.Vault.Middleware(guarded, services.Channels.Links())),
+			Middleware: middleware(services.Vault.Middleware(guarded, services.Channels.Links(), services.NodeHub)),
 		},
 	})
 
@@ -178,6 +194,34 @@ func main() {
 	if err := wailsApp.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runNode runs xhaos-node (beside this binary, else on PATH) with args, in
+// this process's place. The node program is installed on its own: a Pi
+// needs only it.
+func runNode(args []string) {
+	path := ""
+	if self, err := os.Executable(); err == nil {
+		if p := filepath.Join(filepath.Dir(self), "xhaos-node"); fileExists(p) {
+			path = p
+		}
+	}
+	if path == "" {
+		p, err := exec.LookPath("xhaos-node")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "xhaos node: xhaos-node is not installed (beside xhaos or on PATH); see docs/nodes.md")
+			os.Exit(1)
+		}
+		path = p
+	}
+	err := syscall.Exec(path, append([]string{path}, args...), os.Environ())
+	fmt.Fprintf(os.Stderr, "xhaos node: %v\n", err)
+	os.Exit(1)
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
 }
 
 // pageFiles picks where the page comes from: a directory given with
@@ -257,5 +301,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Skills),
 		application.NewService(s.Web),
 		application.NewService(s.Dictation),
+		application.NewService(s.Nodes),
 	}
 }
