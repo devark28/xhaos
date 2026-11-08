@@ -442,7 +442,7 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         <Section id="skills" title="Skills" summary=".skill files and project skills" open={open.has('skills')} onToggle={() => toggle('skills')}>
           <Skills />
         </Section>
-        <Section id="secrets" title="Secrets" summary="tokens for agents' commands" open={open.has('secrets')} onToggle={() => toggle('secrets')}>
+        <Section id="secrets" title="Secrets" summary="tokens, keys and .env files for agents' commands" open={open.has('secrets')} onToggle={() => toggle('secrets')}>
           <Secrets />
         </Section>
         <Section id="dictation" title="Dictation" summary="hints for the speech model" open={open.has('dictation')} onToggle={() => toggle('dictation')}>

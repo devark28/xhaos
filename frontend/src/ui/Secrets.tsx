@@ -2,16 +2,18 @@
 // never shown again unless revealed with the passphrase; agents see only
 // names. Granting a secret to an agent lets its commands ask to use it;
 // trusting it (passphrase again) lets them use it without asking each time.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors, fonts } from './theme/tokens.stylex.ts';
 import { Button, Info } from './kit.tsx';
 import { activeAgents } from '../model.ts';
+import { keysSummary, readEnvFile, variablesLabel } from '../env-secret.ts';
 import { call } from './state/backend.ts';
 import { useApp, workspaceOf, toast, errorText, get } from './state/store.ts';
 
 interface Grant { agentId: number; mode: 'ask' | 'trusted' }
-interface SecretView { name: string; kind: 'token' | 'ssh'; description: string; hosts: string[]; grants: Grant[]; updatedAt: string }
+type Kind = 'token' | 'ssh' | 'env';
+interface SecretView { name: string; kind: Kind; description: string; hosts: string[]; keys: string[]; grants: Grant[]; updatedAt: string }
 
 const hostsOf = (text: string) => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
 
@@ -30,7 +32,7 @@ export function Secrets() {
   return (
     <div data-secrets {...stylex.props(s.root)}>
       <p {...stylex.props(s.muted)}>
-        Values are encrypted with your passphrase's key and never shown to agents. A command uses a secret as <code>$NAME</code>, can reach only the secret's hosts, and cannot change the project; the value is removed from its output.
+        Values are encrypted with your passphrase's key and never shown to agents. A command uses a secret as <code>$NAME</code> (an env file: each of its variables, and <code>$XHAOS_ENV_FILE</code>), can reach only the secret's hosts, and cannot change the project; the value is removed from its output.
       </p>
       {list.length === 0 && !editing && <p {...stylex.props(s.muted)}>No secrets yet.</p>}
       {list.map(v => editing !== 'new' && editing?.name === v.name
@@ -65,12 +67,17 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
     <section data-secret={v.name} {...stylex.props(s.row)}>
       <div {...stylex.props(s.head)}>
         <code {...stylex.props(s.name)}>{v.name}</code>
-        {v.kind === 'ssh' && <span data-secret-kind="ssh" {...stylex.props(s.kind)}>SSH key</span>}
+        {v.kind !== 'token' && <span data-secret-kind={v.kind} {...stylex.props(s.kind)}>{v.kind === 'ssh' ? 'SSH key' : 'Env file'}</span>}
         <span {...stylex.props(s.desc)}>{v.description}</span>
         <Button data-secret-reveal={v.name} onClick={() => { setRevealing(!revealing); setValue(null); }}>{revealing ? 'Hide' : 'Reveal'}</Button>
         <Button data-secret-edit={v.name} onClick={onEdit}>Edit</Button>
         <Button data-secret-delete={v.name} onClick={remove}>Delete</Button>
       </div>
+      {v.kind === 'env' && (
+        <div data-secret-keys {...stylex.props(s.meta)}>
+          {variablesLabel(v.keys.length)}{v.keys.length > 0 && ':'} {v.keys.map(k => <code key={k} {...stylex.props(s.host)}>{k}</code>)}
+        </div>
+      )}
       <div {...stylex.props(s.meta)}>{v.hosts.length ? <>reaches {v.hosts.map(h => <code key={h} {...stylex.props(s.host)}>{h}</code>)}</> : 'no network'}</div>
       {revealing && (value === null
         ? <div {...stylex.props(s.inline)}>
@@ -78,7 +85,7 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
             <Button data-secret-show onClick={reveal}>Show</Button>
           </div>
         : <div {...stylex.props(s.inline)}>
-            <code data-secret-value {...stylex.props(s.value, v.kind === 'ssh' && s.valueBlock)}>{value}</code>
+            <code data-secret-value {...stylex.props(s.value, v.kind !== 'token' && s.valueBlock)}>{value}</code>
             <Button onClick={() => { if (!navigator.clipboard) { toast('Copying needs HTTPS here; select the value instead.'); return; } void navigator.clipboard.writeText(value).then(() => toast('Copied.')); }}>Copy</Button>
           </div>)}
       <div {...stylex.props(s.grants)}>
@@ -111,7 +118,7 @@ function SecretRow({ v, onEdit, onChanged }: { v: SecretView; onEdit(): void; on
 
 function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): void }) {
   const [name, setName] = useState(existing?.name || ''), [value, setValue] = useState('');
-  const [kind, setKind] = useState<'token' | 'ssh'>(existing?.kind || 'token');
+  const [kind, setKind] = useState<Kind>(existing?.kind || 'token');
   const [keyPass, setKeyPass] = useState('');
   const [description, setDescription] = useState(existing?.description || ''), [hosts, setHosts] = useState(existing?.hosts.join(', ') || '');
   const save = async () => {
@@ -122,22 +129,24 @@ function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): voi
   };
   return (
     <section data-secret-form {...stylex.props(s.row, s.form)}>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Kind<Info text="Token: an API token or password, given to the command as $NAME. SSH key: a private key; the command's ssh (and git over ssh) use it for its hosts, and $NAME is the key file's path." /></span>
-        <select value={kind} disabled={Boolean(existing)} onChange={e => setKind(e.target.value as 'token' | 'ssh')} data-secret-kind-input {...stylex.props(s.input)}>
-          <option value="token">Token</option><option value="ssh">SSH key</option>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Kind<Info text="Token: an API token or password, given to the command as $NAME. SSH key: a private key; the command's ssh (and git over ssh) use it for its hosts, and $NAME is the key file's path. Env file: a whole .env (KEY=value lines); the command gets each KEY as a variable, and the file itself at $XHAOS_ENV_FILE." /></span>
+        <select value={kind} disabled={Boolean(existing)} onChange={e => { setKind(e.target.value as Kind); setValue(''); }} data-secret-kind-input {...stylex.props(s.input)}>
+          <option value="token">Token</option><option value="ssh">SSH key</option><option value="env">Env file</option>
         </select></label>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Name<Info text="Used as an environment variable: capitals, digits and _ (like GITHUB_TOKEN)." /></span>
-        <input value={name} disabled={Boolean(existing)} onChange={e => setName(e.target.value.toUpperCase())} placeholder="GITHUB_TOKEN" data-secret-name {...stylex.props(s.input, s.mono)} /></label>
-      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>{kind === 'ssh' ? 'Private key' : 'Value'}<Info text={kind === 'ssh' ? 'The whole private key, -----BEGIN … to -----END … PRIVATE KEY----- (ideally a key made just for this). Leave empty when editing to keep it.' : 'Leave empty when editing to keep the saved value.'} /></span>
+      <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Name<Info text={kind === 'env' ? 'A label for this set of variables: capitals, digits and _ (like QC_SERVER_ENV). It is what you grant and what a command names; it is not itself a variable.' : 'Used as an environment variable: capitals, digits and _ (like GITHUB_TOKEN).'} /></span>
+        <input value={name} disabled={Boolean(existing)} onChange={e => setName(e.target.value.toUpperCase())} placeholder={kind === 'env' ? 'QC_SERVER_ENV' : 'GITHUB_TOKEN'} data-secret-name {...stylex.props(s.input, s.mono)} /></label>
+      {kind === 'env' && <EnvInput existing={existing} value={value} onChange={setValue} />}
+      {kind !== 'env' && <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>{kind === 'ssh' ? 'Private key' : 'Value'}<Info text={kind === 'ssh' ? 'The whole private key, -----BEGIN … to -----END … PRIVATE KEY----- (ideally a key made just for this). Leave empty when editing to keep it.' : 'Leave empty when editing to keep the saved value.'} /></span>
         {kind === 'ssh'
           ? <textarea autoComplete="off" spellCheck={false} rows={4} value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'} data-secret-value-input {...stylex.props(s.input, s.mono, s.keyBox)} />
-          : <input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : ''} data-secret-value-input {...stylex.props(s.input, s.mono)} />}</label>
+          : <input type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} placeholder={existing ? '(unchanged)' : ''} data-secret-value-input {...stylex.props(s.input, s.mono)} />}</label>}
       {kind === 'ssh' && <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Key passphrase<Info text="Only if the key has one. Xhaos unlocks the key with it and stores the unlocked key, encrypted with your own passphrase like every secret; the key's passphrase is not kept." /></span>
         <input type="password" autoComplete="off" value={keyPass} onChange={e => setKeyPass(e.target.value)} placeholder="(none)" data-secret-key-pass {...stylex.props(s.input)} /></label>}
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>What it's for</span>
         <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Push to my GitHub repos" data-secret-desc {...stylex.props(s.input)} /></label>
       <label {...stylex.props(s.field)}><span {...stylex.props(s.label)}>Hosts<Info text={kind === 'ssh'
           ? 'Where this key may connect: [user@]host[:port], comma or space separated (port 22 by default), e.g. deploy@192.168.1.47, git@github.com. A LAN address works when you name it exactly.'
+          : kind === 'env' ? 'The only hosts a command using it can reach, over HTTPS (comma or space separated; *.example.com covers its subdomains; an IP address works). Empty: no network.'
           : 'The only hosts a command using it can reach, over HTTPS (comma or space separated; *.example.com covers its subdomains; an IP address like 192.168.1.47 works). Empty: no network.'} /></span>
         <input value={hosts} onChange={e => setHosts(e.target.value)} placeholder={kind === 'ssh' ? 'deploy@192.168.1.47, git@github.com' : 'github.com, api.github.com'} data-secret-hosts {...stylex.props(s.input, s.mono)} /></label>
       <div {...stylex.props(s.actions)}>
@@ -148,7 +157,62 @@ function SecretForm({ existing, onDone }: { existing?: SecretView; onDone(): voi
   );
 }
 
+// EnvInput takes a .env pasted or dropped (or chosen as a file). The server
+// checks it as you type and answers with the variable names or the line that
+// is wrong; values are never shown back.
+function EnvInput({ existing, value, onChange }: { existing?: SecretView; value: string; onChange(text: string): void }) {
+  const [over, setOver] = useState(false), [fileName, setFileName] = useState('');
+  const [check, setCheck] = useState<{ keys: string[] } | { error: string } | null>(null);
+  const picker = useRef<HTMLInputElement>(null), latest = useRef(0);
+  useEffect(() => {
+    if (!value.trim()) { setCheck(null); return; }
+    const id = ++latest.current;
+    const timer = setTimeout(async () => {
+      let next: { keys: string[] } | { error: string };
+      try { next = { keys: await call<string[]>('secret', 'CheckEnv', { workspaceId: get().active, text: value }) }; }
+      catch (error) { next = { error: errorText(error) }; }
+      if (id === latest.current) setCheck(next);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [value]);
+  const take = async (files: FileList | null) => {
+    if (!files) return;
+    const read = await readEnvFile(Array.from(files));
+    if ('error' in read) { toast(read.error); return; }
+    setFileName(read.name); onChange(read.text);
+  };
+  return (
+    <div data-secret-env {...stylex.props(s.field)}>
+      <span {...stylex.props(s.label)}>.env text<Info text="The whole .env: KEY=value lines, # comments, quoted values, export KEY=value. Paste it, drop the file here, or choose it. Every KEY becomes an environment variable of the commands you grant it to, and the text is also a file at $XHAOS_ENV_FILE. Saving replaces all variables; leave it empty when editing to keep them. Delete the plaintext file from your project afterwards." /></span>
+      <div {...stylex.props(s.envBox)}>
+        {existing && !value && (
+          <div data-secret-env-current {...stylex.props(s.meta)}>
+            now {variablesLabel(existing.keys.length)}{existing.keys.length > 0 && ':'} {existing.keys.map(k => <code key={k} {...stylex.props(s.host)}>{k}</code>)}
+          </div>
+        )}
+        <textarea autoComplete="off" spellCheck={false} rows={6} value={value} data-secret-value-input
+          placeholder={existing ? '(unchanged) paste or drop a .env to replace all variables' : 'DB_PASSWORD=…\nAPI_KEY=…\n\nor drop a .env file here'}
+          onChange={e => { setFileName(''); onChange(e.target.value); }}
+          onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
+          onDrop={e => { e.preventDefault(); setOver(false); void take(e.dataTransfer.files); }}
+          {...stylex.props(s.input, s.mono, s.keyBox, over && s.dropping)} />
+        <div {...stylex.props(s.inline)}>
+          <input ref={picker} type="file" hidden data-secret-env-file onChange={e => { void take(e.target.files); e.target.value = ''; }} />
+          <Button data-secret-env-choose onClick={() => picker.current?.click()}>Choose a file…</Button>
+          {fileName && <span {...stylex.props(s.meta)}>from {fileName}</span>}
+        </div>
+        {check && ('error' in check
+          ? <div data-secret-env-error role="alert" {...stylex.props(s.problem)}>{check.error}</div>
+          : <div data-secret-env-found {...stylex.props(s.meta)}>{variablesLabel(check.keys.length)}: <span>{keysSummary(check.keys, 12)}</span></div>)}
+      </div>
+    </div>
+  );
+}
+
 const s = stylex.create({
+  envBox: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 },
+  dropping: { outlineWidth: 1, outlineStyle: 'dashed', outlineColor: colors.brand, backgroundColor: colors.brandSoft },
+  problem: { color: colors.danger, fontSize: 10.5, lineHeight: 1.4 },
   root: { display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 },
   muted: { margin: 0, color: colors.textFaint, fontSize: 10.5, lineHeight: 1.5 },
   row: { display: 'flex', flexDirection: 'column', gap: 6, paddingBlock: 8, paddingInline: 10, borderRadius: 5, borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint, backgroundColor: colors.sunken },
