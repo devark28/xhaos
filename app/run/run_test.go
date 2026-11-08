@@ -282,14 +282,11 @@ func tc(id, name string, input map[string]any) llm.ToolCall {
 
 func (h *harness) tools(t *testing.T, id int64) map[string]agent.ToolData {
 	t.Helper()
-	snap, _ := h.s.Agents.Snapshot(ws)
-	out := map[string]agent.ToolData{}
-	for _, e := range snap.Transcript {
-		if e.Kind == agent.EventTool && e.AgentID == id {
-			var d agent.ToolData
-			json.Unmarshal(e.Data, &d)
-			out[d.CallID] = d
-		}
+	// Every call's latest state, from the whole history (a snapshot carries
+	// only recent events, and none of a terminated agent's).
+	out, err := agent.NewStore(h.s.DB(), nil).Tools(ws, id)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

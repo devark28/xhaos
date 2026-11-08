@@ -156,8 +156,9 @@ type StatusData struct {
 // render it, then apply events after Seq.
 //
 // Each agent's transcript is its last TranscriptPage events, plus any older
-// tool call still waiting for the owner. Older, for an agent with more
-// history, is the seq to pass to TranscriptBefore for the page before.
+// tool call still waiting for the owner; a terminated agent's is left out
+// until its card is opened. Older, for an agent with more history, is the
+// seq to pass to TranscriptBefore for the page before.
 type Snapshot struct {
 	Seq        int64               `json:"seq"`
 	Workspace  workspace.Workspace `json:"workspace"`
@@ -308,7 +309,18 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	rows.Close()
-	events, err := eventlog.Latest(tx, workspaceID, transcriptKinds, TranscriptPage)
+	// Terminated agents' history waits until their card is opened: from the
+	// end (Older = past the last event), through TranscriptBefore.
+	var live []int64
+	snap.Older = map[int64]int64{}
+	for _, a := range snap.Agents {
+		if a.Status == StatusTerminated {
+			snap.Older[a.ID] = snap.Seq + 1
+		} else {
+			live = append(live, a.ID)
+		}
+	}
+	events, err := eventlog.Latest(tx, workspaceID, live, transcriptKinds, TranscriptPage)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -331,7 +343,6 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 		}
 		recent = append(recent, e)
 	}
-	snap.Older = map[int64]int64{}
 	for id, n := range count {
 		if n > TranscriptPage {
 			snap.Older[id] = first[id]

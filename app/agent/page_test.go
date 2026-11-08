@@ -105,3 +105,33 @@ func TestSnapshotPagesTranscripts(t *testing.T) {
 		}
 	}
 }
+
+// A terminated agent's history is left out of the snapshot; its card loads
+// it from the end when opened.
+func TestSnapshotLeavesOutTerminatedHistory(t *testing.T) {
+	s, _, _ := open(t)
+	done := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "a", Prompt: "Finished task"})
+	live := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "b", Prompt: "Ongoing task"})
+	if _, err := s.Agents.Terminate(agent.ControlRequest{IdempotencyKey: "t", WorkspaceID: ws, AgentID: done.ID}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Agents.Snapshot(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range snap.Transcript {
+		if e.AgentID == done.ID {
+			t.Errorf("the terminated agent's event %d (%s) is in the snapshot", e.Seq, e.Kind)
+		}
+	}
+	if len(snap.Transcript) != 1 || snap.Transcript[0].AgentID != live.ID {
+		t.Errorf("snapshot transcript = %+v, want the live agent's prompt", snap.Transcript)
+	}
+	if snap.Older[done.ID] != snap.Seq+1 {
+		t.Fatalf("older[%d] = %d, want %d (from the end)", done.ID, snap.Older[done.ID], snap.Seq+1)
+	}
+	page, err := s.Agents.TranscriptBefore(ws, done.ID, snap.Older[done.ID], 0)
+	if err != nil || page.More || len(page.Events) != 1 {
+		t.Fatalf("opening its card: %+v %v, want its prompt", page, err)
+	}
+}

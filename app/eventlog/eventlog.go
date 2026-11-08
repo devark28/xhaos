@@ -289,14 +289,22 @@ func query(q sqlitedb.Querier, sqlText string, args ...any) ([]Event, error) {
 	return out, rows.Err()
 }
 
-// Latest returns, for every agent of the workspace, its last limit events of
-// the given kinds plus one more when there are older ones (so a caller can
-// tell), all in seq order.
-func Latest(q sqlitedb.Querier, workspaceID string, kinds []string, limit int) ([]Event, error) {
+// Latest returns, for each of the given agents, its last limit events of the
+// given kinds plus one more when there are older ones (so a caller can tell),
+// all in seq order.
+func Latest(q sqlitedb.Querier, workspaceID string, agentIDs []int64, kinds []string, limit int) ([]Event, error) {
+	if len(agentIDs) == 0 {
+		return []Event{}, nil
+	}
 	marks, args := kindArgs(kinds)
-	args = append([]any{workspaceID}, args...)
+	ids := make([]any, len(agentIDs))
+	for i, id := range agentIDs {
+		ids[i] = id
+	}
+	args = append(append([]any{workspaceID}, args...), ids...)
 	return query(q, `SELECT `+columns+` FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY seq DESC) AS nth
-		FROM events WHERE workspace_id = ? AND agent_id IS NOT NULL AND kind IN (`+marks+`)) WHERE nth <= ? ORDER BY seq`, append(args, limit+1)...)
+		FROM events WHERE workspace_id = ? AND kind IN (`+marks+`) AND agent_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`))
+		WHERE nth <= ? ORDER BY seq`, append(args, limit+1)...)
 }
 
 // Before returns up to limit of one agent's events of the given kinds with
