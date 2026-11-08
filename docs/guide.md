@@ -25,9 +25,22 @@ Agents work in projects: folders on the server that you register in the Files ta
 
 Commands also run in a sandbox (`-sandbox auto`, the default; `on` refuses to run commands without one; `off` disables it). The server starts itself again as a small helper that locks itself down with Landlock, the Linux kernel's access control for unprivileged processes (Linux 5.13+; no root, no user namespaces, works in containers), then runs `bash`. Inside, a command can read and write its project folder, a temp folder of its own under `/tmp/xhaos-<uid>/sandboxes/` (its `TMPDIR`, cleared by the system), and a shared cache beside the database (its `HOME` and the Go and npm caches live there), read and run system files and the toolchains on `PATH`, and read the git identity (`~/.gitconfig`). When the project is a git submodule or worktree, its `.git` is a file pointing into the parent repository (`gitdir: ../.git/modules/name`); the sandbox follows it and lets commands use that git folder (and a worktree's main repository), and nothing else of the parent. It cannot read the rest of the home folder (other projects, `~/.ssh`, Xhaos's database, transcripts, attachments and key file), cannot read other processes' environments, cannot signal processes outside the sandbox, and cannot open Unix sockets (a seccomp filter: Landlock before ABI 9 does not cover connecting to socket files, so otherwise a command could use your SSH agent, the keyring, D-Bus or the Docker socket by path; pipes and `socketpair` still work). Network access is not restricted for ordinary commands; commands given secrets can reach only those secrets' hosts (see Secrets). Settings → Tools shows whether commands are sandboxed. MCP servers are started by the server itself and are not sandboxed.
 
-### The command list and the classifier model
+### What auto review runs without asking
 
-For read-write agents on auto review, the project's own scripts run without asking: `npm test`, `make`, `go test`, `pytest` and the like. A built-in list of build, test and lint commands decides this with no model and nothing to install. It is on by default; the switch in Settings → Tools → Commands turns it off, together with the model. These commands run inside the sandbox as usual, with network access, since ordinary commands are not network-restricted yet. What they do is whatever the project's own files say: `npm test` runs the script `package.json` names, and `go test` or `cargo` may download dependencies. Commands with secrets, network tools, installs, publishes, deletes and anything outside the project still ask.
+For read-write agents on auto review, the project's own build, test and lint commands run without asking. A built-in list decides this with no model and nothing to install, and it is on by default; the switch in Settings → Tools → Commands turns it off, together with the model. The list covers `go build`, `go test`, `go vet` and `gofmt --check`, `npm test` and `npm run` of the `build`, `lint`, `typecheck` or `test` script, `make` with no target or with `build`, `test` or `lint`, `pytest`, `tsc --noEmit`, `eslint`, `prettier --check`, `vitest run`, `cargo build`, `test` and `clippy`, `ruff check`, and a few more.
+
+`npx`, `pnpx` and `bunx` are on the list only for a JavaScript tool that is already installed in the project's `node_modules/.bin` (`npx tsc --noEmit`, `npx vitest run`), with the flags the tool's own command takes. Anything else with them asks, since they would download a package.
+
+These commands run inside the sandbox as usual, and with four caveats:
+
+- `make` with no target runs the Makefile's default target, whatever that is.
+- `go test` and `cargo` may download dependencies from the network when they are missing.
+- `npm test` runs whatever script `package.json` names.
+- Sandboxed commands have network access: ordinary commands are not network-restricted yet (only commands given secrets are limited to those secrets' hosts).
+
+Commands with secrets, network tools, installs, publishes, deletes and anything outside the project still ask.
+
+### The optional classifier model
 
 A server can also run the optional classifier model (the installer's `classifier` part, off by default: see the deployment guide). It is a long-tail step for read-write agents on auto review: a small model on the server judges the commands the list does not match and the gate would otherwise ask about. It follows the same limits: the commands above still ask whatever the model says, and so does every command when the model is slow, down or unsure. It can only make a command run, never block one; the card of a command it allowed gives its reason. Turn the model on or off for the whole server in Settings → Tools → Commands. Developer → Keep classifier decisions (off by default) logs each of its decisions beside the database.
 
