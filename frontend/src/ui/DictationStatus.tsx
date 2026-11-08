@@ -38,6 +38,8 @@ const spin = stylex.keyframes({ to: { transform: 'rotate(360deg)' } });
 // dictateStyles dress the mic button while its take is transcribed.
 export const dictateStyles = stylex.create({
   busy: { position: 'relative', cursor: 'progress', opacity: { default: 1, ':disabled': 0.6 } },
+  // Off: greyed out but still hoverable, so its tooltip explains why.
+  off: { cursor: 'not-allowed', opacity: 0.35 },
   ring: {
     position: 'absolute', top: 3, right: 3, bottom: 3, left: 3,
     borderRadius: '50%', borderWidth: 2, borderStyle: 'solid', borderColor: 'transparent', borderTopColor: colors.brand,

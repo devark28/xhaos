@@ -6,7 +6,7 @@ import { update, get, toast, errorText } from './store.ts';
 import { call, connected } from './backend.ts';
 import { focusComposer, getDraft, setDraft } from './composer.ts';
 import { resampler, toInt16, utteranceBase64, DICTATION_RATE, DICTATION_MAX_SECONDS } from '../../audio.ts';
-import { transcribeEstimate, transcribingText, emptyText } from '../../dictation-format.ts';
+import { transcribeEstimate, transcribingText, emptyText, DICTATION_OFF } from '../../dictation-format.ts';
 
 const MAX_SAMPLES = DICTATION_RATE * DICTATION_MAX_SECONDS; // the backend's limit, in samples
 const MIN_SAMPLES = DICTATION_RATE / 4; // less than a quarter second: nothing to transcribe
@@ -53,12 +53,10 @@ export async function toggleDictation() {
 async function start() {
   phase = 'starting';
   try {
+    if (get().dictationEnabled === false) { toast(DICTATION_OFF); return; }
     if (!connected()) { toast('Dictation needs the Xhaos backend, which is not connected in this page.'); return; }
     if (!navigator.mediaDevices?.getUserMedia) { toast('Dictation needs a secure page (HTTPS or localhost) with a microphone.'); return; }
     if (!globalThis.AudioWorkletNode) { toast('Dictation needs a browser with AudioWorklet support.'); return; }
-    try {
-      if (!(await call<boolean>('dictation', 'Enabled'))) { toast('Dictation needs a configured speech sidecar.'); return; }
-    } catch (error) { toast(`Dictation is unavailable: ${errorText(error)}`); return; }
     session = await open(get().active);
     phase = 'recording';
     update(s => { s.recording = true; s.recordingSince = Date.now(); });

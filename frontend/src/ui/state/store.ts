@@ -61,6 +61,7 @@ export interface State {
   transcribing: boolean; // dictation is sending the take to the sidecar
   transcribeEstimate: number; // seconds, as shown while transcribing
   transcribingSince: number; // when the take was sent (ms since the epoch), 0 when idle
+  dictationEnabled: boolean | null; // whether the server has a speech sidecar; null until it has said
   btw: Btw | null; // the latest side question
   toast: { message: string; id: number } | null;
 
@@ -114,6 +115,7 @@ function initial(): State {
     transcribing: false,
     transcribeEstimate: 0,
     transcribingSince: 0,
+    dictationEnabled: null,
     btw: null,
     toast: null,
     questionAgentId: null,

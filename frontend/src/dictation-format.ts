@@ -7,6 +7,10 @@ import { DICTATION_MAX_SECONDS } from './audio.ts';
 
 export const WARN_FROM_SECONDS = 270; // 4:30: the timer also shows the time left before the cap
 
+// DICTATION_OFF is the tooltip of the greyed-out mic, and the message on a click,
+// when the server has no speech sidecar (-dictation-cmd is empty).
+export const DICTATION_OFF = 'Dictation is off: this server has no speech model (see docs)';
+
 // clock formats seconds as m:ss.
 export function clock(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));

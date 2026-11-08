@@ -10,7 +10,7 @@ import { colors } from './theme/tokens.stylex.ts';
 import { Info } from './kit.tsx';
 import { HINT_MAX, hintWarning } from '../dictation-format.ts';
 
-const HINT = 'The words and names this workspace uses, so the model spells them right. The model reads only about the first 150 words, and names and jargon cost several tokens each. It works best as one punctuated sentence, or a list of the words actually said. Example: "We are testing Xhaos on a Pi Zero 2 W with the Duo camera."';
+const HINT = 'The words and names this workspace uses, so the model spells them right. The model reads only about the first 150 words, and names and jargon cost several tokens each. It works best as one punctuated sentence, or a list of the words actually said. Hints can change words, not just spelling: in unclear passages the model leans toward your hint words. Example: "We are testing Xhaos on a Pi Zero 2 W with the Duo camera."';
 const LANGUAGE_HINT = 'The language of the speech. English is the default. Auto-detect works from the start of each take and can guess wrong on a quiet start, and it costs time. English-only models ignore any other language.';
 
 // LANGUAGES are the choices offered; the server accepts any two- or three-letter code.
