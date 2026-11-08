@@ -134,35 +134,10 @@ func (s *Service) Save(req SaveRequest) (SaveResult, error) {
 	if _, err := find(tx, req.WorkspaceID, req.ID); err != nil {
 		return SaveResult{}, err
 	}
-	now := s.now()
-	at := sqlitedb.Stamp(now)
-	accepted := []json.RawMessage{}
-	newer := []json.RawMessage{}
-	for i, raw := range req.Elements {
-		h := heads[i]
-		var sv, sn int64
-		var stored string
-		err := tx.QueryRow(`SELECT version, version_nonce, data FROM board_elements WHERE board_id = ? AND element_id = ?`, req.ID, h.ID).Scan(&sv, &sn, &stored)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			if _, err := tx.Exec(`INSERT INTO board_elements (board_id, element_id, version, version_nonce, data) VALUES (?, ?, ?, ?, ?)`,
-				req.ID, h.ID, h.Version, h.VersionNonce, string(raw)); err != nil {
-				return SaveResult{}, err
-			}
-		case err != nil:
-			return SaveResult{}, err
-		case sv == h.Version && sn == h.VersionNonce:
-			continue // the same edit the board has
-		case storedWins(header{Version: sv, VersionNonce: sn}, h):
-			newer = append(newer, json.RawMessage(stored))
-			continue
-		default:
-			if _, err := tx.Exec(`UPDATE board_elements SET version = ?, version_nonce = ?, data = ? WHERE board_id = ? AND element_id = ?`,
-				h.Version, h.VersionNonce, string(raw), req.ID, h.ID); err != nil {
-				return SaveResult{}, err
-			}
-		}
-		accepted = append(accepted, raw)
+	at := sqlitedb.Stamp(s.now())
+	accepted, newer, err := mergeElements(tx, req.ID, req.Elements, heads)
+	if err != nil {
+		return SaveResult{}, err
 	}
 	updated := sqlitedb.ParseStamp(at)
 	if len(accepted) > 0 {
@@ -186,6 +161,42 @@ func (s *Service) Save(req SaveRequest) (SaveResult, error) {
 		s.notify(req.WorkspaceID, Notice{Kind: NoticeSaved, WorkspaceID: req.WorkspaceID, ID: req.ID, Source: req.Source, UpdatedAt: updated, Elements: accepted})
 	}
 	return SaveResult{UpdatedAt: updated, Newer: newer}, nil
+}
+
+// mergeElements merges elements into a board, one by one, by Excalidraw's
+// rule (storedWins): an element new to the board is added, one the board holds
+// at an older edit is replaced, and one the board holds newer is left alone
+// and returned in newer. accepted is what changed. A page's save and an
+// agent's addition (tools.go) both go through it.
+func mergeElements(tx *sql.Tx, boardID int64, raws []json.RawMessage, heads []header) (accepted, newer []json.RawMessage, err error) {
+	accepted, newer = []json.RawMessage{}, []json.RawMessage{}
+	for i, raw := range raws {
+		h := heads[i]
+		var sv, sn int64
+		var stored string
+		err := tx.QueryRow(`SELECT version, version_nonce, data FROM board_elements WHERE board_id = ? AND element_id = ?`, boardID, h.ID).Scan(&sv, &sn, &stored)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := tx.Exec(`INSERT INTO board_elements (board_id, element_id, version, version_nonce, data) VALUES (?, ?, ?, ?, ?)`,
+				boardID, h.ID, h.Version, h.VersionNonce, string(raw)); err != nil {
+				return nil, nil, err
+			}
+		case err != nil:
+			return nil, nil, err
+		case sv == h.Version && sn == h.VersionNonce:
+			continue // the same edit the board has
+		case storedWins(header{Version: sv, VersionNonce: sn}, h):
+			newer = append(newer, json.RawMessage(stored))
+			continue
+		default:
+			if _, err := tx.Exec(`UPDATE board_elements SET version = ?, version_nonce = ?, data = ? WHERE board_id = ? AND element_id = ?`,
+				h.Version, h.VersionNonce, string(raw), boardID, h.ID); err != nil {
+				return nil, nil, err
+			}
+		}
+		accepted = append(accepted, raw)
+	}
+	return accepted, newer, nil
 }
 
 // appStateOrEmpty stores an absent app state as an empty object.
