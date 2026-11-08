@@ -269,7 +269,7 @@ func TestWriteWAVHeader(t *testing.T) {
 
 func TestArgvPutsHintsInsideTheirField(t *testing.T) {
 	s := NewService(nil, Config{Args: "{wav} --prompt={prompt} {prompt} --model {model}", Model: "/m d"})
-	got := s.argv("/tmp/u.wav", "Xhaos, Verlet, Pi Zero 2 W.")
+	got := s.argv("/tmp/u.wav", "en", "Xhaos, Verlet, Pi Zero 2 W.")
 	want := []string{"/tmp/u.wav", "--prompt=Xhaos, Verlet, Pi Zero 2 W.", "Xhaos, Verlet, Pi Zero 2 W.", "--model", "/m d"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("argv = %q, want %q", got, want)
@@ -278,10 +278,74 @@ func TestArgvPutsHintsInsideTheirField(t *testing.T) {
 
 func TestArgvDropsAnEmptyPromptField(t *testing.T) {
 	s := NewService(nil, Config{Args: "{wav} {prompt} --prompt={prompt}"})
-	got := s.argv("/tmp/u.wav", "")
+	got := s.argv("/tmp/u.wav", "en", "")
 	want := []string{"/tmp/u.wav", "--prompt="}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestArgvFillsTheLanguage(t *testing.T) {
+	s := NewService(nil, Config{Args: "{wav} --language={language} --prompt={prompt}"})
+	got := s.argv("/tmp/u.wav", "auto", "{language} stays as typed")
+	want := []string{"/tmp/u.wav", "--language=auto", "--prompt={language} stays as typed"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestLanguageDefaultsToEnglishAndIsValidated(t *testing.T) {
+	s := db(t)
+	got, err := s.Language()
+	if err != nil || got != "en" {
+		t.Fatalf("Language() = %q, %v; want en", got, err)
+	}
+	for _, code := range []string{"auto", "de", "zh", "fil"} {
+		if err := s.SetLanguage(code); err != nil {
+			t.Fatalf("SetLanguage(%q): %v", code, err)
+		}
+		if got, _ := s.Language(); got != code {
+			t.Fatalf("Language() = %q after SetLanguage(%q)", got, code)
+		}
+	}
+	for _, code := range []string{"", "e", "English", "en-US", "e n", "../x", "AUTO"} {
+		if err := s.SetLanguage(code); !errors.Is(err, apperr.Invalid) {
+			t.Fatalf("SetLanguage(%q): err = %v, want invalid", code, err)
+		}
+	}
+}
+
+func TestLanguageReachesTheSidecar(t *testing.T) {
+	s := db(t)
+	if err := s.SetLanguage("auto"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "args.txt")
+	s.cfg = Config{
+		Program: fakeSidecar(t, fmt.Sprintf(`printf '%%s\n' "$@" > %q; echo ok`, seen)),
+		Args:    "{wav} --language={language}",
+	}
+	if _, err := s.Transcribe(workspace.DefaultID, pcm(16000)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "--language=auto") {
+		t.Fatalf("sidecar args = %q, want --language=auto", got)
+	}
+}
+
+func TestHintsLimitCountsCharacters(t *testing.T) {
+	s := db(t)
+	text := strings.Repeat("é", maxHints) // 1000 characters, 2000 bytes
+	if err := s.SetHints(workspace.DefaultID, text); err != nil {
+		t.Fatalf("1000 characters: %v", err)
+	}
+	if err := s.SetHints(workspace.DefaultID, text+"é"); !errors.Is(err, apperr.Invalid) {
+		t.Fatalf("1001 characters: err = %v, want invalid", err)
 	}
 }
 

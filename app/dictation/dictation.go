@@ -13,12 +13,13 @@
 //
 //	-dictation-cmd     the sidecar program. Empty turns dictation off.
 //	-dictation-args    the argument template, split on spaces. {wav} is the WAV
-//	                   path, {model} is -dictation-model, and {prompt} is the
-//	                   workspace's dictation hints. {prompt} is substituted inside
-//	                   its field, so "--prompt={prompt}" passes the hints as one
-//	                   argument even with spaces; a field that is only "{prompt}"
-//	                   is dropped when there are no hints. Empty means the WAV
-//	                   path alone.
+//	                   path, {model} is -dictation-model, {language} is the
+//	                   dictation language (Settings → Dictation; "en" by default,
+//	                   "auto" to detect), and {prompt} is the workspace's dictation
+//	                   hints. {prompt} is substituted inside its field, so
+//	                   "--prompt={prompt}" passes the hints as one argument even
+//	                   with spaces; a field that is only "{prompt}" is dropped when
+//	                   there are no hints. Empty means the WAV path alone.
 //	-dictation-model   the model directory.
 //	-dictation-timeout a fixed sidecar time limit; 0 scales it with the audio.
 //
@@ -70,9 +71,12 @@ const (
 	waitDelay    = 5 * time.Second  // after a kill, wait this long for pipes to close
 	maxOutput    = 1 << 20          // stdout kept, in bytes
 	maxErrText   = 500              // stderr quoted in errors, in bytes
-	maxHints     = 1000             // dictation hints, in bytes
+	maxHints     = 1000             // dictation hints, in characters
 	startChars   = 40               // the transcript's start written to the recordings log
 	logFile      = "log.txt"        // the recordings log, in Config.Recordings
+	languageKey  = "language"       // the server-wide dictation language, in dictation_settings
+	defaultLang  = "en"             // the dictation language until the setting is changed
+	autoLang     = "auto"           // the setting that asks the sidecar to detect the language
 )
 
 // ErrNotConfigured means no sidecar is set (-dictation-cmd is empty).
@@ -81,7 +85,7 @@ var ErrNotConfigured = errors.New("dictation is not configured: start the server
 // Config says how to run the sidecar. See the package comment.
 type Config struct {
 	Program    string        // sidecar executable; "" turns dictation off
-	Args       string        // argument template: fields split on spaces; {wav}, {model}, {prompt}
+	Args       string        // argument template: fields split on spaces; {wav}, {model}, {language}, {prompt}
 	Model      string        // model directory, for {model}
 	Timeout    time.Duration // fixed sidecar time limit; 0 scales with the audio
 	Recordings string        // folder for kept recordings (beside the database); "" disables keeping
@@ -132,6 +136,10 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 	if err != nil {
 		return "", err
 	}
+	language, err := s.Language()
+	if err != nil {
+		return "", err
+	}
 	keep, err := s.Keeping()
 	if err != nil {
 		return "", err
@@ -150,7 +158,7 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	started := time.Now()
-	out, err := s.run(ctx, dir, wav, hints)
+	out, err := s.run(ctx, dir, wav, language, hints)
 	took := time.Since(started)
 	if ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("dictation timed out after %s", timeout)
@@ -192,9 +200,10 @@ func (s *Service) timeout(n int) time.Duration {
 }
 
 // argv fills the template. Each field is split on spaces first, so a model
-// directory with spaces stays one argument; {prompt} is filled last, inside
-// its field, so the hints keep their spaces.
-func (s *Service) argv(wav, prompt string) []string {
+// directory with spaces stays one argument. {language} is filled before
+// {prompt}, which is filled last inside its field, so the hints keep their
+// spaces and any "{...}" text the user typed in them stays as typed.
+func (s *Service) argv(wav, language, prompt string) []string {
 	fields := strings.Fields(s.cfg.Args)
 	if len(fields) == 0 {
 		fields = []string{"{wav}"}
@@ -206,6 +215,7 @@ func (s *Service) argv(wav, prompt string) []string {
 		}
 		f = strings.ReplaceAll(f, "{wav}", wav)
 		f = strings.ReplaceAll(f, "{model}", s.cfg.Model)
+		f = strings.ReplaceAll(f, "{language}", language)
 		f = strings.ReplaceAll(f, "{prompt}", prompt)
 		out = append(out, f)
 	}
@@ -214,8 +224,8 @@ func (s *Service) argv(wav, prompt string) []string {
 
 // run starts the sidecar in dir and returns its stdout. The process group is
 // killed when ctx ends.
-func (s *Service) run(ctx context.Context, dir, wav, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, s.cfg.Program, s.argv(wav, prompt)...)
+func (s *Service) run(ctx context.Context, dir, wav, language, prompt string) (string, error) {
+	cmd := exec.CommandContext(ctx, s.cfg.Program, s.argv(wav, language, prompt)...)
 	cmd.Dir = dir
 	// Own process group, so a timeout kills the sidecar's children too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -324,16 +334,56 @@ func (s *Service) Hints(workspaceID string) (string, error) {
 	return s.setting(workspaceID, "hints")
 }
 
-// SetHints stores the workspace's dictation hints, on one line.
+// SetHints stores the workspace's dictation hints, on one line. The limit is
+// in characters.
 func (s *Service) SetHints(workspaceID, text string) error {
 	if _, err := workspace.Get(s.db, workspaceID); err != nil {
 		return err
 	}
 	text = strings.Join(strings.Fields(text), " ")
-	if len(text) > maxHints {
-		return fmt.Errorf("%w: hints are longer than %d bytes", apperr.Invalid, maxHints)
+	if utf8.RuneCountInString(text) > maxHints {
+		return fmt.Errorf("%w: hints are longer than %d characters", apperr.Invalid, maxHints)
 	}
 	return s.putSetting(workspaceID, "hints", text)
+}
+
+// Language returns the dictation language for the sidecar's {language}: a
+// language code such as "en", or "auto" to detect it. The setting is server-wide
+// and defaults to English.
+func (s *Service) Language() (string, error) {
+	v, err := s.setting("", languageKey)
+	if err != nil {
+		return "", err
+	}
+	if v == "" {
+		return defaultLang, nil
+	}
+	return v, nil
+}
+
+// SetLanguage stores the dictation language: "auto", or a two- or three-letter
+// lowercase language code.
+func (s *Service) SetLanguage(code string) error {
+	if !validLanguage(code) {
+		return fmt.Errorf("%w: language must be a code such as en, or auto", apperr.Invalid)
+	}
+	return s.putSetting("", languageKey, code)
+}
+
+// validLanguage accepts "auto" and two- or three-letter lowercase codes.
+func validLanguage(code string) bool {
+	if code == autoLang {
+		return true
+	}
+	if len(code) < 2 || len(code) > 3 {
+		return false
+	}
+	for _, r := range code {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) setting(scope, key string) (string, error) {

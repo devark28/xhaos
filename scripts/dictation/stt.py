@@ -8,12 +8,15 @@ for bad arguments). Nothing is written to disk.
 Start Xhaos with, for example:
 
   xhaos -dictation-cmd /usr/bin/python3 \\
-        -dictation-args "/opt/xhaos/stt.py {wav} --model {model} --prompt={prompt}" \\
+        -dictation-args "/opt/xhaos/stt.py {wav} --model {model} --language={language} --prompt={prompt}" \\
         -dictation-model /opt/models/whisper-large-v3-turbo-ct2
 
 Install: pip install faster-whisper. {model} is a CTranslate2 model directory
-(or a model name faster-whisper can download). {prompt} is the workspace's
-dictation hints, set in Settings → Dictation; with no hints the prompt is empty.
+(or a model name faster-whisper can download). {language} is the dictation
+language set in Settings → Dictation: a code such as en, or auto to detect it.
+{prompt} is the workspace's dictation hints, set in Settings → Dictation; with
+no hints the prompt is empty. The hints are passed as faster-whisper's hotwords,
+which apply to every 30-second window of the take.
 """
 
 import argparse
@@ -60,7 +63,7 @@ def read_wav(path: str):
         return w.readframes(w.getnframes())
 
 
-def transcribe(wav: str, model: str, prompt: str, threads: int) -> str:
+def transcribe(wav: str, model: str, language: str, prompt: str, threads: int) -> str:
     import numpy as np
     from faster_whisper import WhisperModel
 
@@ -70,8 +73,14 @@ def transcribe(wav: str, model: str, prompt: str, threads: int) -> str:
     whisper = WhisperModel(model, device="cpu", compute_type="int8", cpu_threads=threads)
     segments, _info = whisper.transcribe(
         audio,
-        language=None,  # detect the language
-        initial_prompt=prompt or None,  # the workspace's hints: names and words to expect
+        language=None if language == "auto" else language,  # None: detect it on each take
+        # The hints are hotwords: faster-whisper puts them in the prompt of every
+        # 30-second window (initial_prompt would reach only the first). The model
+        # keeps about 223 tokens of them, roughly the first 150 words.
+        hotwords=prompt or None,
+        # Each window is decoded alone. Carrying the text over to the next window
+        # is what lets Whisper fall into repetition loops on long takes.
+        condition_on_previous_text=False,
         vad_filter=True,  # skip silence, where Whisper tends to invent text
         beam_size=5,
     )
@@ -82,6 +91,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Transcribe one Xhaos dictation take to text on stdout.")
     parser.add_argument("wav", help="the take: 16 kHz mono 16-bit WAV")
     parser.add_argument("--model", required=True, help="model directory (or a faster-whisper model name)")
+    parser.add_argument("--language", default="en", help="language code such as en, or auto to detect it (default: en)")
     parser.add_argument("--prompt", default="", help="dictation hints: a punctuated sentence with the expected words")
     parser.add_argument("--threads", type=int, default=0, help="CPU threads (default: the physical cores)")
     args = parser.parse_args()
@@ -90,7 +100,7 @@ def main() -> int:
         return 2
     threads = args.threads if args.threads > 0 else physical_cores()
     try:
-        text = transcribe(args.wav, args.model, args.prompt.strip(), threads)
+        text = transcribe(args.wav, args.model, args.language.strip().lower(), args.prompt.strip(), threads)
     except ImportError as err:
         print(f"faster-whisper is not installed (pip install faster-whisper): {err}", file=sys.stderr)
         return 1
