@@ -18,17 +18,10 @@ export function bindEditor(input: XhaosInput, holder: HTMLElement, { addFiles, s
     input.dataset.empty = String(!input.value.trim());
     onText?.();
   };
+  // Pasted text goes in like typing, so Ctrl+Z undoes the paste itself.
   const insertText = (text: string) => {
     input.focus();
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return;
-    const range = selection.getRangeAt(0);
-    if (!input.contains(range.commonAncestorContainer)) return;
-    range.deleteContents();
-    const node = document.createTextNode(text);
-    range.insertNode(node); range.setStartAfter(node); range.collapse(true);
-    selection.removeAllRanges(); selection.addRange(range);
-    changed();
+    input.pasteText(text); // its own undo step; fires input, which runs changed()
   };
   const pasteOrDrop = (data: DataTransfer) => {
     if (data.files.length) { addFiles([...data.files]); return; }

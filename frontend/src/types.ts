@@ -58,7 +58,7 @@ export interface QuestionBatch {
 }
 
 // Dangerously allow (package danger): until when, and the branch git is locked to.
-export interface Danger { until: string; branch?: string }
+export interface Danger { until: string; branch?: string; calls?: number } // calls: 0 or absent = the normal limit, -1 = none
 
 export interface Agent {
   id: number;

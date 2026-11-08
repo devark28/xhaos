@@ -72,6 +72,9 @@ type Runner struct {
 	OnFinal func(a agent.Agent, answer string)
 	// Sandbox confines agents' shell commands (package sandbox).
 	Sandbox sandbox.Config
+	// Guard keeps protected git state as it was around a dangerously allowed
+	// agent's commands (package danger).
+	Guard *danger.Service
 	// Skills lists skills in the system prompt and gives bash calls their
 	// folders (package skill).
 	Skills *skill.Service
@@ -173,12 +176,13 @@ func (r *Runner) skillDirs(ws string, a agent.Agent, call tool.Call) (sandbox.Ex
 	return x, nil
 }
 
-// lockBreak says why a call breaks a dangerously allowed agent's git lock.
+// lockBreak says why a dangerously allowed agent's command would do what
+// cannot be undone afterwards (see danger.CheckCommand).
 func lockBreak(a agent.Agent, call tool.Call) string {
 	if call.Name != "bash" || a.Danger == nil {
 		return ""
 	}
-	return danger.CheckCommand(call.Summary, a.Danger.Branch)
+	return danger.CheckCommand(call.Summary)
 }
 
 // sealed runs a bash call that holds secrets: values as environment
@@ -289,6 +293,24 @@ func sshSetup(scratch string, keys []string, values map[string]string, use secre
 }
 
 func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+	// While dangerously allowed, git is checked around each command: what it
+	// did to protected branches or the project's checkout is undone.
+	if call.Name == "bash" && r.Guard != nil && a.DangerActive(time.Now()) {
+		before, err := r.Guard.Capture(root)
+		out, runErr := r.run(ctx, root, ws, a, call)
+		if err == nil {
+			if note := r.Guard.Repair(root, before); note != "" {
+				out = strings.TrimRight(out, "\n") + "\n\n" + note
+			}
+		}
+		return out, runErr
+	}
+	return r.run(ctx, root, ws, a, call)
+}
+
+// run runs a call: an extra tool, a sealed command (with secrets), or a
+// built-in tool.
+func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}
@@ -390,7 +412,20 @@ func (r *Runner) loop(k key) {
 }
 
 // maxSteps bounds model calls per wake-up, so a looping agent stops and asks.
+// A dangerously-allowed session may raise or lift it (callLimit).
 const maxSteps = 40
+
+// callLimit is the limit on model calls in a row for a at now: the
+// session's while dangerously allowed, else maxSteps. 0 means none.
+func callLimit(a agent.Agent, now time.Time) int {
+	if a.DangerActive(now) && a.Danger.Calls != 0 {
+		if a.Danger.Calls == agent.NoCallLimit {
+			return 0
+		}
+		return a.Danger.Calls
+	}
+	return maxSteps
+}
 
 // SystemPrompt is fixed per agent so every turn of a conversation sends the
 // same system prompt (a requirement for replaying thinking blocks and for
@@ -457,8 +492,8 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		if conv[len(conv)-1].From == agent.FromAgent {
 			return // answered; a queued wake-up found nothing new
 		}
-		if step >= maxSteps {
-			fail(fmt.Sprintf("Stopped after %d model calls in a row. Send a message to let the agent continue.", maxSteps))
+		if limit := callLimit(a, time.Now()); limit > 0 && step >= limit {
+			fail(fmt.Sprintf("Stopped after %d model calls in a row. Send a message to let the agent continue.", limit))
 			return
 		}
 		if adapter == nil {
