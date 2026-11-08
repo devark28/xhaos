@@ -16,7 +16,7 @@ enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
-export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'dictation' | 'btw';
+export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'btw';
 export interface Panel { kind: PanelKind; section?: string; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];
@@ -57,6 +57,11 @@ export interface State {
   menu: SlashCommand[]; // slash command matches
   sending: boolean;
   recording: boolean; // dictation is listening
+  recordingSince: number; // when the take started (ms since the epoch), 0 when idle
+  transcribing: boolean; // dictation is sending the take to the sidecar
+  transcribeEstimate: number; // seconds, as shown while transcribing
+  transcribingSince: number; // when the take was sent (ms since the epoch), 0 when idle
+  dictationEnabled: boolean | null; // whether the server has a speech sidecar; null until it has said
   btw: Btw | null; // the latest side question
   toast: { message: string; id: number } | null;
 
@@ -106,6 +111,11 @@ function initial(): State {
     menu: [],
     sending: false,
     recording: false,
+    recordingSince: 0,
+    transcribing: false,
+    transcribeEstimate: 0,
+    transcribingSince: 0,
+    dictationEnabled: null,
     btw: null,
     toast: null,
     questionAgentId: null,

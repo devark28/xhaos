@@ -1,13 +1,13 @@
 // Settings → Appearance: each choice applies at once, is kept in this
 // browser for the first paint, and is saved on the server so every browser
 // that signs in looks the same (appearance.ts, state/backend.ts).
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { applyAppearance, defaults, loadAppearance, saveAppearance, type Appearance } from './appearance.ts';
 import { Button, Info } from './kit.tsx';
-import { pushAppearance } from './state/backend.ts';
-import { update, useApp } from './state/store.ts';
+import { call, pushAppearance } from './state/backend.ts';
+import { errorText, update, useApp } from './state/store.ts';
 import { setSamples } from './state/composer.ts';
 
 // A choice is a dropdown; one with `toggle` [off, on] is a switch.
@@ -69,8 +69,34 @@ export function DeveloperSettings() {
       {a.developer === 'on' && (
         <Toggle name="samples" label="Sample agents" hint="Demo agents mixed into the page (never sent to the server). Same as /samples." on={samples} onChange={setSamples} />
       )}
+      {a.developer === 'on' && <KeepRecordings />}
     </div>
   );
+}
+
+// KeepRecordings is the server-wide switch that keeps each dictation take as a
+// WAV beside the database. Off by default. The recordings are the user's voice.
+function KeepRecordings() {
+  const [keep, setKeep] = useState<boolean | null>(null);
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    call<boolean>('dictation', 'Keeping').then(setKeep, error => setNote(errorText(error)));
+  }, []);
+  const set = (on: boolean) => {
+    setNote('');
+    call('dictation', 'SetKeeping', on).then(() => setKeep(on), error => setNote(errorText(error)));
+  };
+  const clear = () => {
+    if (!window.confirm('Delete every kept dictation recording and its log?')) return;
+    call('dictation', 'DeleteRecordings').then(() => setNote('Deleted.'), error => setNote(errorText(error)));
+  };
+  return <>
+    <Toggle name="keep-recordings" label="Keep dictation recordings" hint="Off by default. When on, each take is saved as a WAV in dictation-debug/ beside the database, with a line in its log. These are voice recordings: keep them only while you need them." on={keep === true} onChange={set} />
+    <div {...stylex.props(s.actions)}>
+      <Button id="dictation-delete" disabled={keep === null} onClick={clear}>Delete all recordings</Button>
+      {note && <span {...stylex.props(s.note)}>{note}</span>}
+    </div>
+  </>;
 }
 
 // Toggle is an on/off switch (role="switch"), for settings with two states.
@@ -87,6 +113,7 @@ export function Toggle({ name, label, hint, on, onChange }: { name: string; labe
 
 const s = stylex.create({
   grid: { display: 'grid', gap: 8 },
+  note: { color: colors.textFaint, fontSize: 10 },
   row: { display: 'grid', gridTemplateColumns: '110px 1fr', alignItems: 'center', columnGap: 8, rowGap: 2, fontSize: 11 },
   label: { color: colors.textFaint, fontSize: 10 },
   select: { minWidth: 0, backgroundColor: colors.sunken, color: colors.text, borderWidth: 0, borderRadius: 3, paddingBlock: 5, paddingInline: 6, fontSize: 11, fontFamily: 'inherit' },

@@ -17,7 +17,11 @@ import {
 } from './state/composer.ts';
 import { detachRecipient } from './state/agents.ts';
 import { detachProject } from './state/projects.ts';
-import { showMessageComposer, showDraw, dictate } from './state/panels.ts';
+import { showMessageComposer, showDraw } from './state/panels.ts';
+import { toggleDictation } from './state/dictation.ts';
+import { DICTATION_OFF } from '../dictation-format.ts';
+import { Waveform } from './Waveform.tsx';
+import { DictationStatus, dictateStyles } from './DictationStatus.tsx';
 import type { XhaosInput } from '../rich-input.ts';
 import { useNarrow } from './narrow.ts';
 
@@ -152,6 +156,8 @@ function ComposerForm() {
   const hidden = useApp(s => s.mode !== 'message');
   const sending = useApp(s => s.sending);
   const recording = useApp(s => s.recording);
+  const transcribing = useApp(s => s.transcribing);
+  const dictationEnabled = useApp(s => s.dictationEnabled);
   const selected = useApp(s => s.selected);
   const projectName = useApp(s => s.projects.find(p => p.id === s.attachedProject)?.name);
   useLayoutEffect(() => {
@@ -174,10 +180,20 @@ function ComposerForm() {
         <ModelPicker />
       </div>
       <div {...stylex.props(form.actions)}>
-        <Button variant="icon" id="dictate" aria-label="Dictate command" onClick={dictate} chosen={recording}><Icon name="mic" size={16} /></Button>
+        <DictationStatus />
+        {dictationEnabled !== null && (
+          <Button variant="icon" id="dictate" aria-label={recording ? 'Stop dictation' : transcribing ? 'Transcribing' : 'Dictate command'} aria-pressed={recording} aria-busy={transcribing || undefined}
+            aria-disabled={!dictationEnabled || undefined} title={dictationEnabled ? undefined : DICTATION_OFF}
+            disabled={transcribing} onClick={toggleDictation} chosen={recording}
+            sx={transcribing ? dictateStyles.busy : !dictationEnabled ? dictateStyles.off : undefined}>
+            <Icon name="mic" size={16} />
+            {transcribing && <span aria-hidden="true" {...stylex.props(dictateStyles.ring)} />}
+          </Button>
+        )}
         <Button variant="send" type="submit" id="send" aria-label="Send command"><Icon name="send" size={15} /></Button>
       </div>
       <CommandMenu />
+      <Waveform />
     </form>
   );
 }

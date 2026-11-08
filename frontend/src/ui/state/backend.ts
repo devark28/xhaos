@@ -193,6 +193,8 @@ async function startBackend(connection: Backend, workspaceId: string) {
   installHashNavigation(); // the agents are loaded: #agents= links find their cards
   // After the snapshot: until then the active workspace is the prototype's.
   try { await refreshProjects(); } catch { /* projects stay empty */ }
+  // Ask once whether dictation can run here, so the mic shows its state at once.
+  void connection.call('dictation', 'Enabled').then(on => update(s => { s.dictationEnabled = on === true; }), () => update(s => { s.dictationEnabled = false; }));
   restoreDraft(); // after agents and projects, so its attachments find them
   // The stream reconnects by itself; catch up on what it missed meanwhile,
   // and if it dropped because the session ended, show the sign-in screen.
