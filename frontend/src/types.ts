@@ -82,6 +82,7 @@ export interface Agent {
   notes?: string[];
   children?: Agent[];
   live?: string; // reply text streaming in, not yet saved
+  older?: number; // the server has older transcript events, before this seq
   archivedAt?: string;
   terminatedAt?: string;
   demo?: boolean;
@@ -205,6 +206,13 @@ export interface Snapshot {
   workspace: { id: string; name: string };
   agents: BackendAgent[];
   transcript: BackendEvent[];
+  older?: Record<string, number>; // agent ID -> seq before which it has older events
+}
+
+// TranscriptPage is agent.TranscriptBefore's answer: older events, in order.
+export interface TranscriptPage {
+  events: BackendEvent[];
+  more: boolean;
 }
 
 export interface Delta {

@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +62,9 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	// One agent's events by seq: transcript pages and tool-call states.
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS events_by_agent ON events (workspace_id, agent_id, seq)`)
+	return err
 }
 
 // ---- transcript files ----------------------------------------------------------
@@ -284,6 +287,34 @@ func query(q sqlitedb.Querier, sqlText string, args ...any) ([]Event, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// Latest returns, for every agent of the workspace, its last limit events of
+// the given kinds plus one more when there are older ones (so a caller can
+// tell), all in seq order.
+func Latest(q sqlitedb.Querier, workspaceID string, kinds []string, limit int) ([]Event, error) {
+	marks, args := kindArgs(kinds)
+	args = append([]any{workspaceID}, args...)
+	return query(q, `SELECT `+columns+` FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY seq DESC) AS nth
+		FROM events WHERE workspace_id = ? AND agent_id IS NOT NULL AND kind IN (`+marks+`)) WHERE nth <= ? ORDER BY seq`, append(args, limit+1)...)
+}
+
+// Before returns up to limit of one agent's events of the given kinds with
+// seq < before, the latest ones, in seq order.
+func Before(q sqlitedb.Querier, workspaceID string, agentID int64, kinds []string, before int64, limit int) ([]Event, error) {
+	marks, args := kindArgs(kinds)
+	args = append([]any{workspaceID, agentID, before}, args...)
+	events, err := query(q, `SELECT `+columns+` FROM events WHERE workspace_id = ? AND agent_id = ? AND seq < ? AND kind IN (`+marks+`) ORDER BY seq DESC LIMIT ?`, append(args, limit)...)
+	slices.Reverse(events)
+	return events, err
+}
+
+func kindArgs(kinds []string) (string, []any) {
+	args := make([]any, len(kinds))
+	for i, k := range kinds {
+		args[i] = k
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ","), args
 }
 
 // ListAgent returns one agent's events of the given kind, in order.

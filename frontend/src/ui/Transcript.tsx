@@ -1,8 +1,8 @@
 // An agent's transcript: messages, tool calls, approvals, and live output.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { readFile, fileSize, downloadFile } from '../attachments.ts';
-import { call } from './state/backend.ts';
+import { call, loadOlder } from './state/backend.ts';
 import { markdown } from '../markdown.ts';
 import { highlight, highlightDiff, languageFor } from '../highlight.ts';
 import { colors, fonts, breakpoints } from './theme/tokens.stylex.ts';
@@ -97,6 +97,15 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
   );
 }
 
+// atEnd: no transcript entry comes after el (the live reply and the working
+// line may).
+function atEnd(el: HTMLElement) {
+  for (let next = el.nextElementSibling as HTMLElement | null; next; next = next.nextElementSibling as HTMLElement | null) {
+    if (next.dataset.entry && next.dataset.entry !== 'live') return false;
+  }
+  return true;
+}
+
 // Follow the bottom: a transcript opens scrolled to its end and keeps up with
 // new output while the reader is at the bottom. Scrolling up stops following
 // until they scroll back down; sending a message jumps back to it.
@@ -108,7 +117,8 @@ function useFollow() {
     const toEnd = () => { el.scrollTop = el.scrollHeight; };
     const onScroll = () => { follow = el.scrollHeight - el.scrollTop - el.clientHeight < 24; };
     const watch = new MutationObserver(records => {
-      if (records.some(r => [...r.addedNodes].some(n => (n as HTMLElement).dataset?.entry === 'user'))) follow = true;
+      // A message of yours at the end (just sent), not older ones loading above.
+      if (records.some(r => [...r.addedNodes].some(n => (n as HTMLElement).dataset?.entry === 'user' && atEnd(n as HTMLElement)))) follow = true;
       if (follow) toEnd();
     });
     toEnd();
@@ -122,10 +132,33 @@ function useFollow() {
 export function Transcript({ agent, nested = false }: { agent: Agent; nested?: boolean }) {
   const entries = agent.activity || [{ kind: 'assistant', text: agent.message || '' }];
   const ref = useFollow();
+  // Older history loads as the top comes into view (or on a click), and the
+  // reader stays on what they were reading: the distance from the bottom
+  // is kept while the older entries go in above.
+  const top = useRef<HTMLButtonElement>(null);
+  const fromBottom = useRef<number | null>(null);
+  const earlier = () => {
+    const el = ref.current;
+    if (el) fromBottom.current = el.scrollHeight - el.scrollTop;
+    void loadOlder(agent.id);
+  };
+  useEffect(() => {
+    const el = ref.current, mark = top.current;
+    if (!el || !mark) return;
+    const seen = new IntersectionObserver(found => { if (found.some(f => f.isIntersecting)) earlier(); }, { root: el, rootMargin: '300px 0px 0px 0px' });
+    seen.observe(mark);
+    return () => seen.disconnect();
+  }, [agent.older]);
+  const firstSeq = entries[0]?.seq;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && fromBottom.current != null) { el.scrollTop = el.scrollHeight - fromBottom.current; fromBottom.current = null; }
+  }, [firstSeq]); // only when older entries went in above
   return (
     <div ref={ref} data-transcript={agent.id} aria-label={`Agent ${agent.id} activity`} {...stylex.props(styles.transcript, nested && styles.nested)}>
       {agent.demo && <div {...stylex.props(styles.sample)}>Sample transcript · commands are illustrative</div>}
-      {entries.map((entry, index) => <Entry key={entry.callId || index} entry={entry} agent={agent} />)}
+      {agent.older != null && <button ref={top} type="button" data-older onClick={earlier} {...stylex.props(styles.older)}>Earlier messages…</button>}
+      {entries.map((entry, index) => <Entry key={entry.callId || (entry.seq != null ? `seq-${entry.seq}` : index)} entry={entry} agent={agent} />)}
       {(agent.notes || []).map((note, index) => (
         <div key={`note-${index}`} data-entry="user" aria-label="Your message" {...stylex.props(styles.entry, styles.user)}>
           <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(note, links))} />
@@ -154,6 +187,7 @@ const styles = stylex.create({
   },
   nested: { paddingTop: 3, paddingInline: 9, paddingBottom: 9 },
   sample: { fontFamily: 'inherit', fontSize: 9, color: colors.textGhost, marginBottom: 9 },
+  older: { display: 'block', marginInline: 'auto', marginBottom: 9, padding: '2px 8px', fontFamily: 'inherit', fontSize: 9, color: colors.textFaint, backgroundColor: 'transparent', borderWidth: 0, cursor: 'pointer', ':hover': { color: colors.text } },
   entry: { display: 'block', paddingBlock: 8 },
   user: { backgroundColor: colors.selected, borderRadius: 3, paddingBlock: 9, paddingInline: 11, marginTop: 8, marginBottom: 12, color: colors.text },
   system: { paddingBlock: 6, fontSize: 10, color: colors.textFaint },

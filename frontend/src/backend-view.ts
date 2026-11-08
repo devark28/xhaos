@@ -1,7 +1,7 @@
 // Turns backend state (snapshot + events) into the card tree the UI renders.
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
-import type { Agent, Attachment, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, Workspace } from './types.ts';
+import type { Agent, Attachment, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, TranscriptPage, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
 
@@ -152,7 +152,31 @@ export function viewFromSnapshot(snapshot: Snapshot): Workspace {
     if (agent) addEntry(agent, item);
     if (agent && event.data?.name === 'ask_user') trackQuestions(agent, event.data);
   }
+  for (const [id, before] of Object.entries(snapshot.older || {})) {
+    const agent = byId.get(Number(id));
+    if (agent) agent.older = before;
+  }
   return view;
+}
+
+// prependOlder puts a page of an agent's older events before its transcript.
+// A tool call already shown keeps its newer state; an event already there
+// (a waiting call the snapshot carried) is not added twice.
+export function prependOlder(view: Workspace, agentId: number, page: TranscriptPage): boolean {
+  const agent = index(view).get(agentId);
+  if (!agent) return false;
+  const now = agent.activity || [];
+  const calls = new Set(now.map(item => item.callId).filter(Boolean));
+  const seqs = new Set(now.map(item => item.seq).filter(seq => seq != null));
+  const older = { activity: [] as Entry[] } as Agent;
+  for (const event of page.events) {
+    if (event.agentId !== agentId || seqs.has(event.seq)) continue;
+    const item = entry(event);
+    if (item && !(item.callId && calls.has(item.callId))) addEntry(older, item);
+  }
+  agent.activity = [...older.activity!, ...now];
+  agent.older = page.more && page.events.length ? page.events[0].seq : undefined;
+  return true;
 }
 
 // applyEvent mutates view for one live event and reports what changed:

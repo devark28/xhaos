@@ -2,15 +2,15 @@
 // not in the store: it holds the Wails runtime, which must not be frozen.
 import { BOARD_EVENT_NAME, connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
 import { onBoardEvent, onBoardNotice, refreshBoards, resyncOpenBoard } from './boards.ts';
-import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend } from '../../backend-view.ts';
+import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend, prependOlder } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
-import { update, get, workspaceOf, toast, errorText, save } from './store.ts';
+import { update, get, workspaceOf, findAgentIn, toast, errorText, save } from './store.ts';
 import { refreshProjects } from './projects.ts';
 import { installHashNavigation } from './location.ts';
 import { restoreDraft } from './composer.ts';
 import { applyAppearance, defaults as appearanceDefaults, loadAppearance, saveAppearance, type Appearance } from '../appearance.ts';
-import type { Agent, BackendChannel, BackendEvent, Memory, Snapshot, Workspace, UsageReport } from '../../types.ts';
+import type { Agent, BackendChannel, BackendEvent, Memory, Snapshot, TranscriptPage, Workspace, UsageReport } from '../../types.ts';
 
 let backend: Backend | null = null;
 let syncing: { catchUp(): Promise<void> } | null = null;
@@ -129,6 +129,23 @@ function applyMemoryEvent(s: { memories: Memory[] }, event: BackendEvent): boole
     return true;
   }
   return false;
+}
+
+// loadOlder fetches the page of an agent's transcript before what it shows
+// (the snapshot sends only the recent end), once at a time per agent.
+const loadingOlder = new Set<number>();
+export async function loadOlder(agentId: number) {
+  const before = findAgentIn(get(), agentId)?.older;
+  if (!backend || !before || loadingOlder.has(agentId)) return;
+  loadingOlder.add(agentId);
+  try {
+    const page: TranscriptPage = await call('agent', 'TranscriptBefore', get().active, agentId, before, 50);
+    update(s => { prependOlder(workspaceOf(s), agentId, page); });
+  } catch (error) {
+    toast(`Couldn't load earlier messages: ${errorText(error)}`);
+  } finally {
+    loadingOlder.delete(agentId);
+  }
 }
 
 export async function refreshProviders() {

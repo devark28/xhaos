@@ -3,11 +3,13 @@
 package agent
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/devark28/xhaos/app/attachment"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -149,14 +151,35 @@ type StatusData struct {
 	Status string `json:"status"`
 }
 
-// Snapshot is a workspace's full current state as of event Seq: its agents
-// and their transcripts (every event except agent.created, which Agents
-// already represents). Clients render it, then apply events after Seq.
+// Snapshot is a workspace's current state as of event Seq: its agents and
+// the recent end of their transcripts (messages and tool calls). Clients
+// render it, then apply events after Seq.
+//
+// Each agent's transcript is its last TranscriptPage events, plus any older
+// tool call still waiting for the owner. Older, for an agent with more
+// history, is the seq to pass to TranscriptBefore for the page before.
 type Snapshot struct {
 	Seq        int64               `json:"seq"`
 	Workspace  workspace.Workspace `json:"workspace"`
 	Agents     []Agent             `json:"agents"`
 	Transcript []eventlog.Event    `json:"transcript"`
+	Older      map[int64]int64     `json:"older,omitempty"`
+}
+
+// TranscriptPage is how many transcript events a snapshot carries per agent,
+// and the default page size of TranscriptBefore.
+const TranscriptPage = 50
+
+// transcriptKinds are the events a transcript shows. Status, title and
+// danger come in the Agent entries; other workspace events (channels,
+// boards, memories, skills, secrets) reach the pages by their own paths.
+var transcriptKinds = []string{EventMessage, EventTool}
+
+// Page is a run of one agent's older transcript events, in seq order. More
+// says there are older ones still: ask again with Before = Events[0].Seq.
+type Page struct {
+	Events []eventlog.Event `json:"events"`
+	More   bool             `json:"more"`
 }
 
 type CreateRequest struct {
@@ -285,22 +308,93 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	rows.Close()
-	// TODO: page long transcripts per agent instead of sending them all.
-	events, err := eventlog.List(tx, workspaceID, 0, 0)
+	events, err := eventlog.Latest(tx, workspaceID, transcriptKinds, TranscriptPage)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// Only the kinds a reader takes from the snapshot: the agents' messages
-	// and tool calls (viewFromSnapshot, btw's digest). Status, title and
-	// danger come in the Agent entries; other workspace events (channels,
-	// boards, memories, skills, secrets) reach the pages by their own paths.
-	snap.Transcript = []eventlog.Event{}
+	// Latest sends one event too many for agents with older history: it
+	// marks where their older pages begin and is left out.
+	count := map[int64]int{}
 	for _, e := range events {
-		if e.Kind == EventMessage || e.Kind == EventTool {
-			snap.Transcript = append(snap.Transcript, e)
+		count[e.AgentID]++
+	}
+	first := map[int64]int64{} // agent -> seq of its first event sent
+	seen := map[int64]int{}
+	var recent []eventlog.Event
+	for _, e := range events {
+		seen[e.AgentID]++
+		if count[e.AgentID] > TranscriptPage && seen[e.AgentID] == 1 {
+			continue
+		}
+		if first[e.AgentID] == 0 {
+			first[e.AgentID] = e.Seq
+		}
+		recent = append(recent, e)
+	}
+	snap.Older = map[int64]int64{}
+	for id, n := range count {
+		if n > TranscriptPage {
+			snap.Older[id] = first[id]
 		}
 	}
+	// A call still waiting for the owner must reach the page even when it
+	// is older than the page sent: it is what the owner has to answer. Only
+	// agents waiting or paused can have one.
+	var waiting []eventlog.Event
+	for _, a := range snap.Agents {
+		start, cut := snap.Older[a.ID]
+		if !cut || (a.Status != StatusAttention && a.Status != StatusPaused) {
+			continue
+		}
+		tools, err := eventlog.ListAgent(tx, workspaceID, a.ID, EventTool)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		last := map[string]eventlog.Event{}
+		var order []string
+		for _, e := range tools {
+			var d ToolData
+			if json.Unmarshal(e.Data, &d) != nil {
+				continue
+			}
+			if _, ok := last[d.CallID]; !ok {
+				order = append(order, d.CallID)
+			}
+			last[d.CallID] = e
+		}
+		for _, id := range order {
+			e := last[id]
+			var d ToolData
+			if e.Seq < start && json.Unmarshal(e.Data, &d) == nil && d.State == ToolPending {
+				waiting = append(waiting, e)
+			}
+		}
+	}
+	snap.Transcript = append(waiting, recent...)
+	slices.SortStableFunc(snap.Transcript, func(a, b eventlog.Event) int { return cmp.Compare(a.Seq, b.Seq) })
+	if snap.Transcript == nil {
+		snap.Transcript = []eventlog.Event{}
+	}
 	return snap, nil
+}
+
+// TranscriptBefore returns the page of an agent's transcript before seq
+// before (a Snapshot's Older, or a Page's first event): up to limit events
+// (TranscriptPage when 0, at most 500).
+func (s *Service) TranscriptBefore(workspaceID string, agentID, before int64, limit int) (Page, error) {
+	if limit <= 0 {
+		limit = TranscriptPage
+	}
+	limit = min(limit, 500)
+	events, err := eventlog.Before(s.db, workspaceID, agentID, transcriptKinds, before, limit+1)
+	if err != nil {
+		return Page{}, err
+	}
+	page := Page{Events: events, More: len(events) > limit}
+	if page.More {
+		page.Events = events[1:]
+	}
+	return page, nil
 }
 
 // TitleFrom returns the first non-empty line of prompt, cut to 120 runes.
