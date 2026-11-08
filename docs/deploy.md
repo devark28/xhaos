@@ -20,14 +20,14 @@ Run it as root or as a user with `sudo` (questions come from the terminal even u
 - downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
 - creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
 - writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
-- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), and **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
 
 Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again.
 
 | Option | |
 |---|---|
-| `--yes` | answer yes to every question (unattended) |
-| `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation` |
+| `--yes` | answer yes to every question (unattended); it does not add the classifier model, which needs `--with classifier` |
+| `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier` |
 | `--without a,b` | skip these parts without asking |
 | `--no-restart` | never restart a running Xhaos (restart it yourself later) |
 | `--version vX.Y.Z` | install that release instead of the latest |
@@ -109,6 +109,49 @@ Notes:
 - `-trusted-proxy` lists the proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are believed. With it, wrong passphrases are counted per visitor rather than for the proxy as a whole, and the sign-in cookie is marked `Secure`. Only list your proxy: anyone else could forge those headers.
 - Projects can be any folder the `xhaos` user can write. Add them in the Files tab (or `-root DIR` at startup); add each path you use to `ReadWritePaths`.
 - Don't add `SystemCallFilter=` to the unit without allowing `landlock_create_ruleset`, `landlock_add_rule`, `landlock_restrict_self` and `seccomp`: the sandbox needs them.
+
+## The optional command classifier model
+
+Agents on auto review wait for you before most commands. Xhaos has a built-in list of ordinary build, test and lint commands that run without asking: it needs no model and nothing from the installer, and it is on by default. The switch in Settings → Tools → Commands turns it off, with the model. The classifier model is an optional extra step for the long tail, the commands the list does not match: a small model on the server answers "may this command run without asking?" for a read-write agent on auto review, and a yes runs the command at once (inside the sandbox, as usual). Most servers do not need it, so the installer does not install it unless you ask: `--with classifier`, or yes at the terminal. `--yes` alone never adds it (about 1.1 GB to download, and memory while it runs).
+
+Commands with secrets, network tools, installs, publishes, deletes and paths outside the project are never sent to the model and still ask; so does every command when the model is slow, down or unsure. It can only make a command run, never block one. Nothing leaves the server: it is a service on `127.0.0.1:8189` only, and Xhaos reaches it through one flag, `-classifier-url`. The user guide (The command list and the classifier model) says what runs without asking.
+
+The installer's **classifier** part (no by default; add it with `--with classifier`) sets it up:
+
+| | |
+|---|---|
+| llama.cpp | release `b12110` (a nightly build, commit `cd959bae99ff4bed22bef2604f45241c09bbb8c8`), the prebuilt CPU build for Ubuntu from github.com/ggml-org/llama.cpp, x64 (23 MB download, 56 MB unpacked) or arm64 (19 MB download; not tried on a machine yet). MIT license. Checked against a SHA-256 pinned in `install.sh` before it is unpacked, then unpacked whole into `/var/lib/xhaos/classifier/llama-b12110/`. It needs libgomp and OpenSSL's libraries: on Debian and Ubuntu the installer adds `libgomp1` and `openssl` when `llama-server` does not start without them. |
+| model | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` from Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF on Hugging Face, at commit `f86cb2c1fa58255f8052cc32aeede1b7482d4361`: 1,117,320,768 bytes (about 1.1 GB), Apache-2.0, checked against a pinned SHA-256, in `/var/lib/xhaos/classifier/models/`. An interrupted download resumes on the next run. |
+| service | `xhaos-classifier.service`, as the `xhaos` user: `llama-server --host 127.0.0.1 --port 8189 -m <model> -t 4 -c 4096`, `Restart=on-failure`, `ProtectSystem=strict` with only its own folder writable, `NoNewPrivileges=yes`. It keeps the model in memory while it runs. |
+| Xhaos | gets `-classifier-url http://127.0.0.1:8189`; its unit has `Wants=` and `After=xhaos-classifier.service`, not `Requires=`, so Xhaos starts even when the classifier does not (commands then ask). |
+
+At start `llama-server` logs `no API key is set and CORS allows all origins`: expected, as it listens on the loopback only, for Xhaos on the same server.
+
+Check it:
+
+```sh
+systemctl status xhaos-classifier
+curl -s http://127.0.0.1:8189/health
+journalctl -u xhaos-classifier
+```
+
+`/health` answers `{"status":"ok"}` once the model is loaded (a few seconds after a start). Settings → Tools → Commands shows the same, with a Check again button.
+
+Re-running the installer with `--with classifier` checks every file again (each llama.cpp file against the list written when it was unpacked, the model against its SHA-256), downloads what does not match, and restarts the classifier if anything changed. With the same choices and nothing changed, a re-run changes nothing.
+
+Turn it off:
+
+- **Settings → Tools → Commands**, the Local command classifier switch: off for the whole server at once, no restart. The service keeps running, unused. This is the everyday switch.
+- **For good**: set `CLASSIFIER='no'` in `/etc/xhaos/install.conf` and re-run the installer. It drops `-classifier-url` and the `Wants=`/`After=` lines from Xhaos's unit (asking before restarting Xhaos) and stops and disables `xhaos-classifier`. `--without classifier` alone only skips the part, like the other parts: an installed classifier stays on, and the installer prints what is there and how to turn it off and delete it.
+- **Delete it**, once it is off for good (nothing is deleted on its own):
+
+```sh
+sudo rm -f /etc/systemd/system/xhaos-classifier.service
+sudo systemctl daemon-reload
+sudo rm -rf /var/lib/xhaos/classifier
+```
+
+By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (10 s by default) limits each answer; past it the command asks.
 
 ## Reverse proxy (HTTPS)
 
