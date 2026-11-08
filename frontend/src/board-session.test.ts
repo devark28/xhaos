@@ -158,16 +158,19 @@ test('while the scene keeps changing, saves go out about once per interval, and 
   const scene = fakeHost([]);
   const session = new BoardSession({ call: server.call, workspaceId: 'default', boardId: 1, host: scene.host, interval: 20 });
   await session.load();
-  // A stroke: an edit every 2 ms for about 200 ms.
+  // A stroke: an edit every 2 ms for about 200 ms (longer on a busy machine,
+  // so the upper bound follows the time the stroke really took).
+  const began = performance.now();
   for (let i = 1; i <= 100; i++) {
     scene.set([el('a', i)]);
     session.changed();
     await new Promise(resolve => setTimeout(resolve, 2));
   }
+  const intervals = Math.ceil((performance.now() - began) / 20);
   await new Promise(resolve => setTimeout(resolve, 60));
   const saves = server.calls.filter(c => c.method === 'Save').length;
   assert.ok(saves >= 4, `saves during the stroke: ${saves}`); // live, not one at the end
-  assert.ok(saves <= 16, `saves during the stroke: ${saves}`); // no more than one per interval
+  assert.ok(saves <= intervals + 4, `saves during the stroke: ${saves} in ${intervals} intervals`); // no more than one per interval
   assert.equal(server.elements.get('a')?.version, 100, 'the last edit is on the server');
 });
 
