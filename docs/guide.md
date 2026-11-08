@@ -63,8 +63,9 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 - `Ctrl/Cmd+K` focuses the composer.
 - Type `/` to open the command menu. Commands include `/new task`, `/search query` (or `/search` to clear), `/mcp`, `/memory`, `/layout 1|2|3`, `/channels`, `/history`, `/terminate`, `/allow`, `/deny`, and `/help`. `/allow`, `/deny`, `/pause`, and `/resume` act on eligible attached agents, or accept one explicit agent ID. Ineligible targets are skipped and reported. Questionnaires require answers, not approval; `/allow` and `/deny` never answer or dismiss them. `/help status` shows the real status dots and attention pulse; it is also linked from help. Older `/approve` and `/decline` aliases remain supported. Arrow keys navigate the menu; Escape dismisses it. Enter submits the composer; Shift+Enter adds a line.
 - The page has two columns. On the left, the composer sits above the scrolling agent area, with Expand/Collapse all and the 1/2/3-column layout buttons in a bar above the agents; search is available through `/search`. The logo sits at the top left, beside the Message/Draw tabs. On the right, the side panel is always open at 30% of the width; its tab icons (Questions, Files, Channels, Memories, Settings; Settings has Models and Tools and MCP as sections that expand in place) stay at its top and switch what it shows. On narrow screens it sits below the agents. Panels never replace the composer, so you can keep typing while one is open. Neutral surfaces use grayscale; only agent status dots use semantic colors.
-- Dictation records one take from the microphone and sends it to the server, which transcribes it with a local speech sidecar. Click the mic to start and again to stop (five minutes at most; from 4:30 the timer shows the time left). While the take is transcribed the mic spins and the estimate is shown. The transcript lands in the composer for review; nothing is sent. The mic is hidden when the server has no sidecar.
-- Dictation hints (Settings → Dictation) are one punctuated sentence with the words and names this workspace uses, for example "We are testing Xhaos on a Pi Zero 2 W with the Duo camera." The server passes them to the sidecar as `{prompt}`.
+- Dictation records one take from the microphone and sends it to the server, which transcribes it with a local speech sidecar. Click the mic to start and again to stop (five minutes at most; from 4:30 the timer shows the time left). While the take is transcribed the mic spins, with the time so far against an estimate (15 s per minute of speech until a take has been timed, then the last timed speed). The transcript lands in the composer for review; nothing is sent. The mic is hidden when the server has no sidecar.
+- Dictation language (Settings → Dictation) is server-wide and English by default. Auto-detect works from the start of each take and can guess wrong on a quiet start. The server passes the language to the sidecar as `{language}`.
+- Dictation hints (Settings → Dictation) are the words and names this workspace uses, as a text box of up to 1000 characters. The model reads only about the first 150 words (it keeps 223 tokens of hints, and names cost several each), and the box warns past that. Best as one punctuated sentence or a list of the words actually said. The server passes them to the sidecar as `{prompt}`, and the reference sidecar uses them as faster-whisper hotwords, which apply to every 30-second window of the take.
 - Keep dictation recordings (Settings → Developer, off by default) saves each take as a WAV in `dictation-debug/` beside the database, with a line per take in `log.txt`: the time, length, loudness, transcription time, outcome and the start of the transcript. These are voice recordings; Delete all recordings removes them.
 
 ### Setting up the sidecar
@@ -72,15 +73,15 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 Xhaos runs the program named by `-dictation-cmd` once per take, with the take as a 16 kHz mono 16-bit WAV, and reads the transcript from its stdout. The flags are:
 
 - `-dictation-cmd`: the program. Empty turns dictation off.
-- `-dictation-args`: the argument template, split on spaces. `{wav}` is the WAV path, `{model}` the model directory, and `{prompt}` the workspace's hints. A field with `{prompt}` inside it (such as `--prompt={prompt}`) gets the hints as one argument, spaces and all.
+- `-dictation-args`: the argument template, split on spaces. `{wav}` is the WAV path, `{model}` the model directory, `{language}` the dictation language (`en` by default, or `auto`), and `{prompt}` the workspace's hints. A field with `{prompt}` inside it (such as `--prompt={prompt}`) gets the hints as one argument, spaces and all.
 - `-dictation-model`: the model directory, for `{model}`.
-- `-dictation-timeout`: a fixed time limit per take. By default it is 15 seconds plus half the take's length (165 seconds for five minutes). On timeout the sidecar's process group is killed.
+- `-dictation-timeout`: a fixed time limit per take. By default it is 15 seconds plus half the take's length (165 seconds for five minutes). On timeout the sidecar's process group is killed. This is a limit, not an estimate: the estimate shown while transcribing comes from the speed of earlier takes.
 
 `scripts/dictation/stt.py` is the reference sidecar, using faster-whisper with the CTranslate2 build of a Whisper model. Install it with `pip install faster-whisper`, then start Xhaos with the model directory:
 
 ```sh
 xhaos -dictation-cmd /usr/bin/python3 \
-      -dictation-args "/opt/xhaos/scripts/dictation/stt.py {wav} --model {model} --prompt={prompt}" \
+      -dictation-args "/opt/xhaos/scripts/dictation/stt.py {wav} --model {model} --language={language} --prompt={prompt}" \
       -dictation-model /opt/models/whisper-large-v3-turbo-ct2
 ```
 
