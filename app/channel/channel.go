@@ -547,10 +547,12 @@ func (s *Service) channelsOf(ws string, agentID int64) ([]Channel, error) {
 	return out, nil
 }
 
-// View is a channel with its messages, for the client.
+// View is a channel with its messages, for the client. Count is how many
+// messages it has in all (the list sends only the last one).
 type View struct {
 	Channel
 	Messages []Message `json:"messages"`
+	Count    int       `json:"count"`
 }
 
 // Channels lists a workspace's channels with their messages (the latest 200
@@ -581,8 +583,43 @@ type Owner struct{ s *Service }
 
 func (s *Service) Owner() *Owner { return &Owner{s: s} }
 
-// Channels lists the workspace's channels with their messages.
-func (o *Owner) Channels(workspaceID string) ([]View, error) { return o.s.Channels(workspaceID) }
+// Channels lists the workspace's channels, each with only its last message
+// (for the preview and the order) and its message count: a channel's
+// messages load when it is opened (Messages).
+func (o *Owner) Channels(workspaceID string) ([]View, error) {
+	chans, err := o.s.channelsOf(workspaceID, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := []View{}
+	for _, c := range chans {
+		last, err := o.s.messages(workspaceID, c.ID, 1)
+		if err != nil {
+			return nil, err
+		}
+		if last == nil {
+			last = []Message{}
+		}
+		v := View{Channel: c, Messages: last}
+		if err := o.s.db.QueryRow(`SELECT COUNT(*) FROM channel_messages WHERE channel_id = ?`, c.ID).Scan(&v.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// Messages returns one channel's latest 200 messages, oldest first.
+func (o *Owner) Messages(workspaceID string, channelID int64) ([]Message, error) {
+	if _, err := o.s.load(o.s.db, workspaceID, channelID); err != nil {
+		return nil, err
+	}
+	msgs, err := o.s.messages(workspaceID, channelID, 200)
+	if msgs == nil {
+		msgs = []Message{}
+	}
+	return msgs, err
+}
 
 type CloseRequest struct {
 	WorkspaceID string `json:"workspaceId"`

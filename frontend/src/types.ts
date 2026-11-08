@@ -105,6 +105,8 @@ export interface Channel {
   creatorId: number;
   participants: number[];
   messages: ChannelMessage[];
+  count?: number; // messages in all; from the server only the last is sent until it is opened
+  loaded?: boolean; // false: messages holds only the last one; open it to load the rest
   closed?: boolean; // the user closed it; nothing more can be sent
   published?: boolean; // on its link: readable and writable from outside with its passphrase
 }
@@ -120,6 +122,7 @@ export interface BackendChannel {
   closed?: boolean;
   published?: boolean;
   // senderId 0: sent from outside through the link, by senderName.
+  count?: number; // messages in all (the list carries only the last)
   messages: { id: number; channelId: number; senderId: number; senderName?: string; body: string; createdAt: string }[];
 }
 

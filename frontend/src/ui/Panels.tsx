@@ -26,6 +26,7 @@ import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { visibleCommands, developerMode, closeBtw } from './state/composer.ts';
 import { newBoard } from './state/boards.ts';
 import { restore } from './state/agents.ts';
+import { loadChannel } from './state/backend.ts';
 import {
   openPanel, showTools, closeChannel, publishChannel, unpublishChannel, saveMemory, deleteMemory, saveProvider, testProvider, removeProvider, type ProviderForm,
 } from './state/panels.ts';
@@ -125,7 +126,7 @@ function Channels({ channelId }: { channelId?: string }) {
   const title = (id: number | string) => all.find(agent => agent.id === Number(id))?.title || '';
   const name = (id: number | string) => (typeof id === 'string' && id.startsWith('outside:') ? `${id.slice(8)} (outside)` : `#${id}`);
   const open = channels.find(c => c.id === openId);
-  const openCount = open?.messages.length ?? 0;
+  const openCount = open?.count ?? open?.messages.length ?? 0;
   useEffect(() => {
     if (!open || seen[open.id] === openCount) return;
     const next = { ...readSeen(), [open.id]: openCount };
@@ -153,19 +154,20 @@ function Channels({ channelId }: { channelId?: string }) {
       <div data-channel-list onKeyDown={onKeyDown} {...stylex.props(channel.list)}>
         {channels.map(c => {
           const isOpen = c.id === openId, last = c.messages.at(-1);
-          const unread = !isOpen && c.messages.length > (seen[c.id] ?? 0);
+          const unread = !isOpen && (c.count ?? c.messages.length) > (seen[c.id] ?? 0);
           return (
             <section key={c.id} data-channel-row={c.id} data-open={isOpen || undefined} {...stylex.props(channel.row, isOpen && channel.rowOpen)}>
               <button type="button" data-channel={c.id} aria-expanded={isOpen} aria-controls={`channel-body-${c.id}`}
                 onClick={() => openPanel('channels', { channelId: isOpen ? '' : c.id })} {...stylex.props(channel.summary)}>
                 <span {...stylex.props(channel.line)}>
                   <span aria-hidden="true" {...stylex.props(channel.chevron, isOpen && channel.chevronOpen)}>›</span>
+                  <span data-channel-id {...stylex.props(channel.num)}>#{c.id}</span>
                   <span {...stylex.props(channel.subject)}>{c.subject}</span>
                   {unread && <span data-unread title="New messages" {...stylex.props(channel.dot)} />}
                   {c.closed ? <span {...stylex.props(channel.tag)}>closed</span> : c.published && <span {...stylex.props(channel.tag, channel.tagOn)}>published</span>}
                   <span {...stylex.props(channel.when)}>{last ? formatTime(last.timestamp) : ''}</span>
                 </span>
-                <span {...stylex.props(channel.sub)}>{c.participants.map(id => `#${id}`).join(' · ')}{last && <> — <span {...stylex.props(channel.preview)}>{name(last.writer)}: {plain(last.text).slice(0, 140)}</span></>}</span>
+                <span {...stylex.props(channel.sub)}>{c.participants.length === 1 ? 'agent ' : 'agents '}{c.participants.map(id => `#${id}`).join(' · ')}{last && <> — <span {...stylex.props(channel.preview)}>{name(last.writer)}: {plain(last.text).slice(0, 140)}</span></>}</span>
               </button>
               {isOpen && <ChannelBody c={c} title={title} name={name} />}
             </section>
@@ -182,6 +184,8 @@ function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | st
   // Start at the newest message, and follow new ones while at the bottom.
   const pinned = useRef(true);
   useLayoutEffect(() => { const el = log.current; if (el && pinned.current) el.scrollTop = el.scrollHeight; }, [c.messages.length]);
+  // The list has only each channel's last message: load the rest on opening.
+  useEffect(() => { if (c.loaded === false) void loadChannel(c.id); }, [c.id, c.loaded]);
   const issue = async () => { const r = await publishChannel(c.id); if (r) setIssued(r); };
   return (
     <div id={`channel-body-${c.id}`} data-channel-head={c.id} {...stylex.props(channel.body)}>
@@ -204,7 +208,7 @@ function ChannelBody({ c, title, name }: { c: ChannelView; title(id: number | st
       </div>
       {issued && <ChannelSecret id={c.id} passphrase={issued.passphrase} path={issued.path} onDone={() => setIssued(null)} />}
       <div ref={log} data-channel-log onScroll={e => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} {...stylex.props(channel.log)}>
-        {c.messages.length ? c.messages.map((message, index) => (
+        {c.loaded === false ? <P muted>Loading messages…</P> : c.messages.length ? c.messages.map((message, index) => (
           <article key={index} {...stylex.props(channel.message)}>
             <div {...stylex.props(channel.meta)}>
               <span title={title(message.writer)}>{name(message.writer)}</span>
@@ -666,6 +670,7 @@ const channel = stylex.create({
   line: { display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 },
   chevron: { width: 8, flexShrink: 0, color: colors.textGhost, transitionProperty: 'transform', transitionDuration: '.12s' },
   chevronOpen: { transform: 'rotate(90deg)' },
+  num: { flexShrink: 0, fontSize: 10, color: colors.textFaint, fontVariantNumeric: 'tabular-nums' },
   subject: { flexGrow: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: 11.5, fontWeight: 500, color: colors.textStrong },
   dot: { width: 6, height: 6, flexShrink: 0, borderRadius: '50%', backgroundColor: colors.brand },
   tag: { flexShrink: 0, fontSize: 9, paddingInline: 5, paddingBlock: 1, borderRadius: 3, color: colors.textFaint, backgroundColor: colors.card },

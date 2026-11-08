@@ -1003,6 +1003,18 @@ func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
 	if took := time.Since(started); took < 200*time.Millisecond || took > 4*time.Second || !strings.Contains(fmt.Sprint(waited["messages"]), "tests pass") {
 		t.Fatalf("wait = %v after %v", waited, took)
 	}
+	// The page's list carries each channel's last message and its count; the
+	// messages come when it is opened.
+	views, err := owner.Channels(ws)
+	if err != nil || len(views) != 1 || views[0].Count != 2 || len(views[0].Messages) != 1 || views[0].Messages[0].Body != "tests pass" {
+		t.Fatalf("channel list = %+v %v, want the count (2) and only the last message", views, err)
+	}
+	if msgs, err := owner.Messages(ws, c.ID); err != nil || len(msgs) != 2 || msgs[1].Body != "tests pass" {
+		t.Fatalf("opened channel = %+v %v, want both messages, oldest first", msgs, err)
+	}
+	if _, err := owner.Messages("other", c.ID); err == nil {
+		t.Fatal("another workspace read the channel")
+	}
 	// Reset: the old passphrase stops working.
 	again, _ := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
 	if again.Passphrase == pub.Passphrase {

@@ -2,7 +2,7 @@
 // not in the store: it holds the Wails runtime, which must not be frozen.
 import { BOARD_EVENT_NAME, connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
 import { onBoardEvent, onBoardNotice, refreshBoards, resyncOpenBoard } from './boards.ts';
-import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend, prependOlder } from '../../backend-view.ts';
+import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend, prependOlder, setChannelMessages } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
 import { update, get, workspaceOf, findAgentIn, toast, errorText, save } from './store.ts';
@@ -63,6 +63,21 @@ export async function refreshChannels() {
     const list = await call<BackendChannel[]>('channel', 'Channels', get().active);
     update(s => { workspaceOf(s).channels = channelsFromBackend(list); });
   } catch { /* the Channels tab shows none */ }
+}
+
+// loadChannel fetches an opened channel's messages (the list has only its last).
+const loadingChannels = new Set<string>();
+export async function loadChannel(id: string) {
+  if (!backend || loadingChannels.has(id)) return;
+  loadingChannels.add(id);
+  try {
+    const list = await call<BackendChannel['messages']>('channel', 'Messages', get().active, Number(id));
+    update(s => { setChannelMessages(workspaceOf(s), id, list); });
+  } catch (error) {
+    toast(`Couldn't load channel #${id}: ${errorText(error)}`);
+  } finally {
+    loadingChannels.delete(id);
+  }
 }
 
 // ---- appearance, kept on the server ---------------------------------------------

@@ -248,14 +248,28 @@ const toMessage = (c: { members: number[] }, m: BackendChannel['messages'][numbe
 // channelsFromBackend maps channel.Service.Channels into the view's channels.
 export const channelsFromBackend = (list: BackendChannel[]): Channel[] => list.map(c => ({
   id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)), closed: c.closed, published: c.published,
+  count: c.count ?? c.messages.length, loaded: (c.count ?? c.messages.length) <= c.messages.length,
 }));
+
+// setChannelMessages puts a channel's loaded messages (channel.Owner.Messages)
+// in place of its preview, keeping any that arrived live meanwhile.
+export function setChannelMessages(view: Workspace, id: string, list: BackendChannel['messages']): boolean {
+  const c = view.channels?.find(x => x.id === id);
+  if (!c) return false;
+  const loaded = list.map(m => toMessage({ members: c.participants }, m));
+  const known = new Set(loaded.map(m => m.id));
+  c.messages = [...loaded, ...c.messages.filter(m => !known.has(m.id) && Number(m.id) > Number(loaded.at(-1)?.id ?? 0))];
+  c.loaded = true;
+  c.count = Math.max(c.count ?? 0, c.messages.length);
+  return true;
+}
 
 // applyChannelEvent applies channel.created / .message / .closed; true if it did.
 export function applyChannelEvent(view: Workspace, event: BackendEvent): boolean {
   view.channels ||= [];
   if (event.kind === 'channel.created') {
     const c = event.data as BackendChannel;
-    if (!view.channels.some(x => x.id === String(c.id))) view.channels.push({ id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: [] });
+    if (!view.channels.some(x => x.id === String(c.id))) view.channels.push({ id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: [], count: 0, loaded: true });
     return true;
   }
   if (event.kind === 'channel.link') {
@@ -271,7 +285,7 @@ export function applyChannelEvent(view: Workspace, event: BackendEvent): boolean
   if (event.kind === 'channel.message') {
     const m = event.data as BackendChannel['messages'][number];
     const c = view.channels.find(x => x.id === String(m.channelId));
-    if (c && !c.messages.some(x => x.id === String(m.id))) c.messages.push(toMessage({ members: c.participants }, m));
+    if (c && !c.messages.some(x => x.id === String(m.id))) { c.messages.push(toMessage({ members: c.participants }, m)); c.count = (c.count ?? c.messages.length - 1) + 1; }
     return Boolean(c);
   }
   return false;
