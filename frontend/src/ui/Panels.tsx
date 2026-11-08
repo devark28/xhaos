@@ -305,7 +305,8 @@ function Providers({ message, testing }: { message?: string; testing?: string })
             <option value="deepseek">DeepSeek</option>
             <option value="local">Local (Ollama)</option>
             <option value="other">Other OpenAI-compatible</option>
-            <option value="sim">Simulated (no model, no tokens)</option>
+            {/* A testing aid: offered in Developer mode (an existing Simulated provider stays usable). */}
+            {(developerMode() || preset === 'sim') && <option value="sim">Simulated (no model, no tokens)</option>}
           </select>
         </div>
         {preset && <>

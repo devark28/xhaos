@@ -1477,9 +1477,10 @@ func TestWebTools(t *testing.T) {
 	}
 }
 
-// Dangerously allow: it takes the passphrase; calls that would ask run, git
-// is locked to the agent's branch (moved off main), secrets still ask, and
-// once it expires the agent asks again.
+// Dangerously allow: it takes the passphrase; calls that would ask run, the
+// project stays on its branch (nothing is switched), protected git state is
+// put back around each command, irreversible pushes are refused, secrets
+// still ask, and once it expires the agent asks again.
 func TestDangerouslyAllow(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -1502,7 +1503,7 @@ func TestDangerouslyAllow(t *testing.T) {
 		return llm.Result{Calls: []llm.ToolCall{
 			tc(fmt.Sprintf("w%d", turn), "write_file", map[string]any{"path": "notes.md", "content": "hello"}),
 			tc(fmt.Sprintf("r%d", turn), "bash", map[string]any{"command": "echo ran"}),
-			tc(fmt.Sprintf("g%d", turn), "bash", map[string]any{"command": "git checkout main"}),
+			tc(fmt.Sprintf("g%d", turn), "bash", map[string]any{"command": "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m sneaky && git switch -q -c feat/side"}),
 			tc(fmt.Sprintf("p%d", turn), "bash", map[string]any{"command": "git push --force origin HEAD"}),
 			tc(fmt.Sprintf("s%d", turn), "bash", map[string]any{"command": "echo $TOKEN", "secrets": []string{"TOKEN"}}),
 		}, StopReason: "tool_use"}, nil
@@ -1520,28 +1521,39 @@ func TestDangerouslyAllow(t *testing.T) {
 	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "nope", Minutes: 60}); err == nil {
 		t.Fatal("turned on with a wrong passphrase")
 	}
-	if _, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 7}); err == nil {
-		t.Fatal("accepted an odd duration")
+	for _, bad := range []danger.Request{{Duration: "5s"}, {Duration: "8d"}, {Duration: "soon"}, {Duration: "1h", Calls: 5000}, {Duration: "1h", Calls: -7}} {
+		bad.WorkspaceID, bad.AgentID, bad.Passphrase = ws, a.ID, "right"
+		if _, err := h.s.Danger.Set(bad); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
 	}
-	on, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Minutes: 60})
+	on, err := h.s.Danger.Set(danger.Request{WorkspaceID: ws, AgentID: a.ID, Passphrase: "right", Duration: "1h", Calls: 120})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("xhaos/%d-fix-login", a.ID)
+	if got := time.Until(on.Danger.Until); on.Danger.Calls != 120 || got < 59*time.Minute || got > time.Hour {
+		t.Fatalf("session = %+v (%s left)", on.Danger, got)
+	}
+	want := "main"
 	if on.Danger == nil || on.Danger.Branch != want || time.Until(on.Danger.Until) < 59*time.Minute {
 		t.Fatalf("danger = %+v", on.Danger)
 	}
 	if b, _ := danger.CurrentBranch(root); b != want {
-		t.Fatalf("the project is on %q, not moved off main", b)
+		t.Fatalf("turning it on moved the project to %q", b)
 	}
+	head := func(ref string) string {
+		out, _ := exec.Command("git", "-C", root, "rev-parse", ref).Output()
+		return strings.TrimSpace(string(out))
+	}
+	mainAt := head("main")
 	h.s.Agents.Message(agent.MessageRequest{IdempotencyKey: "m1", WorkspaceID: ws, AgentIDs: []int64{a.ID}, Body: "go"})
 	h.waitStatus(t, a.ID, agent.StatusAttention)
 	st := h.tools(t, a.ID)
 	if st["w1"].State != agent.ToolAllowed || st["w1"].By != "danger" {
 		t.Errorf("the write should be allowed by danger mode: %+v", st["w1"])
 	}
-	if st["g1"].State != agent.ToolDenied || !strings.Contains(st["g1"].Reason, "locked to branch "+want) {
-		t.Errorf("switching to main = %+v", st["g1"])
+	if st["g1"].State != agent.ToolAllowed || st["g1"].By != "danger" {
+		t.Errorf("a commit and a switch should be allowed (the guard undoes them afterwards): %+v", st["g1"])
 	}
 	if st["p1"].State != agent.ToolDenied || !strings.Contains(st["p1"].Reason, "--force") {
 		t.Errorf("force push = %+v", st["p1"])
@@ -1554,6 +1566,14 @@ func TestDangerouslyAllow(t *testing.T) {
 	st = h.tools(t, a.ID)
 	if st["w1"].State != agent.ToolDone || st["r1"].State != agent.ToolDone || !strings.Contains(st["r1"].Output, "ran") {
 		t.Fatalf("allowed calls did not run: %+v %+v", st["w1"], st["r1"])
+	}
+	// The commit on main and the switch ran, and were undone: main is back,
+	// the checkout is on main again, the agent's new branch stays.
+	if st["g1"].State != agent.ToolDone || !strings.Contains(st["g1"].Output, "put main back") || !strings.Contains(st["g1"].Output, "switched the project's checkout back to main") {
+		t.Errorf("commit on main + switch = %+v", st["g1"])
+	}
+	if b, _ := danger.CurrentBranch(root); b != "main" || head("main") != mainAt || head("feat/side") == "" {
+		t.Errorf("after the guard: on %q, main %s (want %s), feat/side %q", b, head("main"), mainAt, head("feat/side"))
 	}
 	// Expired: the same calls ask again.
 	agent.NewStore(h.s.DB(), nil).SetDanger(ws, a.ID, &agent.Danger{Until: time.Now().Add(-time.Minute), Branch: want})

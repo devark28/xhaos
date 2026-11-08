@@ -101,7 +101,13 @@ xhaos-input :is(em, i) { font-style: italic; }
   content: attr(data-tip); position: absolute; left: -6px; top: calc(100% + 6px); z-index: 50; width: max-content; max-width: 240px;
   padding: 6px 8px; border-radius: 4px; background: var(--x-tip-bg, #262626); color: var(--x-text, #ddd); box-shadow: 0 6px 18px rgba(0,0,0,.35);
   font: 400 10.5px/1.45 Inter, ui-sans-serif, sans-serif; font-style: normal; text-align: left; white-space: normal;
-  opacity: 0; pointer-events: none; transform: translateY(-2px); transition: opacity .12s, transform .12s;
+  pointer-events: none;
+  /* Hidden bubbles take no room: an invisible 240px box near an edge would
+     still widen whatever scrolls around it (a dialog, a panel). */
+  display: none;
 }
-.x-info:hover::after, .x-info:focus::after { opacity: 1; transform: none; }
+.x-info:hover::after, .x-info:focus::after { display: block; animation: x-tip-in .12s ease-out; }
+/* Near the right edge of its dialog or panel, the bubble opens leftward. */
+.x-info[data-tip-flip]::after { left: auto; right: -6px; }
+@keyframes x-tip-in { from { opacity: 0; transform: translateY(-2px); } }
 [data-theme="light"] .x-info::after { --x-tip-bg: #ffffff; box-shadow: 0 6px 18px rgba(0,0,0,.15); border: 1px solid #ddd; }

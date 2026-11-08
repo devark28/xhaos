@@ -88,7 +88,13 @@ type Agent struct {
 type Danger struct {
 	Until  time.Time `json:"until"`
 	Branch string    `json:"branch,omitempty"`
+	// Calls is the limit on model calls in a row while it is on: 0 keeps the
+	// normal limit, -1 means none. It ends with the session.
+	Calls int `json:"calls,omitempty"`
 }
+
+// NoCallLimit as Danger.Calls lifts the limit on model calls in a row.
+const NoCallLimit = -1
 
 // Active reports whether a's danger mode is on at now.
 func (a Agent) DangerActive(now time.Time) bool { return a.Danger != nil && now.Before(a.Danger.Until) }
@@ -236,7 +242,7 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 	if err := addColumn(db, "agents", "project_id", "INTEGER REFERENCES projects(id)"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
 	}
-	for _, col := range [][2]string{{"danger_until", "TEXT NOT NULL DEFAULT ''"}, {"danger_branch", "TEXT NOT NULL DEFAULT ''"}} {
+	for _, col := range [][2]string{{"danger_until", "TEXT NOT NULL DEFAULT ''"}, {"danger_branch", "TEXT NOT NULL DEFAULT ''"}, {"danger_calls", "INTEGER NOT NULL DEFAULT 0"}} {
 		if err := addColumn(db, "agents", col[0], col[1]); err != nil {
 			return nil, fmt.Errorf("migrate agents: %w", err)
 		}
@@ -697,16 +703,17 @@ func (s *Service) emit(events []eventlog.Event) {
 	}
 }
 
-const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch FROM agents`
+const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch, danger_calls FROM agents`
 
 func scan(r interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
 	var at, dangerUntil, dangerBranch string
+	var dangerCalls int
 	err := r.Scan(&a.ID, &a.WorkspaceID, &a.ParentID, &a.Title, &a.Role, &a.Status, &a.Provider, &a.Model,
-		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch)
+		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch, &dangerCalls)
 	a.CreatedAt = sqlitedb.ParseStamp(at)
 	if dangerUntil != "" {
-		a.Danger = &Danger{Until: sqlitedb.ParseStamp(dangerUntil), Branch: dangerBranch}
+		a.Danger = &Danger{Until: sqlitedb.ParseStamp(dangerUntil), Branch: dangerBranch, Calls: dangerCalls}
 	}
 	return a, err
 }
@@ -832,11 +839,11 @@ func (st *Store) SetTitle(workspaceID string, id int64, title string) error {
 // agent's history.
 func (st *Store) SetDanger(workspaceID string, id int64, d *Danger) error {
 	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
-		until, branch := "", ""
+		until, branch, calls := "", "", 0
 		if d != nil {
-			until, branch = sqlitedb.Stamp(d.Until), d.Branch
+			until, branch, calls = sqlitedb.Stamp(d.Until), d.Branch, d.Calls
 		}
-		if _, err := tx.Exec(`UPDATE agents SET danger_until = ?, danger_branch = ? WHERE workspace_id = ? AND id = ?`, until, branch, workspaceID, id); err != nil {
+		if _, err := tx.Exec(`UPDATE agents SET danger_until = ?, danger_branch = ?, danger_calls = ? WHERE workspace_id = ? AND id = ?`, until, branch, calls, workspaceID, id); err != nil {
 			return eventlog.Event{}, err
 		}
 		return eventlog.Append(tx, workspaceID, id, EventDanger, d, at)

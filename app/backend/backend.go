@@ -216,6 +216,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	webs := web.NewService(db, box)
 	runner.Extras = append(runner.Extras, web.NewTools(webs))
 	risky := danger.NewService(store, store.Get)
+	runner.Guard = risky
 	risky.Root = func(a agent.Agent) (string, error) {
 		if a.ProjectID == 0 || runner.ProjectRoot == nil {
 			return "", nil

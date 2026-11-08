@@ -2,6 +2,7 @@ package tool
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -33,9 +34,24 @@ var gitReads = map[string]bool{
 
 var gitLocalWrites = map[string]bool{"add": true, "commit": true, "switch": true}
 
+// harmless redirections reach no file: output thrown away (>/dev/null,
+// 2>/dev/null, &>/dev/null, >>/dev/null), no input (</dev/null), or output
+// moved between the command's own streams (2>&1, >&2). /dev/null must end
+// the word, so /dev/null/../x or /dev/nullx stay redirections.
+// The fd in ">&2" must end the word too: bash reads ">&2x" (or ">&1x") as a
+// redirection to the FILE "2x", and stripping only ">&2" would leave "x"
+// looking like an ordinary argument.
+var harmless = regexp.MustCompile(`(?:[0-9]|&)?>>?\s*/dev/null(?:$|[\s;&|)])|<\s*/dev/null(?:$|[\s;&|)])|[0-9]?>&[0-9](?:$|[\s;&|)])`)
+
 // ClassifyCommand returns Read, Git, or Exec for a bash command line.
 func ClassifyCommand(line string) string {
-	line = strings.ReplaceAll(line, "2>&1", "")
+	line = harmless.ReplaceAllStringFunc(line, func(m string) string {
+		// Keep a separator the match ended on (">/dev/null;" → ";").
+		if last := m[len(m)-1]; strings.ContainsRune(" \t\n;&|)", rune(last)) {
+			return " " + string(last)
+		}
+		return " "
+	})
 	if strings.ContainsAny(line, "`><") || strings.Contains(line, "$(") || strings.Contains(line, "${") {
 		return Exec // command substitution, expansion tricks, or redirection
 	}
