@@ -109,6 +109,10 @@ want() {
 
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else has sudo || die "run as root, or install sudo"; SUDO=sudo; fi
 run() { $SUDO "$@"; }
+# Xhaos's folders are private to the xhaos user (700): look inside them as
+# root, not as the person running the installer.
+xtest() { $SUDO test "$@"; }
+xsum() { $SUDO sha256sum "$1" 2>/dev/null | cut -c1-64; }
 # as_user USER CMD…: a command as another user (runuser as root, else sudo -u).
 as_user() { u=$1; shift; if [ -z "$SUDO" ]; then runuser -u "$u" -- "$@"; else sudo -u "$u" "$@"; fi; }
 # The person installing (their user gets the per-user parts: Flutter, Podman).
@@ -122,6 +126,13 @@ case $(uname -m) in
   *) die "unsupported CPU: $(uname -m) (releases are built for amd64 and arm64)" ;;
 esac
 for tool in curl tar sha256sum; do has $tool || die "needs $tool"; done
+# Retry downloads (GitHub can answer 5xx for a moment); --retry-all-errors
+# needs curl 7.71+, so older ones retry only what curl calls transient.
+RETRY="--retry 4 --retry-delay 3"
+curl --help all 2>/dev/null | grep -q -- --retry-all-errors && RETRY="$RETRY --retry-all-errors"
+# dl: curl with those retries ($RETRY is meant to split into its options).
+# shellcheck disable=SC2086
+dl() { curl $RETRY "$@"; }
 SYSTEMD=no
 [ -d /run/systemd/system ] && has systemctl && SYSTEMD=yes
 APT=no
@@ -143,23 +154,28 @@ else
   # No settings yet (a first install, or a server set up by hand): what is
   # already here counts as installed, so the service keeps using it.
   [ -x /opt/rust/cargo/bin/rustup ] && DEVTOOLS=yes
-  [ -d "$DATA/sandbox/flutter/.git" ] && FLUTTER=yes
+  xtest -d "$DATA/sandbox/flutter/.git" && FLUTTER=yes
   has google-chrome && has firefox && BROWSERS=yes
   has podman && has docker-compose && PODMAN=yes
-  [ -x "$DICT/venv/bin/python" ] && [ -f "$MODEL_DIR/model.bin" ] && DICTATION=yes
+  xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes
 fi
 
 # ---- the release -----------------------------------------------------------
 
 step "Xhaos release"
 if [ "$VERSION" = latest ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-  [ -n "$VERSION" ] || die "could not find the latest release (GitHub API); pass --version vX.Y.Z"
+  # The API (retried: it can answer 5xx for a moment), else the redirect of
+  # the plain "latest release" page, which names the tag.
+  VERSION=$(dl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1 || true)
+  if [ -z "$VERSION" ]; then
+    VERSION=$(dl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$REPO/releases/latest" 2>/dev/null | sed -n 's#.*/releases/tag/##p' || true)
+  fi
+  [ -n "$VERSION" ] || die "could not find the latest release on GitHub; try again, or pass --version vX.Y.Z"
 fi
 NAME="xhaos-$VERSION-linux-$ARCH"
 say "Downloading $NAME from $BASE_URL/$VERSION/"
-curl -fsSL -o "$TMP/$NAME.tar.gz" "$BASE_URL/$VERSION/$NAME.tar.gz" || die "download failed: $NAME.tar.gz"
-curl -fsSL -o "$TMP/SHA256SUMS" "$BASE_URL/$VERSION/SHA256SUMS" || die "download failed: SHA256SUMS"
+dl -fsSL -o "$TMP/$NAME.tar.gz" "$BASE_URL/$VERSION/$NAME.tar.gz" || die "download failed: $NAME.tar.gz"
+dl -fsSL -o "$TMP/SHA256SUMS" "$BASE_URL/$VERSION/SHA256SUMS" || die "download failed: SHA256SUMS"
 (cd "$TMP" && grep " \(\./\)\{0,1\}$NAME.tar.gz\$" SHA256SUMS | sed "s# \./# #" | sha256sum -c --status) || die "checksum mismatch: $NAME.tar.gz does not match SHA256SUMS"
 say "Checksum OK."
 tar -xzf "$TMP/$NAME.tar.gz" -C "$TMP"
@@ -239,7 +255,7 @@ install_flutter() {
   sb=$DATA/sandbox
   run install -d -m 700 -o xhaos -g xhaos "$sb" "$sb/home"
   flutter_at() {
-    if [ -d "$2/.git" ]; then as_user "$1" env HOME="$3" "$2/bin/flutter" upgrade >/dev/null
+    if xtest -d "$2/.git"; then as_user "$1" env HOME="$3" "$2/bin/flutter" upgrade >/dev/null
     else as_user "$1" git clone -q --depth 1 -b stable https://github.com/flutter/flutter.git "$2"
     fi
     as_user "$1" env HOME="$3" "$2/bin/flutter" --disable-analytics >/dev/null 2>&1 || true
@@ -308,10 +324,10 @@ c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1 vocabulary.json
 fetch_model() {
   run install -d -m 755 -o xhaos -g xhaos "$DICT" "$DICT/models" "$MODEL_DIR"
   printf '%s\n' "$MODEL_FILES" | while read -r sum file; do
-    if [ -f "$MODEL_DIR/$file" ] && [ "$(sha256sum "$MODEL_DIR/$file" | cut -c1-64)" = "$sum" ]; then continue; fi
+    if xtest -f "$MODEL_DIR/$file" && [ "$(xsum "$MODEL_DIR/$file")" = "$sum" ]; then continue; fi
     say "  downloading $file"
     as_user xhaos curl -fL --retry 3 -C - -s -o "$MODEL_DIR/$file.part" "$MODEL_BASE/$file" || die "model download failed: $file"
-    [ "$(sha256sum "$MODEL_DIR/$file.part" | cut -c1-64)" = "$sum" ] || { run rm -f "$MODEL_DIR/$file.part"; die "model checksum mismatch: $file"; }
+    [ "$(xsum "$MODEL_DIR/$file.part")" = "$sum" ] || { run rm -f "$MODEL_DIR/$file.part"; die "model checksum mismatch: $file"; }
     as_user xhaos mv "$MODEL_DIR/$file.part" "$MODEL_DIR/$file"
   done
 }
@@ -322,7 +338,7 @@ install_dictation() {
   [ -f "$NEW/dictation/stt.py" ] || die "this release has no dictation sidecar (dictation/stt.py)"
   run install -d -m 755 -o xhaos -g xhaos "$DICT"
   say "  faster-whisper (PyPI) in a virtualenv, $DICT/venv"
-  [ -x "$DICT/venv/bin/python" ] || as_user xhaos python3 -m venv "$DICT/venv"
+  xtest -x "$DICT/venv/bin/python" || as_user xhaos python3 -m venv "$DICT/venv"
   as_user xhaos "$DICT/venv/bin/pip" install -q --disable-pip-version-check --retries 8 --timeout 60 "faster-whisper==1.2.1"
   run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
   say "  Whisper large-v3-turbo (Hugging Face, 823 MB, checked file by file)"
@@ -371,7 +387,7 @@ part podman "$PODMAN" n "Rootless Podman with Docker Compose.
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
 # An installed sidecar follows the release it came with.
-if [ "$DICTATION" = yes ] && [ -f "$NEW/dictation/stt.py" ] && ! cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py"; then
+if [ "$DICTATION" = yes ] && [ -f "$NEW/dictation/stt.py" ] && ! run cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py"; then
   run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
 fi
 
