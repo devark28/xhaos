@@ -1,21 +1,24 @@
 // The Boards panel: the workspace's boards, the open one marked. A click opens
 // a board in the Draw tab (not on phones, which have no canvas). Rename,
 // Delete and Attach work from each row, open or not. Delete asks first, in
-// Xhaos's own dialog (Confirm.tsx).
+// Xhaos's own dialog (Confirm.tsx). A board an agent changed while it was not
+// showing carries a "changed by #N" mark, cleared by opening the board or by
+// its × (state/boards.ts).
 import { useState, type FormEvent } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { ConfirmDialog } from './Confirm.tsx';
 import { useApp, toast } from './state/store.ts';
-import { attachBoard, deleteBoard, openBoard, renameBoard } from './state/boards.ts';
+import { attachBoard, deleteBoard, dismissBoardChange, openBoard, renameBoard } from './state/boards.ts';
 import { useNarrow } from './narrow.ts';
-import { boardRows, deleteBoardText } from '../board.ts';
+import { boardRows, changedText, deleteBoardText } from '../board.ts';
 import type { BoardSummary } from '../types.ts';
 
 export function BoardList() {
   const boards = useApp(s => s.boards);
   const openId = useApp(s => s.boardId);
+  const changes = useApp(s => s.boardChanges);
   const narrow = useNarrow();
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
@@ -42,8 +45,9 @@ export function BoardList() {
     <div data-board-list {...stylex.props(styles.list)}>
       {rows.map(b => {
         const open = b.open && !narrow; // a phone has no canvas, so nothing is "open" there
+        const changedBy = changes[b.id];
         return (
-          <section key={b.id} data-board-row={b.id} data-open={open || undefined} {...stylex.props(styles.row, open && styles.rowOpen)}>
+          <section key={b.id} data-board-row={b.id} data-open={open || undefined} data-changed={changedBy ? '' : undefined} {...stylex.props(styles.row, open && styles.rowOpen)}>
             {editing === b.id ? (
               <form onSubmit={e => save(b, e)} {...stylex.props(styles.line)}>
                 <input aria-label="Board name" autoFocus value={draft} onChange={e => setDraft(e.target.value)}
@@ -57,6 +61,12 @@ export function BoardList() {
                   ? <span data-board-name {...stylex.props(styles.name)}>{b.name}</span>
                   : <button type="button" data-open-board={b.id} onClick={() => openBoard(b.id)} title="Open in Draw" {...stylex.props(styles.name, styles.open)}>{b.name}</button>}
                 {open && <span data-open-tag {...stylex.props(styles.tag)}>open</span>}
+                {changedBy && (
+                  <span data-changed-mark={b.id} {...stylex.props(styles.changed)}>
+                    <span {...stylex.props(styles.changedText)}>{changedText(changedBy)}</span>
+                    <button type="button" data-dismiss-change={b.id} aria-label={`Dismiss: ${b.name} ${changedText(changedBy)}`} title="Dismiss" onClick={() => dismissBoardChange(b.id)} {...stylex.props(styles.dismiss)}>×</button>
+                  </span>
+                )}
               </div>
             )}
             <div {...stylex.props(styles.actions)}>
@@ -83,6 +93,9 @@ const styles = stylex.create({
   name: { fontSize: 12, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, textAlign: 'left' },
   open: { backgroundColor: 'transparent', borderWidth: 0, padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit', textDecoration: { default: 'none', ':hover': 'underline' } },
   tag: { fontSize: 10, color: colors.brand, flexShrink: 0 },
+  changed: { display: 'inline-flex', alignItems: 'center', gap: 2, marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: colors.brandStrong, backgroundColor: colors.brandSoft, borderWidth: 1, borderStyle: 'solid', borderColor: colors.brandLine, borderRadius: 999, paddingTop: 1, paddingBottom: 1, paddingLeft: 6, paddingRight: 2 },
+  changedText: { whiteSpace: 'nowrap' },
+  dismiss: { backgroundColor: 'transparent', borderWidth: 0, padding: '0 4px', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit', fontSize: 12, lineHeight: 1, borderRadius: 999, ':hover': { backgroundColor: colors.brandSoft } },
   input: { flexGrow: 1, minWidth: 0, fontSize: 12, padding: '4px 6px', borderRadius: 4, borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint, backgroundColor: 'transparent', color: 'inherit' },
   actions: { display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 11 },
 });

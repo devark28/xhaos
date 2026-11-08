@@ -115,6 +115,46 @@ export function boardRows<T extends { id: number }>(list: readonly T[], openId: 
   return list.map(b => ({ ...b, open: b.id === openId }));
 }
 
+// noticeAgent is the agent behind a live board notice ("agent-12" -> 12), or
+// null for a save from a page.
+export function noticeAgent(source: string | undefined): number | null {
+  const m = /^agent-(\d+)$/.exec(source || '');
+  return m ? Number(m[1]) : null;
+}
+
+// markChanged records that an agent changed a board the owner is not looking
+// at (boardChanges: board -> the agents, in the order they changed it).
+// It returns the same object when nothing changes.
+export function markChanged(changes: Readonly<Record<number, number[]>>, boardId: number, agentId: number | null, showing: boolean): Record<number, number[]> {
+  if (agentId === null || showing) return changes as Record<number, number[]>;
+  const had = changes[boardId] || [];
+  if (had.includes(agentId)) return changes as Record<number, number[]>;
+  return { ...changes, [boardId]: [...had, agentId] };
+}
+
+// changedText is the Boards panel's mark: "changed by #12" or "changed by #12, #14".
+export const changedText = (agents: readonly number[]) => `changed by ${agents.map(a => `#${a}`).join(', ')}`;
+
+// BoardAdded is what an agent's finished board call did, for its transcript
+// line: "added a note to Board 2", linking to the board.
+export interface BoardAdded { id: number; name: string; added: string }
+
+// boardAdded reads a board call's result (board/tools.go: "Added <what> to
+// board #N "Name", ..." or "Created board #N "Name"."). The name is a Go
+// quoted string; one JSON cannot read stays as "board #N".
+export function boardAdded(tool: string, output: string): BoardAdded | null {
+  const m = /^(?:Added (.+?) to|Created) board #(\d+) ("(?:[^"\\]|\\.)*")/.exec(output || '');
+  if (!m) return null;
+  let name = `board #${m[2]}`;
+  try { name = JSON.parse(m[3]); } catch { /* keep "board #N" */ }
+  const what = m[1] || '';
+  let added: string;
+  if (tool === 'board_create') added = 'created';
+  else if (tool === 'board_add_image') added = `added an image${what.startsWith('image ') ? ` (${what.slice(6)})` : ''} to`;
+  else added = `added ${what || 'something'} to`;
+  return { id: Number(m[2]), name, added };
+}
+
 // deleteBoardText is what the delete dialog asks.
 export const deleteBoardText = (name: string) =>
   `Delete board '${name}'? Its drawing and images are removed for everyone in this workspace.`;

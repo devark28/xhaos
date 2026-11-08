@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boardRows, changedElements, deleteBoardText, dataURLBase64, dataURLFor, editOf, keepAppState, missingFiles, nextAfterDelete, nextUntitled, parseLegacyScene, referencedFiles, type SceneElement } from './board.ts';
+import { boardAdded, boardRows, changedElements, changedText, markChanged, noticeAgent, deleteBoardText, dataURLBase64, dataURLFor, editOf, keepAppState, missingFiles, nextAfterDelete, nextUntitled, parseLegacyScene, referencedFiles, type SceneElement } from './board.ts';
 
 const el = (id: string, version: number, versionNonce = 1, extra: Partial<SceneElement> = {}): SceneElement => ({ id, type: 'rectangle', version, versionNonce, ...extra });
 
@@ -76,4 +76,35 @@ test('the Boards panel marks only the open board', () => {
 
 test('the delete dialog names the board and says who loses it', () => {
   assert.equal(deleteBoardText('Untitled 3'), "Delete board 'Untitled 3'? Its drawing and images are removed for everyone in this workspace.");
+});
+
+test('a live notice names its agent only when an agent sent it', () => {
+  assert.equal(noticeAgent('agent-12'), 12);
+  assert.equal(noticeAgent('page-abc'), null);
+  assert.equal(noticeAgent(undefined), null);
+  assert.equal(noticeAgent('agent-12x'), null);
+});
+
+test('an agent change marks a board that is not showing, once per agent', () => {
+  const none: Record<number, number[]> = {};
+  assert.equal(markChanged(none, 2, 12, true), none, 'showing in Draw: no mark');
+  assert.equal(markChanged(none, 2, null, false), none, 'a page save: no mark');
+  const one = markChanged(none, 2, 12, false);
+  assert.deepEqual(one, { 2: [12] });
+  assert.deepEqual(none, {}, 'the old object is not changed');
+  assert.equal(markChanged(one, 2, 12, false), one, 'the same agent again: no change');
+  assert.deepEqual(markChanged(one, 2, 14, false), { 2: [12, 14] });
+  assert.deepEqual(markChanged(one, 3, 14, false), { 2: [12], 3: [14] });
+  assert.equal(changedText([12, 14]), 'changed by #12, #14');
+});
+
+test('a finished board call becomes "added … to <board>", linked by ID', () => {
+  assert.deepEqual(boardAdded('board_add_note', 'Added a note to board #2 "Board 2", at (0, 160), 200×80, as group g (3 elements). It shows on open pages now.'),
+    { id: 2, name: 'Board 2', added: 'added a note to' });
+  assert.deepEqual(boardAdded('board_add_image', 'Added image shot.png to board #2 "Board 2", at (240, 0), 120×80, as group g (3 elements).'),
+    { id: 2, name: 'Board 2', added: 'added an image (shot.png) to' });
+  assert.deepEqual(boardAdded('board_add_shapes', 'Added 3 shapes to board #5 "Flow \\"v2\\"", at (0, 0), 1×1, as group g (7 elements).'),
+    { id: 5, name: 'Flow "v2"', added: 'added 3 shapes to' });
+  assert.deepEqual(boardAdded('board_create', 'Created board #9 "Sketches".'), { id: 9, name: 'Sketches', added: 'created' });
+  assert.equal(boardAdded('board_add_note', 'there is no board #9'), null);
 });

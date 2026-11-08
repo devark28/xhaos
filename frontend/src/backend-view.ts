@@ -1,6 +1,7 @@
 // Turns backend state (snapshot + events) into the card tree the UI renders.
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
+import { boardAdded } from './board.ts';
 import type { Agent, Attachment, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, TranscriptPage, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
@@ -24,7 +25,8 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
   };
 }
 
-const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read', search: 'Search', write_file: 'Write', edit_file: 'Edit', bash: 'Run', channel_create: 'Open channel', channel_send: 'Send to', spawn_agent: 'Spawn' };
+const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read', search: 'Search', write_file: 'Write', edit_file: 'Edit', bash: 'Run', channel_create: 'Open channel', channel_send: 'Send to', spawn_agent: 'Spawn',
+  board_list: 'List', board_read: 'Read', board_create: 'Create board', board_add_note: 'Add a note to', board_add_image: 'Add an image to', board_add_shapes: 'Add shapes to' };
 const stateNotes: Record<string, string> = { pending: 'waiting for you', allowed: 'allowed', denied: 'denied', done: '', failed: 'failed' };
 
 // toolEntry renders one tool call's latest state. Pending calls show as an
@@ -35,6 +37,7 @@ function toolEntry(data: ToolData, seq: number): Entry {
     // A channel to agents outside the caller's family: who, and what they do.
     return { kind: 'approval', callId: data.callId, state: data.state, text: `Open channel ${data.summary}?`, command: data.preview || '', language: 'text', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
   }
+  if (data.name.startsWith('board_')) return boardEntry(data, seq);
   const write = data.effect === 'write';
   const verb = toolVerbs[data.name] || data.name;
   if (data.state === 'pending') {
@@ -51,6 +54,18 @@ function toolEntry(data: ToolData, seq: number): Entry {
     output: write && data.preview && data.state !== 'failed' ? data.preview : output,
     seq,
   };
+}
+
+// Board calls: the approval shows what will be added, as text (with the image
+// itself for board_add_image); afterwards the entry shows the result.
+function boardEntry(data: ToolData, seq: number): Entry {
+  const verb = toolVerbs[data.name] || data.name;
+  if (data.state === 'pending') {
+    return { kind: 'approval', callId: data.callId, state: data.state, text: `${verb} ${data.summary}?`, command: data.preview || data.summary, language: 'text', output: data.reason ? `Asking because ${data.reason}.` : '', stagedImage: data.name === 'board_add_image' || undefined, seq };
+  }
+  const note = data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : stateNotes[data.state] || data.state;
+  const board = data.state === 'done' ? boardAdded(data.name, data.output || '') ?? undefined : undefined;
+  return { kind: 'tool', callId: data.callId, state: data.state, text: `${verb}${note ? ` · ${note}` : ''}`, command: data.summary || '', output: data.state === 'denied' ? '' : data.output || '', board, seq };
 }
 
 // MCP calls: "Call <server> · <tool>", with their input as JSON.

@@ -43,6 +43,7 @@ export interface State {
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
   boards: BoardSummary[]; // the workspace's Draw boards, oldest first
   boardId: number | null; // the board open in the Draw tab
+  boardChanges: Record<number, number[]>; // boards agents changed while not shown: board -> agents (live only, not kept)
   openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
   layout: Layout;
@@ -101,6 +102,7 @@ function initial(): State {
     files: {},
     boards: [],
     boardId: null,
+    boardChanges: {},
     openDirs: new Set(),
     agentsOnly: false,
     layout: (() => { try { return (JSON.parse(localStorage.getItem('xhaos-appearance') || '{}').layout as Layout) || 'grid'; } catch { return 'grid' as Layout; } })(),
