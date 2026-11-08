@@ -1,5 +1,7 @@
 // The dictation waveform: a thin line across the composer, between the model
-// picker and the mic button. Hidden when idle. While listening it strokes in
+// picker and the mic button. It is a flex item in the composer's bottom row,
+// so the browser lays it out (at any text size or browser zoom); only its
+// bitmap follows its size. Hidden when idle. While listening it strokes in
 // from the right, stays flat in silence, and sends a bump leftward for each
 // burst of sound, sized by the input level after automatic gain. While the
 // take is transcribed it breathes slowly in place. One canvas draw per frame;
@@ -29,7 +31,7 @@ const BUSY_AMP = 0.35;        // the breathing line while transcribing, as a fra
 const BUSY_PERIOD_MS = 1600;  // one breath
 const HEIGHT = 22;            // CSS px of the band
 const DRAW_MS = 400;          // the draw-on at start
-const GAP = 6;                // CSS px between the line and each control
+const GAP = 6;                // CSS px between the line and the controls beside it
 
 interface Bump { at: number; amp: number; sign: number }
 
@@ -42,31 +44,6 @@ function profile(x: number): number {
   return base * ripple;
 }
 
-// place sizes the canvas to the span from the model picker's right edge (or the
-// attach button when the picker is hidden) to the left edge of the dictation
-// status when it shows, else the mic button, and centres it on the mic. The
-// status text sits between the line and the mic, so the line never runs under it.
-// In the DOM the picker comes before the status and the mic, so the span runs
-// left to right across the toolbar.
-function place(canvas: HTMLCanvasElement) {
-  const form = canvas.parentElement!;
-  const mic = document.getElementById('dictate');
-  const picker = document.getElementById('model-pick');
-  const status = document.getElementById('dictation-status');
-  const from = picker && picker.getClientRects().length ? picker : form.querySelector<HTMLElement>('[data-pick]');
-  if (!mic || !from) return;
-  const f = form.getBoundingClientRect(), a = from.getBoundingClientRect(), m = mic.getBoundingClientRect();
-  const shownStatus = status && status.getClientRects().length ? status.getBoundingClientRect() : null;
-  const stop = shownStatus ? shownStatus.left : m.left;
-  const left = a.right - f.left + GAP, width = stop - f.left - GAP - left;
-  if (width < 24) { canvas.style.width = '0px'; return; }
-  const middle = m.top + m.height / 2 - f.top;
-  const dpr = globalThis.devicePixelRatio || 1;
-  Object.assign(canvas.style, { left: `${left}px`, top: `${middle - HEIGHT / 2}px`, width: `${width}px`, height: `${HEIGHT}px` });
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(HEIGHT * dpr);
-}
-
 export function Waveform() {
   const recording = useApp(s => s.recording);
   const transcribing = useApp(s => s.transcribing);
@@ -77,14 +54,27 @@ export function Waveform() {
   const live = useRef(false);
   useEffect(() => { live.current = recording; }, [recording]);
 
-  // Keep the span right while the composer, the picker or the mic change size.
+  // The bitmap matches the canvas's size in device pixels, so the line stays
+  // sharp; the layout itself is CSS's.
   useLayoutEffect(() => {
     if (!shown) return;
     const el = canvas.current!;
-    place(el);
-    const watch = new ResizeObserver(() => place(el));
-    for (const target of [el.parentElement, document.getElementById('model-pick'), document.getElementById('dictate'), document.getElementById('dictation-status')]) if (target) watch.observe(target);
-    return () => watch.disconnect();
+    // On-screen size (CSS zoom included) times the screen's density (browser
+    // zoom included): the device pixels the line covers.
+    const fit = () => {
+      const r = el.getBoundingClientRect(), d = globalThis.devicePixelRatio || 1;
+      const w = Math.max(1, Math.round(r.width * d)), h = Math.max(1, Math.round(r.height * d));
+      if (el.width !== w) el.width = w;
+      if (el.height !== h) el.height = h;
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    watch.observe(el);
+    // Browser zoom and moving to another screen change the density alone.
+    let density: MediaQueryList | null = null;
+    const onDensity = () => { density?.removeEventListener('change', onDensity); fit(); density = matchMedia(`(resolution: ${globalThis.devicePixelRatio || 1}dppx)`); density.addEventListener('change', onDensity); };
+    onDensity();
+    return () => { watch.disconnect(); density?.removeEventListener('change', onDensity); };
   }, [shown]);
 
   // The loop runs only while the line is shown, and only while the page is visible.
@@ -110,7 +100,8 @@ export function Waveform() {
     const centre = (b: Bump, now: number) => 1 - ((now - b.at) / 1000) * BUMP_SPEED;
 
     const paint = (now: number) => {
-      const w = el.width, h = el.height, dpr = globalThis.devicePixelRatio || 1;
+      // Bitmap pixels per CSS pixel: the screen's density times any zoom.
+      const w = el.width, h = el.height, dpr = el.width / Math.max(1, el.clientWidth);
       const listening = live.current;
       const level = listening ? rms() : 0;
       const gain = gainOf(level);
@@ -175,7 +166,16 @@ export function Waveform() {
 
 const wave = stylex.create({
   root: {
-    position: 'absolute',
+    // Width and basis 0, grown into the free space: a canvas's natural width
+    // is its bitmap's, which follows the canvas, so letting it count would
+    // widen the row (and the composer) every time the bitmap is resized.
+    width: 0,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    height: HEIGHT,
+    marginInline: GAP,
     pointerEvents: 'none',
     color: colors.brand,
   },

@@ -24,6 +24,7 @@ import { Waveform } from './Waveform.tsx';
 import { DictationStatus, dictateStyles } from './DictationStatus.tsx';
 import type { XhaosInput } from '../rich-input.ts';
 import { useNarrow } from './narrow.ts';
+import { zoomOf } from './zoom.ts';
 
 // JSX knows <xhaos-input> (defined in rich-input.ts).
 declare module 'react' {
@@ -101,8 +102,9 @@ function CommandMenu() {
   useLayoutEffect(() => {
     const el = menu.current;
     if (!el || !items.length) return;
-    const form = el.parentElement!.getBoundingClientRect();
-    const below = window.innerHeight - form.bottom - 12, above = form.top - 12;
+    const form = el.parentElement!.getBoundingClientRect(), z = zoomOf(el.parentElement!);
+    // Room in screen pixels, turned into the menu's own (zoomed) pixels.
+    const below = (window.innerHeight - form.bottom - 12) / z, above = (form.top - 12) / z;
     const upward = !(below >= Math.min(160, el.scrollHeight) || below >= above);
     const maxHeight = Math.min(300, upward ? above : below);
     if (upward !== place.upward || maxHeight !== place.maxHeight) setPlace({ upward, maxHeight });
@@ -174,11 +176,14 @@ function ComposerForm() {
       <xhaos-input ref={input} id="command" contentEditable="true" role="textbox" aria-multiline="true" aria-label="Agent command"
         data-placeholder={composerPlaceholder([...selected], projectName)} spellCheck="true" suppressContentEditableWarning {...stylex.props(form.input)} />
       <PendingFiles />
+      {/* The bottom row: attach and model, the dictation line, then the mic and send. */}
+      <div {...stylex.props(form.bar)}>
       <div data-editor="command" {...stylex.props(form.tools)}>
         <Button data-pick title="Attach files" aria-label="Attach files" onClick={() => files.current?.click()} sx={form.pick}>＋</Button>
         <input ref={files} type="file" data-files multiple hidden onChange={event => { addFiles([...(event.target.files || [])]); event.target.value = ''; }} />
         <ModelPicker />
       </div>
+      <Waveform />
       <div {...stylex.props(form.actions)}>
         <DictationStatus />
         {dictationEnabled !== null && (
@@ -192,8 +197,8 @@ function ComposerForm() {
         )}
         <Button variant="send" type="submit" id="send" aria-label="Send command"><Icon name="send" size={15} /></Button>
       </div>
+      </div>
       <CommandMenu />
-      <Waveform />
     </form>
   );
 }
@@ -280,10 +285,12 @@ const form = stylex.create({
   files: { display: 'flex', flexWrap: 'nowrap', gap: 5, maxHeight: 26, overflow: 'auto', flexShrink: 0 },
   file: { display: 'inline-flex', alignItems: 'center', gap: 6, backgroundColor: colors.selected, borderRadius: 3, paddingBlock: 3, paddingInline: 6, fontSize: 10, flexShrink: 0, maxWidth: 260 },
   fileSize: { color: colors.textFaint, fontSize: 9, marginLeft: 4 },
-  tools: { display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0, overflowX: 'auto', scrollbarWidth: 'thin', marginRight: 76, minHeight: 28 },
+  bar: { display: 'flex', alignItems: 'center', minWidth: 0, flexShrink: 0 },
+  // At most 60% of the row, so a long model name leaves room for the line.
+  tools: { display: 'flex', alignItems: 'center', gap: 3, flexShrink: 1, minWidth: 0, maxWidth: '60%', overflowX: 'auto', scrollbarWidth: 'thin', minHeight: 28 },
   pick: { fontSize: 18, width: 26, height: 26, padding: 0, margin: 0, color: colors.textDim },
-  model: { maxWidth: '65%', marginLeft: 8, fontSize: 10, backgroundColor: 'transparent', color: colors.textSub, borderWidth: 0, paddingBlock: 6, paddingInline: 4 },
-  actions: { position: 'absolute', bottom: 9, right: 9, display: 'flex', gap: 8, alignItems: 'center' },
+  model: { minWidth: 0, maxWidth: '100%', textOverflow: 'ellipsis', marginLeft: 8, fontSize: 10, backgroundColor: 'transparent', color: colors.textSub, borderWidth: 0, paddingBlock: 6, paddingInline: 4 },
+  actions: { display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0, marginLeft: 'auto' },
   menu: {
     position: 'absolute',
     left: 0,
