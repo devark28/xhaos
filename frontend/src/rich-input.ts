@@ -49,14 +49,38 @@ export class XhaosInput extends Base {
   savedRange: Range | null = null;
   moveCaretOnFocus = false;
   private onSelection = () => this.captureSelection();
+  // After any edit (an undo or redo, a paste, a change made in code) the
+  // field scrolls to the caret: browsers restore an undone edit without
+  // scrolling the field there, so it could happen out of sight.
+  private onEdited = () => requestAnimationFrame(() => this.revealCaret());
 
   connectedCallback() {
     document.addEventListener('selectionchange', this.onSelection);
     this.addEventListener('focusout', this.onSelection);
+    this.addEventListener('input', this.onEdited);
   }
   disconnectedCallback() {
     document.removeEventListener('selectionchange', this.onSelection);
     this.removeEventListener('focusout', this.onSelection);
+    this.removeEventListener('input', this.onEdited);
+  }
+  // revealCaret scrolls the field (only) just enough to show the caret.
+  revealCaret() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || document.activeElement !== this) return;
+    const range = selection.getRangeAt(0);
+    if (!this.contains(range.endContainer)) return;
+    const end = range.cloneRange();
+    end.collapse(false);
+    let caret = end.getClientRects()[0] || end.getBoundingClientRect();
+    if (!caret || (caret.top === 0 && caret.bottom === 0)) {
+      const node = end.endContainer.nodeType === Node.ELEMENT_NODE ? end.endContainer as Element : end.endContainer.parentElement;
+      if (!node) return;
+      caret = node.getBoundingClientRect();
+    }
+    const box = this.getBoundingClientRect();
+    if (caret.bottom > box.bottom) this.scrollTop += caret.bottom - box.bottom + 4;
+    else if (caret.top < box.top) this.scrollTop -= box.top - caret.top + 4;
   }
   captureSelection() {
     const selection = window.getSelection();
@@ -132,6 +156,20 @@ export class XhaosInput extends Base {
     all.selectNodeContents(this);
     selection.removeAllRanges(); selection.addRange(all);
     return text ? document.execCommand('insertHTML', false, markdown(text)) : document.execCommand('delete');
+  }
+  // pasteText puts pasted plain text at the caret as its own undo step.
+  // insertText would let Chrome merge it with the typing around it into one
+  // step; insertHTML (with the text escaped) is a separate one everywhere.
+  pasteText(text: string) {
+    const selection = window.getSelection();
+    if (!selection) return;
+    if (!selection.rangeCount) this.placeCaretAtEnd();
+    const html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r\n?/g, '\n').replace(/\n/g, '<br>');
+    if (this.contains(selection.getRangeAt(0).commonAncestorContainer) && document.execCommand('insertHTML', false, html)) {
+      this.captureSelection();
+      return;
+    }
+    this.insertText(text);
   }
   // insertText types text at the caret as the browser would (undoable, and it
   // fires the input event); hand-made DOM edits are the fallback.

@@ -21,7 +21,7 @@ export function bindEditor(input: XhaosInput, holder: HTMLElement, { addFiles, s
   // Pasted text goes in like typing, so Ctrl+Z undoes the paste itself.
   const insertText = (text: string) => {
     input.focus();
-    input.insertText(text); // fires input, which runs changed()
+    input.pasteText(text); // its own undo step; fires input, which runs changed()
   };
   const pasteOrDrop = (data: DataTransfer) => {
     if (data.files.length) { addFiles([...data.files]); return; }
