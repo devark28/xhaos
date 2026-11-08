@@ -35,7 +35,9 @@ interface Session {
 let phase: Phase = 'idle';
 let session: Session | null = null;
 let measuredRate: number | undefined; // seconds of work per second of speech, from the last timed take
-const RATE_MIN_SECONDS = 3; // shorter takes are mostly the sidecar's start-up, so they do not time the rate
+// Shorter takes are mostly the sidecar's start-up (it loads the model per take),
+// so only a take this long times the rate.
+const RATE_MIN_SECONDS = 30;
 
 // levelAnalyser is the live input's analyser (for the waveform), or null.
 // It is read per frame by the waveform; it is not store state.
@@ -133,8 +135,8 @@ async function finish(reason?: string) {
   try {
     if (s.samples < MIN_SAMPLES) { toast(said('Nothing recorded. Hold the mic a little longer.')); return; }
     const estimate = transcribeEstimate(length, measuredRate);
-    update(d => { d.transcribing = true; d.transcribeEstimate = estimate; });
-    toast(said(transcribingText(estimate)));
+    update(d => { d.transcribing = true; d.transcribeEstimate = estimate; d.transcribingSince = Date.now(); });
+    toast(said(transcribingText(0, estimate)));
     const started = performance.now();
     const text = String(await call<string>('dictation', 'Transcribe', s.workspace, utteranceBase64(s.chunks)) ?? '').trim();
     if (length >= RATE_MIN_SECONDS) measuredRate = (performance.now() - started) / 1000 / length;
@@ -144,7 +146,7 @@ async function finish(reason?: string) {
     toast(`Dictation failed: ${errorText(error)}`);
   } finally {
     phase = 'idle';
-    update(d => { d.transcribing = false; });
+    update(d => { d.transcribing = false; d.transcribingSince = 0; });
   }
 }
 

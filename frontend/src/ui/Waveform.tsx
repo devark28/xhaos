@@ -43,17 +43,22 @@ function profile(x: number): number {
 }
 
 // place sizes the canvas to the span from the model picker's right edge (or the
-// attach button when the picker is hidden) to the mic button's left edge, and
-// centres it on the mic. In the DOM the picker comes before the mic, so the
-// span runs left to right across the toolbar.
+// attach button when the picker is hidden) to the left edge of the dictation
+// status when it shows, else the mic button, and centres it on the mic. The
+// status text sits between the line and the mic, so the line never runs under it.
+// In the DOM the picker comes before the status and the mic, so the span runs
+// left to right across the toolbar.
 function place(canvas: HTMLCanvasElement) {
   const form = canvas.parentElement!;
   const mic = document.getElementById('dictate');
   const picker = document.getElementById('model-pick');
+  const status = document.getElementById('dictation-status');
   const from = picker && picker.getClientRects().length ? picker : form.querySelector<HTMLElement>('[data-pick]');
   if (!mic || !from) return;
   const f = form.getBoundingClientRect(), a = from.getBoundingClientRect(), m = mic.getBoundingClientRect();
-  const left = a.right - f.left + GAP, width = m.left - f.left - GAP - left;
+  const shownStatus = status && status.getClientRects().length ? status.getBoundingClientRect() : null;
+  const stop = shownStatus ? shownStatus.left : m.left;
+  const left = a.right - f.left + GAP, width = stop - f.left - GAP - left;
   if (width < 24) { canvas.style.width = '0px'; return; }
   const middle = m.top + m.height / 2 - f.top;
   const dpr = globalThis.devicePixelRatio || 1;
@@ -78,7 +83,7 @@ export function Waveform() {
     const el = canvas.current!;
     place(el);
     const watch = new ResizeObserver(() => place(el));
-    for (const target of [el.parentElement, document.getElementById('model-pick'), document.getElementById('dictate')]) if (target) watch.observe(target);
+    for (const target of [el.parentElement, document.getElementById('model-pick'), document.getElementById('dictate'), document.getElementById('dictation-status')]) if (target) watch.observe(target);
     return () => watch.disconnect();
   }, [shown]);
 

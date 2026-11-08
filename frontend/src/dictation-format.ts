@@ -21,9 +21,11 @@ export function recordingTimer(elapsed: number, cap = DICTATION_MAX_SECONDS): { 
   return { text: `${clock(e)} · ${clock(cap - e)} left`, nearCap: true };
 }
 
-// DEFAULT_RATE is the sidecar's speed assumed until a take has been timed: half
-// a second of work per second of speech, the slope of its time limit.
-export const DEFAULT_RATE = 0.5;
+// DEFAULT_RATE is the sidecar's speed assumed until a take has been timed: 15 s
+// of work per minute of speech (large-v3-turbo on a laptop CPU measured about
+// 14 s per minute). It is not the server's time limit, which is 15 s plus half
+// the take's length.
+export const DEFAULT_RATE = 0.25;
 
 // transcribeEstimate is the "about N s" for a take of lengthSeconds. rate is the
 // seconds of work per second of speech, measured on an earlier take.
@@ -31,8 +33,9 @@ export function transcribeEstimate(lengthSeconds: number, rate = DEFAULT_RATE): 
   return Math.max(1, Math.round(lengthSeconds * rate));
 }
 
-export function transcribingText(estimate: number): string {
-  return `Transcribing… (about ${estimate} s)`;
+// transcribingText shows the elapsed time counting up against the estimate.
+export function transcribingText(elapsed: number, estimate: number): string {
+  return `Transcribing… ${Math.max(0, Math.floor(elapsed))} s of about ${estimate} s`;
 }
 
 // emptyText is the message for a take whose transcript is empty. Timeouts and
@@ -56,4 +59,24 @@ export function gainTracker(floor: number): (level: number) => number {
     if (peak <= 0) return 1;
     return Math.min(MAX_GAIN, Math.max(1, GAIN_TARGET / peak));
   };
+}
+
+// HINT_MAX is the most characters of hints the server keeps (app/dictation).
+export const HINT_MAX = 1000;
+// HINT_WORDS is about how far the model reads the hints: faster-whisper keeps
+// 223 tokens of them, and about 150 words fit that. Names and jargon cost
+// several tokens each, so fewer words can already be too many. This counts
+// words, not tokens, which the browser cannot do exactly.
+export const HINT_WORDS = 150;
+
+// hintWords counts the words in the hints.
+export function hintWords(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+// hintWarning is the note under the hints box when the model would ignore the
+// end of them, or "" when the hints fit.
+export function hintWarning(text: string): string {
+  if (hintWords(text) <= HINT_WORDS) return '';
+  return `The model reads only about the first ${HINT_WORDS} words of these hints. The rest will be ignored.`;
 }

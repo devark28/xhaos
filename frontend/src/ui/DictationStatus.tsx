@@ -1,6 +1,8 @@
 // The dictation status beside the mic: the timer while listening (from 4:30,
-// with the time left before the cap) and the estimate while transcribing. The
-// mic itself is disabled and spins while the take is transcribed.
+// with the time left before the cap), and while transcribing the time so far
+// against the estimate. It is one element that stays in place, hidden when idle,
+// so the waveform can keep clear of it. The mic itself is disabled and spins
+// while the take is transcribed.
 import { useEffect, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { useApp } from './state/store.ts';
@@ -11,20 +13,24 @@ export function DictationStatus() {
   const recording = useApp(s => s.recording);
   const since = useApp(s => s.recordingSince);
   const transcribing = useApp(s => s.transcribing);
+  const transcribedSince = useApp(s => s.transcribingSince);
   const estimate = useApp(s => s.transcribeEstimate);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!recording) return;
+    if (!recording && !transcribing) return;
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
-  }, [recording, since]);
+  }, [recording, since, transcribing, transcribedSince]);
   if (recording) {
     const t = recordingTimer((now - since) / 1000);
-    return <span aria-label="Recording time" data-dictation-timer {...stylex.props(s.status, t.nearCap && s.near)}>{t.text}</span>;
+    return <span id="dictation-status" aria-label="Recording time" data-dictation-timer role="status" {...stylex.props(s.status, t.nearCap && s.near)}>{t.text}</span>;
   }
-  if (transcribing) return <span role="status" {...stylex.props(s.status)}>{transcribingText(estimate)}</span>;
-  return null;
+  if (transcribing) {
+    const elapsed = (now - transcribedSince) / 1000;
+    return <span id="dictation-status" role="status" {...stylex.props(s.status)}>{transcribingText(elapsed, estimate)}</span>;
+  }
+  return <span id="dictation-status" role="status" hidden {...stylex.props(s.status)} />;
 }
 
 const spin = stylex.keyframes({ to: { transform: 'rotate(360deg)' } });

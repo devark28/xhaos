@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clock, recordingTimer, transcribeEstimate, transcribingText, emptyText, gainTracker, MAX_GAIN, GAIN_TARGET } from './dictation-format.ts';
+import { clock, recordingTimer, transcribeEstimate, transcribingText, emptyText, gainTracker, hintWarning, hintWords, HINT_WORDS, MAX_GAIN, GAIN_TARGET, DEFAULT_RATE } from './dictation-format.ts';
 
 test('clock formats seconds as m:ss', () => {
   assert.equal(clock(0), '0:00');
@@ -18,9 +18,11 @@ test('the timer shows elapsed time, and the time left from 4:30', () => {
   assert.deepEqual(recordingTimer(312), { text: '5:00 · 0:00 left', nearCap: true });
 });
 
-test('the transcribing estimate is half the length by default, at least 1 s', () => {
-  assert.equal(transcribeEstimate(12), 6);
-  assert.equal(transcribeEstimate(300), 150);
+test('the transcribing estimate is 15 s per minute of speech by default, at least 1 s', () => {
+  assert.equal(DEFAULT_RATE, 0.25);
+  assert.equal(transcribeEstimate(60), 15);
+  assert.equal(transcribeEstimate(12), 3);
+  assert.equal(transcribeEstimate(300), 75);
   assert.equal(transcribeEstimate(0.5), 1);
 });
 
@@ -28,8 +30,20 @@ test('the transcribing estimate follows a measured rate', () => {
   assert.equal(transcribeEstimate(10, 2), 20);
 });
 
-test('the transcribing text keeps its words and adds the estimate', () => {
-  assert.equal(transcribingText(6), 'Transcribing… (about 6 s)');
+test('the transcribing text counts the elapsed time up against the estimate', () => {
+  assert.equal(transcribingText(0, 15), 'Transcribing… 0 s of about 15 s');
+  assert.equal(transcribingText(4.9, 15), 'Transcribing… 4 s of about 15 s');
+  assert.equal(transcribingText(-1, 15), 'Transcribing… 0 s of about 15 s');
+});
+
+test('the hint counter counts words, and the warning starts past 150', () => {
+  assert.equal(hintWords('  Xhaos,  Verlet and the Duo. '), 5);
+  assert.equal(hintWords(''), 0);
+  const fits = Array.from({ length: HINT_WORDS }, () => 'word').join(' ');
+  assert.equal(hintWarning(fits), '');
+  const over = `${fits} extra`;
+  assert.match(hintWarning(over), /first 150 words/);
+  assert.match(hintWarning(over), /ignored/);
 });
 
 test('the empty-transcript message names the length of the audio', () => {

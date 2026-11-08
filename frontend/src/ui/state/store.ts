@@ -60,6 +60,7 @@ export interface State {
   recordingSince: number; // when the take started (ms since the epoch), 0 when idle
   transcribing: boolean; // dictation is sending the take to the sidecar
   transcribeEstimate: number; // seconds, as shown while transcribing
+  transcribingSince: number; // when the take was sent (ms since the epoch), 0 when idle
   btw: Btw | null; // the latest side question
   toast: { message: string; id: number } | null;
 
@@ -112,6 +113,7 @@ function initial(): State {
     recordingSince: 0,
     transcribing: false,
     transcribeEstimate: 0,
+    transcribingSince: 0,
     btw: null,
     toast: null,
     questionAgentId: null,
