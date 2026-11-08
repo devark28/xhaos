@@ -11,7 +11,10 @@
 //     top-level agent's channel waits for your approval);
 //   - "ask": ask you a question with ask_user;
 //   - "write" or "note": write sim-notes.md (gated like any write);
-//   - "run": run `git status` (a read-only command).
+//   - "run": run `git status` (a read-only command);
+//   - "board": list the boards (creating one if there are none), add a note
+//     and a small diagram to the first, plus the image at "image <path>"
+//     when the task names one, then read the board back.
 //
 // A message from another agent gets one reply on its channel; replies are
 // marked so two simulated agents never answer each other forever. A
@@ -48,6 +51,8 @@ const replyMark = "(simulated reply) "
 
 var (
 	contactRE = regexp.MustCompile(`(?i)\b(?:contact|talk to|message)\s+#(\d+)`)
+	imageRE   = regexp.MustCompile(`(?i)\bimage\s+(\S+\.(?:png|jpe?g|gif|webp))\b`)
+	boardRE   = regexp.MustCompile(`#(\d+)`)
 	channelRE = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from agent #(\d+) \(([^)]*)\):\n`)
 )
 
@@ -215,6 +220,11 @@ func next(turn llm.Turn) llm.Result {
 			call(id("sub1"), "spawn_agent", map[string]any{"title": "Part 1", "task": "Part 1 of: " + subject + ". Survey the project and report what matters."}),
 			call(id("sub2"), "spawn_agent", map[string]any{"title": "Part 2", "task": "Part 2 of: " + subject + ". Check the details and report risks."}))
 	}
+	if wants(low, "board") && has(turn, "board_list") {
+		if r, ok := boardTurn(e, id, task); ok {
+			return r
+		}
+	}
 	if m := contactRE.FindStringSubmatch(task); m != nil && has(turn, "channel_create") && len(e.called("channel_create")) == 0 {
 		return use("Opening a channel with agent #"+m[1]+".",
 			call(id("contact"), "channel_create", map[string]any{"subject": "coordination: " + firstLine(task), "members": []int{atoi(m[1])},
@@ -257,6 +267,59 @@ func next(turn llm.Turn) llm.Result {
 		b.WriteString("\n\n| Step | Result |\n|---|---|\n" + rows)
 	}
 	return say(strings.TrimSpace(b.String()))
+}
+
+// boardTurn works on a board: list, create one if there is none, add a note
+// and a diagram (and an image the task names), then read it back. ok is
+// false once it is done, so the summary follows.
+func boardTurn(e episode, id func(string) string, task string) (llm.Result, bool) {
+	if len(e.called("board_list")) == 0 {
+		return use("Looking at the boards.", call(id("boards"), "board_list", map[string]any{})), true
+	}
+	listed, ok := e.result("board_list")
+	if !ok {
+		return llm.Result{}, false
+	}
+	m := boardRE.FindStringSubmatch(listed.Content)
+	if m == nil {
+		if len(e.called("board_create")) == 0 {
+			return use("There is no board yet; creating one.", call(id("create"), "board_create", map[string]any{"name": "Sim board"})), true
+		}
+		created, _ := e.result("board_create")
+		if m = boardRE.FindStringSubmatch(created.Content); m == nil {
+			return llm.Result{}, false
+		}
+	}
+	board := atoi(m[1])
+	if len(e.called("board_add_note")) == 0 {
+		calls := []llm.ToolCall{
+			call(id("note"), "board_add_note", map[string]any{"board": board, "text": "Simulated agent: " + firstLine(task)}),
+			call(id("shapes"), "board_add_shapes", map[string]any{"board": board, "shapes": []map[string]any{
+				{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60, "text": "Camera", "fill": "#a5d8ff"},
+				{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30},
+				{"type": "ellipse", "x": 260, "y": 0, "width": 140, "height": 60, "text": "Recorder"},
+			}}),
+		}
+		if im := imageRE.FindStringSubmatch(task); im != nil {
+			calls = append(calls, call(id("image"), "board_add_image", map[string]any{"board": board, "path": im[1], "caption": "From the simulated agent"}))
+		}
+		return use(fmt.Sprintf("Adding a note and a diagram to board #%d.", board), calls...), true
+	}
+	if len(e.called("board_read")) == 0 {
+		return use("Reading the board back.", call(id("read"), "board_read", map[string]any{"board": board})), true
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "**Simulated agent.** Worked on board #%d.\n\n| Step | Result |\n|---|---|\n", board)
+	for _, name := range []string{"board_create", "board_add_note", "board_add_shapes", "board_add_image", "board_read"} {
+		if r, ok := e.result(name); ok {
+			state := "done"
+			if r.IsError {
+				state = "refused: " + firstLine(r.Content)
+			}
+			fmt.Fprintf(&b, "| `%s` | %s |\n", name, strings.ReplaceAll(state, "|", "\\|"))
+		}
+	}
+	return say(strings.TrimSpace(b.String())), true
 }
 
 // parentCollects summarizes subagents' final answers once all have arrived.

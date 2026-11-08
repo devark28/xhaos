@@ -28,6 +28,8 @@ export interface Entry {
   attachments?: Attachment[];
   questionBatchId?: string;
   ask?: boolean; // an ask_user call (answered, not allowed)
+  stagedImage?: boolean; // a board_add_image waiting for approval: its card shows the image (board.Service.StagedImage)
+  board?: { id: number; name: string; added: string }; // a finished board write: "added a note to" the board, linked (board.ts boardAdded)
 }
 
 export interface QuestionOption {

@@ -220,6 +220,15 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	runner.Extras = append(runner.Extras, skill.NewTools(skills))
 	webs := web.NewService(db, box)
 	runner.Extras = append(runner.Extras, web.NewTools(webs))
+	boards := board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards"))
+	// Agents read images for boards from their project (or its $TMPDIR).
+	boardTools := board.NewTools(boards, func(a agent.Agent) (string, error) {
+		if a.ProjectID == 0 || runner.ProjectRoot == nil {
+			return "", fmt.Errorf("agent #%d has no project to read images from", a.ID)
+		}
+		return runner.ProjectRoot(a.WorkspaceID, a.ProjectID)
+	})
+	runner.Extras = append(runner.Extras, boardTools)
 	risky := danger.NewService(store, store.Get)
 	runner.Guard = risky
 	risky.Root = func(a agent.Agent) (string, error) {
@@ -236,7 +245,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), memory.NewTools(memories).Catalog()...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...)...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -297,7 +306,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Channels:   channels,
 		Files:      attachment.NewService(files),
 		Memories:   memories,
-		Boards:     board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards")),
+		Boards:     boards,
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,

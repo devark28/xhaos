@@ -91,7 +91,7 @@ CREATE INDEX IF NOT EXISTS board_images_by_hash ON board_images (hash);`
 
 // Migrate creates the board tables. Run it after the workspace migration.
 func Migrate(db *sql.DB) error {
-	for _, stmt := range strings.Split(schema, ";\n") {
+	for _, stmt := range append(strings.Split(schema, ";\n"), stagedSchema) {
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
