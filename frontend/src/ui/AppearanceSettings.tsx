@@ -70,8 +70,40 @@ export function DeveloperSettings() {
         <Toggle name="samples" label="Sample agents" hint="Demo agents mixed into the page (never sent to the server). Same as /samples." on={samples} onChange={setSamples} />
       )}
       {a.developer === 'on' && <KeepRecordings />}
+      {a.developer === 'on' && <ClassifierLog />}
     </div>
   );
+}
+
+// ClassifierLog is the server-wide switch that writes every command decision
+// (the built-in list's and the model's) to classifier-debug/log.jsonl beside
+// the database. Off by default.
+function ClassifierLog() {
+  const [keep, setKeep] = useState<boolean | null>(null);
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    let current = true;
+    call<boolean>('classifier', 'DeveloperLog').then(
+      v => { if (current) setKeep(v); },
+      error => { if (current) setNote(errorText(error)); },
+    );
+    return () => { current = false; };
+  }, []);
+  const set = (on: boolean) => {
+    setNote('');
+    call('classifier', 'SetDeveloperLog', on).then(() => setKeep(on), error => setNote(errorText(error)));
+  };
+  const clear = () => {
+    if (!window.confirm('Delete the classifier log?')) return;
+    call('classifier', 'DeleteLog').then(() => setNote('Deleted.'), error => setNote(errorText(error)));
+  };
+  return <>
+    <Toggle name="classifier-log" label="Keep classifier decisions" hint="Off by default. When on, each command decision is written to a log beside the database: the time, the agent, the project, the command as written, the verdict, the reason, the latency and whether it came from the cache. Commands can name paths and projects: keep the log only while you need it." on={keep === true} onChange={set} />
+    <div {...stylex.props(s.actions)}>
+      <Button id="classifier-delete" disabled={keep === null} onClick={clear}>Delete the log</Button>
+      {note && <span {...stylex.props(s.note)}>{note}</span>}
+    </div>
+  </>;
 }
 
 // KeepRecordings is the server-wide switch that keeps each dictation take as a

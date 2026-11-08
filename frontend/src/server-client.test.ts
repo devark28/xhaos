@@ -49,6 +49,16 @@ test('a gap fetches the missed events before continuing', async () => {
   assert.equal(sync.seq, 6);
 });
 
+test('a call the local classifier allowed shows its reason on the card', async () => {
+  const { viewFromSnapshot, applyEvent } = await import('./backend-view.ts');
+  const view = viewFromSnapshot({ workspace: { id: 'default', name: 'Default' }, agents: [{ id: 1, title: 't', status: 'attention' }], transcript: [] });
+  const reason = 'allowed by the local classifier: go test is a build step';
+  applyEvent(view, { seq: 1, agentId: 1, kind: 'agent.tool', data: { callId: 'c2', name: 'bash', effect: 'exec', summary: 'go test ./...', state: 'done', by: 'classifier', reason, output: 'ok' } });
+  const entry = view.agents[0].activity[0];
+  assert.equal(entry.kind, 'tool');
+  assert.equal(entry.text, `Run · ${reason}`);
+});
+
 test('tool events become one entry per call and track pending calls', async () => {
   const { viewFromSnapshot, applyEvent, pendingCalls } = await import('./backend-view.ts');
   const view = viewFromSnapshot({ workspace: { id: 'default', name: 'Default' }, agents: [{ id: 1, title: 't', status: 'attention' }], transcript: [
