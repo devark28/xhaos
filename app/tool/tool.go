@@ -98,8 +98,43 @@ func Specs() []llm.Tool {
 
 var effects = map[string]string{"list_dir": Read, "read_file": Read, "search": Read, "write_file": Write, "edit_file": Write, "bash": Exec, "ask_user": Ask}
 
-// commitRE spots commands that commit or push; policy treats them separately.
+// commitRE spots commands that commit or push, read as text; policy treats
+// them separately (see commitsOrPushes).
 var commitRE = regexp.MustCompile(`\bgit\b[^\n;&|]*\b(commit|push)\b`)
+
+// commitsOrPushes reports whether a command line commits or pushes. It reads
+// the shell words, so g'i't commit is a commit. The text check runs as well,
+// so the answer is never weaker than commitRE alone. A word with spaces is
+// read as a command line of its own (sh -c 'git commit …'), up to three levels.
+func commitsOrPushes(line string, depth int) bool {
+	if commitRE.MatchString(line) {
+		return true
+	}
+	cmds, ok := SimpleCommands(line)
+	if !ok {
+		return commitRE.MatchString(strings.NewReplacer(`'`, "", `"`, "", `\`, "", `$`, "").Replace(line))
+	}
+	for _, words := range cmds {
+		for i, w := range words {
+			if w != "git" && !strings.HasSuffix(w, "/git") {
+				continue
+			}
+			for _, a := range words[i+1:] {
+				if a == "commit" || a == "push" {
+					return true
+				}
+			}
+		}
+		if depth < 3 {
+			for _, w := range words {
+				if strings.ContainsAny(w, " \t") && commitsOrPushes(w, depth+1) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // Prepare validates a model's tool call against root. The error is meant for
 // the model: it says what was wrong so the next attempt can fix it.
@@ -129,7 +164,7 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 			return call, err
 		}
 		call.Summary = in.Command
-		call.Commit = commitRE.MatchString(in.Command)
+		call.Commit = commitsOrPushes(in.Command, 0)
 		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
 		for _, s := range in.Secrets {
 			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Secrets, s) {

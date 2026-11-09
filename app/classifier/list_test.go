@@ -78,6 +78,21 @@ func TestListed(t *testing.T) {
 		{"go vet ./... && gofmt -l . && go test ./...", "go vet, gofmt, go test"},
 		{"make lint || make test", "make"},
 		{"go build ./...; go test ./...", "go build, go test"},
+		// date, npm ls, pnpm ls, yarn list, make dry runs, reads beside a listed command
+		{"date", "date"},
+		{"date -u", "date"},
+		{"date +%Y-%m-%d", "date"},
+		{"npm ls", "npm ls"},
+		{"npm ls --depth=0", "npm ls"},
+		{"npm ls --all eslint", "npm ls"},
+		{"pnpm ls --depth 0", "pnpm ls"},
+		{"yarn list --depth=0", "yarn list"},
+		{"make -n test", "make"},
+		{"make --dry-run build", "make"},
+		{"echo ok && go build ./...", "go build"},
+		{"ls -la && npm test", "npm test"},
+		{"cat go.mod; go vet ./...", "go vet"},
+		{"echo start && go test ./... && echo done", "go test"},
 	}
 	for _, tc := range listed {
 		name, ok := Listed(tc.cmd)
@@ -220,6 +235,28 @@ func TestNotListed(t *testing.T) {
 		{"non-ASCII", "go test ./…"},
 		{"empty", ""},
 		{"spaces", "   "},
+		// date that sets, reads a file, or takes other arguments
+		{"date -s", "date -s 2020-01-01"},
+		{"date -f", "date -f dates.txt"},
+		{"date -d", "date -d yesterday"},
+		{"date -r", "date -r go.mod"},
+		{"date word", "date now"},
+		{"date format with a dollar", "date +$HOME"},
+		// npm ls with other flags, and dry runs of other targets
+		{"npm ls global", "npm ls --global"},
+		{"npm ls dash", "npm ls -- x"},
+		{"npm ls path", "npm ls ../x"},
+		{"make -n deploy", "make -n deploy"},
+		{"make -n with a variable", "make -n CC=gcc test"},
+		// a read beside a listed command: refused when the read is not one
+		{"echo alone", "echo ok"},
+		{"echo and an unlisted command", "echo ok && rm -rf x"},
+		{"read outside the project", "cat /etc/passwd && go build ./..."},
+		{"read with a glob", "echo * && go build ./..."},
+		{"sort -o beside a listed command", "sort -o out.txt go.mod && go build ./..."},
+		{"echo after a pipe", "go test ./... | echo ok"},
+		{"git status beside a listed command", "git status && go build ./..."},
+		{"read with an output redirect", "echo ok > out.txt && go build ./..."},
 	}
 	for _, tc := range cases {
 		if name, ok := Listed(tc.cmd); ok {
@@ -266,7 +303,7 @@ func TestAllowed(t *testing.T) {
 	}
 	// Every listed example still has to pass the floor on its own: none of
 	// them is refused by it (the list never covers what the floor refuses).
-	for _, cmd := range []string{"go test ./... 2>&1 | tail -40", "make -j8 build", "shellcheck scripts/*.sh", "npm run build && npm test"} {
+	for _, cmd := range []string{"go test ./... 2>&1 | tail -40", "make -j8 build", "shellcheck scripts/*.sh", "npm run build && npm test", "echo ok && go build ./...", "date -u +%F", "npm ls --depth=0", "make -n test"} {
 		c := ok
 		c.Command = cmd
 		if _, allowed := Allowed(c); !allowed {

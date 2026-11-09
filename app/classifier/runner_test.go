@@ -124,6 +124,33 @@ func TestRunnerListedWithTheDirectFlagRules(t *testing.T) {
 	}
 }
 
+// A read beside a runner's listed command is refused: the runner can download
+// a package, and the read is not judged in the same line. The same read beside
+// a runner-free listed command is still taken.
+func TestRunnerIsNotListedBesideARead(t *testing.T) {
+	root := t.TempDir()
+	installTools(t, root, "tsc", "eslint")
+	refused := []string{
+		"true; npx eslint .",
+		"true && npx eslint etc-link",
+		"echo ok && npx tsc --noEmit",
+		"npx tsc --noEmit && echo done",
+		"echo ok | head && npx tsc --noEmit",
+	}
+	for _, cmd := range refused {
+		if name, ok := ListedIn(root, cmd); ok {
+			t.Errorf("ListedIn(%q) listed as %q, want refused", cmd, name)
+		}
+	}
+	if name, ok := ListedIn(root, "echo ok && go build ./..."); !ok || name != "go build" {
+		t.Errorf("ListedIn(read beside go build) = %q, %v; want go build, true", name, ok)
+	}
+	if name, ok := ListedIn(root, "npx tsc --noEmit | head"); !ok || name != "npx tsc --noEmit" {
+		// a filter after a pipe is not a read beside the command
+		t.Errorf("ListedIn(npx with a filter) = %q, %v; want listed", name, ok)
+	}
+}
+
 func TestRunnerIsNeverAskedOfTheModel(t *testing.T) {
 	root := t.TempDir()
 	installTools(t, root, "tsc")

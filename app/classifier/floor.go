@@ -39,6 +39,10 @@ var floor = []rule{
 	{"it uses brace expansion, which can build any word", func(c parsed) bool { return anyWord(c, braceExpansion) }},
 	{"it uses eval", func(c parsed) bool { return anyWord(c, word("eval")) }},
 	{"it pipes text into a shell", func(c parsed) bool { return pipeToShell.MatchString(c.plain) }},
+	{"it has a non-ASCII character in a word, which can be a look-alike of a command name (a Cyrillic о in go)", func(c parsed) bool {
+		return anyWord(c, nonASCII)
+	}},
+	{"sh, bash or zsh with -c runs its text as a new command", func(c parsed) bool { return eachArgs(c, is(shellNames...), shellRunsText) }},
 	{"sudo runs commands as another user", func(c parsed) bool { return anyWord(c, is("sudo", "su", "doas")) }},
 	{"rm -r deletes whole folders", func(c parsed) bool { return after(c, is("rm"), recursiveFlag("r", "R")) }},
 	{"git clean deletes untracked files", func(c parsed) bool { return after(c, is("git"), word("clean")) }},
@@ -75,6 +79,32 @@ var floor = []rule{
 	{"it fetches or changes Go modules, or runs a make install, deploy, publish or release target", func(c parsed) bool {
 		return after(c, is("go"), word("get")) || after(c, is("make"), word("install", "deploy", "publish", "release"))
 	}},
+	{"it runs a program named by a file, or code given on the command line (node, python, deno, cargo run, go run, go generate)", func(c parsed) bool {
+		return eachArgs(c, nodeName, nodeRuns) || eachArgs(c, pythonName, pythonRuns) ||
+			sub(c, is("deno"), "run", "eval", "x", "install") || sub(c, is("cargo"), "run") ||
+			sub(c, is("go"), "run", "generate")
+	}},
+	{"it changes project files in bulk (go fmt, go fix, --write, --fix, -w, -o, --output, --outdir)", func(c parsed) bool {
+		return sub(c, is("go"), "fmt", "fix") || after(c, is("prettier", "gofmt", "goimports"), word("-w")) ||
+			anyWord(c, flagIs("--write", "--fix", "--outdir", "--output")) || outputFlag(c)
+	}},
+	{"sed -i and --in-place change files in place", func(c parsed) bool { return after(c, is("sed"), inPlace) }},
+	{"rg --pre and --pre-glob run a program on each file", func(c parsed) bool { return after(c, is("rg", "ripgrep"), flagIs("--pre", "--pre-glob")) }},
+	{"sort --compress-program runs a program", func(c parsed) bool { return after(c, is("sort"), flagIs("--compress-program")) }},
+	{"git --ext-diff and --textconv run a diff program named by the project's git config", func(c parsed) bool {
+		return after(c, is("git"), flagIs("--ext-diff", "--textconv"))
+	}},
+	{"it downloads packages from the network (npm view, pip download, cargo fetch, go mod download)", func(c parsed) bool {
+		return sub(c, is("npm", "pnpm", "yarn", "bun"), "view", "info", "show", "search", "outdated", "audit", "update", "up", "exec", "x", "dlx") ||
+			sub(c, is("pip", "pip3"), "download", "index") ||
+			sub(c, is("cargo"), "search", "update", "fetch") ||
+			after2(c, is("go"), word("mod"), word("download"))
+	}},
+	{"git gc --prune and git reflog expire delete history that git could restore", func(c parsed) bool {
+		return after(c, is("git"), word("gc")) && anyWord(c, flagPrefix("--prune")) || after2(c, is("git"), word("reflog"), word("expire"))
+	}},
+	{"git stash drop and git stash clear delete stashed work", gitStashDelete},
+	{"env with an argument runs a program in a changed environment", func(c parsed) bool { return eachArgs(c, is("env"), envRuns) }},
 	{"it names a deploy, publish or release step", func(c parsed) bool { return anyWord(c, releaseName) }},
 	{"it names a path outside the project and $TMPDIR", func(c parsed) bool { return anyWord(c, outside) || cdHome(c) }},
 }
@@ -233,6 +263,196 @@ func after2(c parsed, first, second, third func(string) bool) bool {
 					}
 				}
 			}
+		}
+	}
+	return false
+}
+
+// sub reports whether one of subs is among the first two words after a
+// program (flags skipped), so a global option such as go -C dir still shows
+// the subcommand.
+func sub(c parsed, prog func(string) bool, subs ...string) bool {
+	for _, seg := range c.segments {
+		for i, w := range seg {
+			if !prog(w) {
+				continue
+			}
+			n := 0
+			for _, v := range seg[i+1:] {
+				if strings.HasPrefix(v, "-") {
+					continue
+				}
+				if word(subs...)(v) {
+					return true
+				}
+				if n++; n == 2 {
+					break
+				}
+			}
+		}
+	}
+	return false
+}
+
+// eachArgs reports whether f is true for the words after any use of prog.
+func eachArgs(c parsed, prog func(string) bool, f func(args []string) bool) bool {
+	for _, seg := range c.segments {
+		for i, w := range seg {
+			if prog(w) && f(seg[i+1:]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var (
+	nodeBase   = regexp.MustCompile(`^node$`)
+	pythonBase = regexp.MustCompile(`^python[0-9.]*$`)
+)
+
+func nodeName(w string) bool   { return nodeBase.MatchString(path.Base(w)) }
+func pythonName(w string) bool { return pythonBase.MatchString(path.Base(w)) }
+
+// nodeRuns is true when node is given a file, "-", or code (-e, -p).
+func nodeRuns(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "-":
+			return true
+		case strings.HasPrefix(a, "--"):
+			if a == "--eval" || a == "--print" || strings.HasPrefix(a, "--eval=") || strings.HasPrefix(a, "--print=") {
+				return true
+			}
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsAny(a[1:], "ep") {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// pythonRuns is true when python is given a file, code (-c) or a module other
+// than pytest (-m pytest is the list's job, see list.go).
+func pythonRuns(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-m":
+			return !(i+1 < len(args) && args[i+1] == "pytest")
+		case a == "-mpytest":
+			return false
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsAny(a[1:], "cm") {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// envRuns is true when env is given anything but NAME=value assignments, so it
+// runs a program (bare env only prints).
+func envRuns(args []string) bool {
+	for _, a := range args {
+		if !strings.Contains(a, "=") {
+			return true
+		}
+	}
+	return false
+}
+
+// nonASCII matches a word with a character outside ASCII.
+func nonASCII(w string) bool { return strings.IndexFunc(w, func(r rune) bool { return r > 127 }) >= 0 }
+
+// shellNames are the shells whose -c flag runs a command given as text.
+var shellNames = []string{"sh", "bash", "zsh", "dash", "ksh", "fish"}
+
+// shellRunsText is true when a shell is given -c (also in a bundle such as
+// -lc) before any script file. -o and +o take a name, which is skipped.
+func shellRunsText(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-o" || a == "+o":
+			i++
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsRune(a[1:], 'c') {
+				return true
+			}
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// inPlace matches sed's -i (also -ni, -i.bak) and --in-place (also with =).
+func inPlace(w string) bool {
+	if w == "--in-place" || strings.HasPrefix(w, "--in-place=") {
+		return true
+	}
+	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.ContainsRune(w[1:], 'i')
+}
+
+// gitStashDelete is git stash followed, in the same command, by drop or clear
+// (git -C dir stash drop too).
+func gitStashDelete(c parsed) bool {
+	for _, seg := range c.segments {
+		for i, w := range seg {
+			if !is("git")(w) {
+				continue
+			}
+			for j, v := range seg[i+1:] {
+				if v == "stash" && hasWord(seg[i+1+j+1:], word("drop", "clear")) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// flagIs matches a word that is one of names, or name=value.
+func flagIs(names ...string) func(string) bool {
+	return func(w string) bool {
+		name, _, _ := strings.Cut(w, "=")
+		return word(names...)(name)
+	}
+}
+
+// flagPrefix matches a word starting with p.
+func flagPrefix(p string) func(string) bool {
+	return func(w string) bool { return strings.HasPrefix(w, p) }
+}
+
+// outputFlag reports -o (or -oFILE) in a command that is not mvn, where -o
+// means offline (the list allows it).
+func outputFlag(c parsed) bool {
+	for _, seg := range c.segments {
+		if hasWord(seg, is("mvn")) {
+			continue
+		}
+		for _, w := range seg {
+			if w == "-o" || (len(w) > 2 && strings.HasPrefix(w, "-o") && !strings.HasPrefix(w, "--")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasWord(words []string, m func(string) bool) bool {
+	for _, w := range words {
+		if m(w) {
+			return true
 		}
 	}
 	return false

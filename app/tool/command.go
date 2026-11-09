@@ -74,6 +74,13 @@ func ClassifyCommand(line string) string {
 	return class
 }
 
+// ReadWords reports whether one simple command, given as its words after shell
+// quoting, is Read by ClassifyCommand: a read command whose arguments stay
+// inside the project and that writes or runs nothing.
+func ReadWords(words []string) bool {
+	return len(words) > 0 && classifyWords(words) == Read
+}
+
 func classifyWords(words []string) string {
 	name := words[0]
 	if strings.Contains(name, "=") || strings.Contains(name, "/") {
@@ -90,6 +97,9 @@ func classifyWords(words []string) string {
 	if !readCommands[name] {
 		return Exec
 	}
+	if readRefused(name, words[1:]) {
+		return Exec
+	}
 	if name == "find" {
 		for _, w := range words[1:] {
 			if findWriters[w] {
@@ -98,6 +108,61 @@ func classifyWords(words []string) string {
 		}
 	}
 	return Read
+}
+
+// readRefusals are the options that turn a read command into one that writes
+// a file or runs another program. A read command with one of them waits for
+// the owner, like any other command.
+var readRefusals = map[string]struct {
+	long  []string // option names; a prefix of one (--out for --output) counts too
+	short string   // letters that refuse inside a -cluster (-o, -ro)
+}{
+	"sort": {long: []string{"--output", "--compress-program"}, short: "o"},
+	"tree": {short: "oR"},
+	"file": {long: []string{"--compile", "--magic-file"}, short: "Cm"},
+	"rg":   {long: []string{"--pre", "--pre-glob", "--hostname-bin"}},
+}
+
+// readRefused reports whether a read command's arguments write a file or run
+// a program: a refused option, or uniq given an output file (uniq INPUT
+// OUTPUT writes OUTPUT).
+func readRefused(name string, args []string) bool {
+	if name == "uniq" {
+		positional, endOpts := 0, false
+		for _, w := range args {
+			if !endOpts && w == "--" {
+				endOpts = true
+				continue
+			}
+			if endOpts || !strings.HasPrefix(w, "-") || len(w) == 1 {
+				positional++
+			}
+		}
+		return positional > 1
+	}
+	r, ok := readRefusals[name]
+	if !ok {
+		return false
+	}
+	for _, w := range args {
+		if w == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(w, "--"):
+			opt, _, _ := strings.Cut(w, "=")
+			for _, long := range r.long {
+				if len(opt) >= 3 && strings.HasPrefix(long, opt) {
+					return true
+				}
+			}
+		case len(w) > 1 && strings.HasPrefix(w, "-"):
+			if strings.ContainsAny(w[1:], r.short) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func classifyGit(args []string) string {
@@ -109,7 +174,7 @@ func classifyGit(args []string) string {
 		return Exec // git -C, -c, --git-dir, ...: options that change where or how git runs
 	}
 	for _, a := range rest {
-		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" {
+		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" || a == "--textconv" {
 			return Exec
 		}
 	}
@@ -198,6 +263,23 @@ func splitCommands(line string) []string {
 		}
 	}
 	return append(parts, cur.String())
+}
+
+// SimpleCommands splits a command line into its simple commands, each as
+// shell words with the quotes removed (so g'i't and "git" read as git). ok is
+// false when the line cannot be read safely (see shellWords); callers must then
+// treat the line as unknown.
+func SimpleCommands(line string) (cmds [][]string, ok bool) {
+	for _, part := range splitCommands(line) {
+		words, ok := shellWords(part)
+		if !ok {
+			return nil, false
+		}
+		if len(words) > 0 {
+			cmds = append(cmds, words)
+		}
+	}
+	return cmds, true
 }
 
 // shellWords splits one simple command into words, honoring quotes. It fails

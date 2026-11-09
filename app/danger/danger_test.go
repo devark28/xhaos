@@ -60,6 +60,43 @@ func TestCheckCommand(t *testing.T) {
 	}
 }
 
+// Quoted, escaped and nested forms of git push and git branch are read as
+// the same commands: the shell runs them, so the check must too.
+func TestCheckCommandReadsQuotedForms(t *testing.T) {
+	refused := []string{
+		"gi''t push --force origin main",
+		"g'i't push --force origin main",
+		`"git" push --force origin main`,
+		`git "push" --force origin main`,
+		`g\it push -f origin feat/x`,
+		"'git' push origin main",
+		"/usr/bin/git push origin main",
+		`"git" branch -D x`,
+		"g''it branch -d x",
+		`git "branch" -D x`,
+		`git -C . "push" origin HEAD:main`,
+		`sh -c 'git push --force origin main'`,
+		`bash -c "gi''t push origin main"`,
+		"echo ok && 'git' push origin release-1",
+	}
+	for _, c := range refused {
+		if why := CheckCommand(c); why == "" {
+			t.Errorf("%q allowed", c)
+		}
+	}
+	// Feature-branch work in quoted forms still passes.
+	ok := []string{
+		`git push -u origin "feat/x"`,
+		"g'i't status",
+		`git commit -m "branch -D is refused, not run"`,
+	}
+	for _, c := range ok {
+		if why := CheckCommand(c); why != "" {
+			t.Errorf("%q refused: %s", c, why)
+		}
+	}
+}
+
 // Around a dangerous command, protected branches and the project's checkout
 // are put back; the agent's own branches are left as they are.
 func TestGuardRepairsProtectedState(t *testing.T) {

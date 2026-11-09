@@ -23,7 +23,7 @@
 // Configuration (cmd/xhaos flags, passed as Config):
 //
 //	-classifier-url      llama-server's base URL; empty turns the model off (the list stays).
-//	-classifier-timeout  the limit for one answer (default 10 s).
+//	-classifier-timeout  the limit for one answer (default 15 s).
 //
 // The owner turns the list and the model on or off together, server-wide (on
 // by default), and can keep a developer log of every decision (off by default).
@@ -56,7 +56,7 @@ const logFile = "log.jsonl"
 // Config says where the model is.
 type Config struct {
 	URL     string        // llama-server's base URL; "" turns the model off (the built-in list still applies)
-	Timeout time.Duration // limit for one answer; 0 is 10 s
+	Timeout time.Duration // limit for one answer; 0 is 15 s
 	Debug   string        // folder for the developer log (beside the database); "" disables it
 }
 
@@ -177,6 +177,10 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) { // Eligible checked it; checked again so Decide alone never passes the floor or sees a runner
 		return false, ""
 	}
+	text, ok := modelText(r.Command)
+	if !ok {
+		return false, "the command has a shell comment or a quoted string over 200 characters, which the classifier does not read"
+	}
 	started := c.now()
 	key := cacheKey{r.Project, r.Command}
 	c.mu.Lock()
@@ -184,7 +188,7 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 	c.mu.Unlock()
 	if !hit {
 		var err error
-		v.allow, v.reason, err = c.client.Ask(ctx, r.Command)
+		v.allow, v.reason, err = c.client.Ask(ctx, text)
 		if err != nil {
 			v.allow = false
 			log.Printf("WARN classifier: %v", err)

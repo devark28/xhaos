@@ -112,7 +112,7 @@ Notes:
 
 ## The optional command classifier model
 
-Agents on auto review wait for you before most commands. Xhaos has a built-in list of ordinary build, test and lint commands that run without asking: it needs no model and nothing from the installer, and it is on by default. The switch in Settings → Tools → Commands turns it off, with the model. The classifier model is an optional extra step for the long tail, the commands the list does not match: a small model on the server answers "may this command run without asking?" for a read-write agent on auto review, and a yes runs the command at once (inside the sandbox, as usual). Most servers do not need it, so the installer does not install it unless you ask: `--with classifier`, or yes at the terminal. `--yes` alone never adds it (about 1.1 GB to download, and memory while it runs).
+Agents on auto review wait for you before most commands. Xhaos has a built-in list of ordinary build, test and lint commands that run without asking: it needs no model and nothing from the installer, and it is on by default. The switch in Settings → Tools → Commands turns it off, with the model. The classifier model is an optional extra step for the long tail, the commands the list does not match: a small model on the server answers "may this command run without asking?" for a read-write agent on auto review, and a yes runs the command at once (inside the sandbox, as usual). Most servers do not need it, so the installer does not install it unless you ask: `--with classifier`, or yes at the terminal. `--yes` alone never adds it (about 2.1 GB to download, and about 3.7 GB of memory while it runs).
 
 Commands with secrets, network tools, installs, publishes, deletes and paths outside the project are never sent to the model and still ask; so does every command when the model is slow, down or unsure. It can only make a command run, never block one. Nothing leaves the server: it is a service on `127.0.0.1:8189` only, and Xhaos reaches it through one flag, `-classifier-url`. The user guide (What auto review runs without asking) says what runs without asking.
 
@@ -121,7 +121,7 @@ The installer's **classifier** part (no by default; add it with `--with classifi
 | | |
 |---|---|
 | llama.cpp | release `b12110` (a nightly build, commit `cd959bae99ff4bed22bef2604f45241c09bbb8c8`), the prebuilt CPU build for Ubuntu from github.com/ggml-org/llama.cpp, x64 (23 MB download, 56 MB unpacked) or arm64 (19 MB download; not tried on a machine yet). MIT license. Checked against a SHA-256 pinned in `install.sh` before it is unpacked, then unpacked whole into `/var/lib/xhaos/classifier/llama-b12110/`. It needs libgomp and OpenSSL's libraries: on Debian and Ubuntu the installer adds `libgomp1` and `openssl` when `llama-server` does not start without them. |
-| model | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` from Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF on Hugging Face, at commit `f86cb2c1fa58255f8052cc32aeede1b7482d4361`: 1,117,320,768 bytes (about 1.1 GB), Apache-2.0, checked against a pinned SHA-256, in `/var/lib/xhaos/classifier/models/`. An interrupted download resumes on the next run. |
+| model | `qwen2.5-coder-3b-instruct-q4_k_m.gguf` from Qwen/Qwen2.5-Coder-3B-Instruct-GGUF on Hugging Face, at commit `f74adce6aa16316c625447af059dbebe4983757c`: 2,104,932,800 bytes (about 2.1 GB), Apache-2.0, checked against a pinned SHA-256, in `/var/lib/xhaos/classifier/models/`. An interrupted download resumes on the next run. |
 | service | `xhaos-classifier.service`, as the `xhaos` user: `llama-server --host 127.0.0.1 --port 8189 -m <model> -t 4 -c 4096`, `Restart=on-failure`, `ProtectSystem=strict` with only its own folder writable, `NoNewPrivileges=yes`. It keeps the model in memory while it runs. |
 | Xhaos | gets `-classifier-url http://127.0.0.1:8189`; its unit has `Wants=` and `After=xhaos-classifier.service`, not `Requires=`, so Xhaos starts even when the classifier does not (commands then ask). |
 
@@ -151,7 +151,7 @@ sudo systemctl daemon-reload
 sudo rm -rf /var/lib/xhaos/classifier
 ```
 
-By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (10 s by default) limits each answer; past it the command asks.
+By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (15 s by default) limits each answer; past it the command asks.
 
 ## Reverse proxy (HTTPS)
 
