@@ -229,3 +229,81 @@ func TestSnapshotSlimsReplies(t *testing.T) {
 }
 
 func empty(j json.RawMessage) bool { return len(j) == 0 || string(j) == "null" }
+
+// A finished board call's result (the agent.tool event's Output) is what the
+// page builds its "added … to <board>" line from. Slimming touches message
+// events only, so the result comes back whole in the snapshot and when the
+// call has paged out of it, while the reply's call input and the tool result
+// message are slimmed away as before.
+func TestSlimKeepsToolResults(t *testing.T) {
+	s, _, _ := open(t)
+	store := agent.NewStore(s.DB(), nil)
+	a := mustCreate(t, s, agent.CreateRequest{IdempotencyKey: "a", Prompt: "Draw the plan"})
+	input := json.RawMessage(`{"board":2,"path":"shots/plot.png","caption":"Latency"}`)
+	if err := store.Append(ws, a.ID, agent.MessageData{From: agent.FromAgent, Body: "Adding the image.", Raw: json.RawMessage(`{"native":true}`), Calls: []llm.ToolCall{{ID: "img", Name: "board_add_image", Input: input}}}); err != nil {
+		t.Fatal(err)
+	}
+	output := `Added image plot.png to board #2 "Board 2", at (240, 0), 120×80, as group g (3 elements). It shows on open pages now.`
+	done := agent.ToolData{CallID: "img", Name: "board_add_image", Effect: "write", Summary: `board #2 "Board 2": plot.png`, State: agent.ToolDone, Output: output}
+	if err := store.RecordTool(ws, a.ID, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ws, a.ID, agent.MessageData{From: agent.FromTool, Results: []llm.ToolResult{{CallID: "img", Content: output}}}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(where string, events []eventlog.Event) {
+		t.Helper()
+		var found bool
+		for _, e := range events {
+			switch e.Kind {
+			case agent.EventTool:
+				var d agent.ToolData
+				if err := json.Unmarshal(e.Data, &d); err != nil {
+					t.Fatal(err)
+				}
+				if d.CallID == "img" && d.State == agent.ToolDone {
+					found = true
+					if d != done {
+						t.Errorf("%s: the done event changed: %+v", where, d)
+					}
+				}
+			case agent.EventMessage:
+				var m agent.MessageData
+				json.Unmarshal(e.Data, &m)
+				if m.From == agent.FromTool {
+					t.Errorf("%s: the tool result message was not dropped", where)
+				}
+				for _, c := range m.Calls {
+					if (len(c.Input) != 0 && string(c.Input) != "null") || m.Raw != nil { // a dropped input reads back as null
+						t.Errorf("%s: the reply kept its call input or native copy", where)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: the board call's done event is missing", where)
+		}
+	}
+	snap, err := s.Agents.Snapshot(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("snapshot", snap.Transcript)
+	// Enough replies after it that the call pages out of the snapshot.
+	for i := range agent.TranscriptPage + 5 {
+		if err := store.Append(ws, a.ID, agent.MessageData{From: agent.FromAgent, Body: fmt.Sprintf("later %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap, _ = s.Agents.Snapshot(ws)
+	for _, e := range snap.Transcript {
+		if e.Kind == agent.EventTool {
+			t.Fatalf("the call is still in the snapshot; the test needs it paged out")
+		}
+	}
+	page, err := s.Agents.TranscriptBefore(ws, a.ID, snap.Older[a.ID], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("older page", page.Events)
+}

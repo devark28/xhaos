@@ -141,7 +141,7 @@ type ToolData struct {
 	Preview string `json:"preview,omitempty"`
 	Commit  bool   `json:"commit,omitempty"`
 	State   string `json:"state"`
-	By      string `json:"by,omitempty"`     // "owner" or "policy" for allowed/denied
+	By      string `json:"by,omitempty"`     // "owner", "policy", "danger" or "classifier" for allowed/denied
 	Reason  string `json:"reason,omitempty"` // why it asks or was denied
 	Output  string `json:"output,omitempty"`
 }

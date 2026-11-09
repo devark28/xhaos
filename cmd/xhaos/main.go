@@ -29,6 +29,7 @@ import (
 	"github.com/devark28/xhaos/app/auth"
 	"github.com/devark28/xhaos/app/backend"
 	"github.com/devark28/xhaos/app/board"
+	"github.com/devark28/xhaos/app/classifier"
 	"github.com/devark28/xhaos/app/dictation"
 	"github.com/devark28/xhaos/app/egress"
 	"github.com/devark28/xhaos/app/eventlog"
@@ -84,6 +85,8 @@ func main() {
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
 	nodeURL := flag.String("node-url", "", "public HTTPS address nodes connect to, where a reverse proxy passes /xhaos/node to this server (default: https:// and the first -public-host; see docs/nodes.md)")
+	classifierURL := flag.String("classifier-url", "", "llama-server base URL of the local command classifier, e.g. http://127.0.0.1:8081 (optional; without it only the built-in list of build, test and lint commands is used)")
+	classifierTimeout := flag.Duration("classifier-timeout", 10*time.Second, "time limit for one classifier answer; past it the command asks")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -141,6 +144,11 @@ func main() {
 			Model:      *dictationModel,
 			Timeout:    *dictationTimeout,
 			Recordings: filepath.Join(filepath.Dir(*dbPath), "dictation-debug"),
+		},
+		Classifier: classifier.Config{
+			URL:     *classifierURL,
+			Timeout: *classifierTimeout,
+			Debug:   filepath.Join(filepath.Dir(*dbPath), "classifier-debug"),
 		},
 		Publish:   func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
 		Notify:    func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
@@ -302,5 +310,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Web),
 		application.NewService(s.Dictation),
 		application.NewService(s.Nodes),
+		application.NewService(s.Classifier.Owner()),
 	}
 }

@@ -118,11 +118,13 @@ func (s *Service) writeImage(ws, hash string, data []byte) error {
 }
 
 // removeUnusedImages deletes the files of hashes no board of the workspace
-// still uses. Callers hold s.mu.
+// still uses and no agent's waiting call has staged (additions.go). Callers
+// hold s.mu.
 func (s *Service) removeUnusedImages(ws string, hashes []string) {
 	for _, h := range hashes {
 		var n int
-		err := s.db.QueryRow(`SELECT COUNT(*) FROM board_images bi JOIN boards b ON b.id = bi.board_id WHERE b.workspace_id = ? AND bi.hash = ?`, ws, h).Scan(&n)
+		err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM board_images bi JOIN boards b ON b.id = bi.board_id WHERE b.workspace_id = ? AND bi.hash = ?)
+			+ (SELECT COUNT(*) FROM board_staged WHERE workspace_id = ? AND hash = ?)`, ws, h, ws, h).Scan(&n)
 		if err != nil || n > 0 {
 			continue
 		}

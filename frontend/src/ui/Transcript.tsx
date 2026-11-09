@@ -4,12 +4,16 @@ import * as stylex from '@stylexjs/stylex';
 import { readFile, fileSize, downloadFile } from '../attachments.ts';
 import { call, loadOlder } from './state/backend.ts';
 import { markdown } from '../markdown.ts';
+import { dataURLFor } from '../board.ts';
 import { highlight, highlightDiff, languageFor } from '../highlight.ts';
 import { colors, fonts, breakpoints } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { WorkingLine } from './Working.tsx';
 import { DecisionButtons } from './Decisions.tsx';
-import { toast, get } from './state/store.ts';
+import { toast, get, useApp } from './state/store.ts';
+import { openBoard } from './state/boards.ts';
+import { selectPanel } from './state/panels.ts';
+import { isNarrow } from './narrow.ts';
 import type { Agent, Attachment, Entry as EntryData } from '../types.ts';
 
 const html = (value: string) => ({ __html: value });
@@ -48,14 +52,54 @@ export function AttachedFiles({ files = [] }: { files?: Attachment[] }) {
   return files.length ? <div {...stylex.props(styles.files)}>{files.map(file => <FileItem key={file.id} file={file} />)}</div> : null;
 }
 
+// StagedImage shows the image a waiting board_add_image call will add: a
+// small preview of the bytes the server read when the call was made, which
+// are what it adds. When the server can make no preview (WebP, or a file it
+// can't decode) the card names the file, its type and size instead.
+type StagedPreview = { name: string; fileType: string; size: number; mimeType?: string; data?: string; noPreview?: boolean };
+function StagedImage({ agentId, callId }: { agentId: number; callId: string }) {
+  const [state, setState] = useState<{ file: StagedPreview } | { error: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    call('board', 'StagedImage', get().active, agentId, callId)
+      .then((file: StagedPreview) => { if (live) setState({ file }); })
+      .catch((error: unknown) => { if (live) setState({ error: error instanceof Error ? error.message : String(error) }); });
+    return () => { live = false; };
+  }, [agentId, callId]);
+  if (!state) return <p data-staged-image="loading" {...stylex.props(styles.requestContext)}>Loading the image…</p>;
+  if ('error' in state) return <p data-staged-image="error" {...stylex.props(styles.requestContext)}>Could not show the image: {state.error}</p>;
+  const { file } = state;
+  const about = `${file.name} · ${file.fileType} · ${fileSize(file.size)}`;
+  if (file.noPreview || !file.mimeType || !file.data) return <p data-staged-image={callId} data-no-preview {...stylex.props(styles.requestContext)}>Image to add: {about} (no preview)</p>;
+  return <img data-staged-image={callId} src={dataURLFor(file.mimeType, file.data)} alt={`The image the agent will add: ${about}`} title={about} {...stylex.props(styles.thumb)} />;
+}
+
 // ---- entries ---------------------------------------------------------------
 const kindNames: Record<string, string> = { user: 'you', assistant: 'agent', tool: 'tool', diff: 'edit', approval: 'approval', system: 'system', channel: 'channel' };
+
+// BoardLine follows a finished board write: "added a note to Board 2", the
+// board's current name linking to it in Draw (the Boards panel on a phone,
+// which has no canvas).
+function BoardLine({ board }: { board: NonNullable<EntryData['board']> }) {
+  const current = useApp(s => s.boards.find(b => b.id === board.id));
+  const gone = useApp(s => s.boards.length > 0) && !current;
+  const name = current?.name ?? board.name;
+  const open = () => { openBoard(board.id); if (isNarrow()) selectPanel('boards'); };
+  return (
+    <p data-board-added={board.id} {...stylex.props(styles.boardLine)}>
+      {board.added}{' '}
+      {gone
+        ? <span>{name} (deleted)</span>
+        : <button type="button" data-board-link={board.id} title={isNarrow() ? 'Show in Boards' : 'Open in Draw'} onClick={open} {...stylex.props(styles.boardLink)}>{name}</button>}
+    </p>
+  );
+}
 
 function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
   const kind = kindNames[entry.kind] ? entry.kind : 'assistant';
   if (kind === 'tool' || kind === 'diff') {
     const output = kind === 'diff' ? highlightDiff(entry.output || '', languageFor(entry.command || '')) : highlight(entry.output || '', languageFor('', entry.output || ''));
-    return (
+    const details = (
       <details data-entry={kind} data-call={entry.callId} {...stylex.props(styles.tool)}>
         <summary {...stylex.props(styles.summary)}>
           <span {...stylex.props(styles.kind)}>{kindNames[kind]}</span>
@@ -65,6 +109,7 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
         <pre {...stylex.props(styles.pre)}><code dangerouslySetInnerHTML={html(output)} /></pre>
       </details>
     );
+    return entry.board ? <>{details}<BoardLine board={entry.board} /></> : details;
   }
   if (kind === 'approval') {
     const code = entry.language === 'diff' ? highlightDiff(entry.command || '', languageFor(entry.command || '')) : highlight(entry.command || '', entry.language || 'javascript');
@@ -73,6 +118,7 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
         <span {...stylex.props(styles.kind)}>approval</span>
         <p {...stylex.props(styles.requestText)}>{entry.text}</p>
         <pre {...stylex.props(styles.pre)}><code dangerouslySetInnerHTML={html(code)} /></pre>
+        {entry.stagedImage && entry.callId && <StagedImage agentId={agent.id} callId={entry.callId} />}
         {entry.output && <p {...stylex.props(styles.requestContext)}>{entry.output}</p>}
         {entry.callId && <div {...stylex.props(styles.requestActions)}><DecisionButtons agent={agent} callId={entry.callId} /></div>}
       </div>
@@ -185,6 +231,8 @@ const styles = stylex.create({
     scrollbarWidth: 'thin',
     scrollbarColor: `${colors.lineStrong} ${colors.card}`,
   },
+  boardLine: { margin: 0, paddingBottom: 4, color: colors.textDim },
+  boardLink: { backgroundColor: 'transparent', borderWidth: 0, padding: 0, cursor: 'pointer', color: colors.brand, fontFamily: 'inherit', fontSize: 'inherit', textDecoration: { default: 'none', ':hover': 'underline' } },
   nested: { paddingTop: 3, paddingInline: 9, paddingBottom: 9 },
   sample: { fontFamily: 'inherit', fontSize: 9, color: colors.textGhost, marginBottom: 9 },
   older: { display: 'block', marginInline: 'auto', marginBottom: 9, padding: '2px 8px', fontFamily: 'inherit', fontSize: 9, color: colors.textFaint, backgroundColor: 'transparent', borderWidth: 0, cursor: 'pointer', ':hover': { color: colors.text } },
@@ -219,4 +267,5 @@ const styles = stylex.create({
   fileButton: { whiteSpace: 'normal', overflowWrap: 'anywhere', textAlign: 'left', marginRight: 10 },
   fileSize: { color: colors.textFaint, fontSize: 9, marginLeft: 4 },
   image: { display: 'block', maxWidth: '100%', maxHeight: 260, objectFit: 'contain', marginBlock: 8 },
+  thumb: { display: 'block', maxWidth: '100%', maxHeight: 160, objectFit: 'contain', marginBlock: 8, borderRadius: 4, borderWidth: 1, borderStyle: 'solid', borderColor: colors.lineFaint },
 });

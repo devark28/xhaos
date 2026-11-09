@@ -31,6 +31,7 @@ export function SidePanel() {
   const kind = useApp(s => s.panel.kind);
   const hasBtw = useApp(s => s.btw !== null);
   const pending = useApp(s => pendingQuestionsIn(s).length);
+  const changedBoards = useApp(s => Object.keys(s.boardChanges).length); // boards agents changed while not showing
   const narrow = useNarrow();
   const view = useApp(s => s.mobileView);
   const agentsView = narrow && view === 'agents';
@@ -44,11 +45,14 @@ export function SidePanel() {
         {(hasBtw ? [btwTab, ...tabs] : tabs).map(tab => {
           const chosen = !agentsView && (kind === tab.kind || Boolean(tab.also?.includes(kind)));
           const waiting = tab.kind === 'questions' && pending > 0;
+          const changed = tab.kind === 'boards' && changedBoards > 0;
+          const label = waiting ? `${tab.label} · ${pending} waiting` : changed ? `${tab.label} · ${changedBoards} changed` : tab.label;
           return (
-            <Button key={tab.kind} variant="icon" id={tab.id} aria-label={waiting ? `${tab.label} · ${pending} waiting` : tab.label} title={tab.label}
-              aria-pressed={chosen} chosen={chosen} onClick={() => selectPanel(tab.kind)} sx={[side.tab, narrow && side.phoneTab, waiting && side.attention]}>
+            <Button key={tab.kind} variant="icon" id={tab.id} aria-label={label} title={changed ? label : tab.label}
+              aria-pressed={chosen} chosen={chosen} onClick={() => selectPanel(tab.kind)} sx={[side.tab, narrow && side.phoneTab, (waiting || changed) && side.attention]}>
               <Icon name={tab.icon} size={narrow ? 18 : 15} />
               {waiting && <span {...stylex.props(side.badge)}><StatusDot status="waiting" size={6} />{pending}</span>}
+              {changed && <span data-boards-changed {...stylex.props(side.badge)}>{changedBoards}</span>}
             </Button>
           );
         })}

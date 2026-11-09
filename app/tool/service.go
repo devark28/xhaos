@@ -7,7 +7,7 @@ type Info struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Effect      string `json:"effect"` // read, write, or exec: what the policy gate checks
-	Source      string `json:"source"` // "built-in", "channels", or "memory" (MCP tools are listed per server)
+	Source      string `json:"source"` // "built-in", "channels", "memory" or "boards" (MCP tools are listed per server)
 }
 
 // Catalog is what agents can call.

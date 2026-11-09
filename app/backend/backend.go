@@ -11,6 +11,7 @@ import (
 	"github.com/devark28/xhaos/app/board"
 	"github.com/devark28/xhaos/app/btw"
 	"github.com/devark28/xhaos/app/channel"
+	"github.com/devark28/xhaos/app/classifier"
 	"github.com/devark28/xhaos/app/dictation"
 	"github.com/devark28/xhaos/app/llm/openai"
 	"github.com/devark28/xhaos/app/llm/sim"
@@ -67,6 +68,8 @@ type Options struct {
 	// cannot be added); NodeLive gets nodes' live changes (package node).
 	NodeURL  string
 	NodeLive node.Notifier
+	// Classifier is the local command classifier (zero URL: no model; the built-in list still applies).
+	Classifier classifier.Config
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -95,8 +98,11 @@ type Services struct {
 	Nodes      *node.Service
 	// NodeHub serves the nodes' connections (wire.Path, before sign-in).
 	NodeHub *node.Hub
-	mcp     *mcp.Manager
-	egress  *egress.Proxy
+	// Classifier decides ordinary commands for the runner; the page binds
+	// its Owner view.
+	Classifier *classifier.Classifier
+	mcp        *mcp.Manager
+	egress     *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
 	Vault *auth.Vault
 }
@@ -132,6 +138,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"usage", usage.Migrate},
 		{"prefs", prefs.Migrate},
 		{"dictation", dictation.Migrate},
+		{"classifier", classifier.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -202,6 +209,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	runner.Files = files
 	counter := usage.NewRecorder(db)
 	runner.Usage = counter
+	runner.Classifier = classifier.New(db, opts.Classifier)
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)
@@ -235,6 +243,15 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	nodes.Version = opts.Version
 	nodeTools := node.NewTools(nodes, func(ws string, id int64) (string, error) { return runner.ProjectRoot(ws, id) })
 	runner.Extras = append(runner.Extras, nodeTools)
+	boards := board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards"))
+	// Agents read images for boards from their project (or its $TMPDIR).
+	boardTools := board.NewTools(boards, func(a agent.Agent) (string, error) {
+		if a.ProjectID == 0 || runner.ProjectRoot == nil {
+			return "", fmt.Errorf("agent #%d has no project to read images from", a.ID)
+		}
+		return runner.ProjectRoot(a.WorkspaceID, a.ProjectID)
+	})
+	runner.Extras = append(runner.Extras, boardTools)
 	risky := danger.NewService(store, store.Get)
 	runner.Guard = risky
 	risky.Root = func(a agent.Agent) (string, error) {
@@ -251,7 +268,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(memory.NewTools(memories).Catalog(), nodeTools.Catalog()...)...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...), nodeTools.Catalog()...)...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -312,7 +329,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Channels:   channels,
 		Files:      attachment.NewService(files),
 		Memories:   memories,
-		Boards:     board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards")),
+		Boards:     boards,
 		Usage:      spend,
 		Prefs:      prefs.NewService(db),
 		Secrets:    secrets,
@@ -322,6 +339,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Dictation:  dictation.NewService(db, opts.Dictation),
 		Nodes:      nodes,
 		NodeHub:    nodeHub,
+		Classifier: runner.Classifier,
 		mcp:        tools,
 		egress:     out,
 		Vault:      vault,

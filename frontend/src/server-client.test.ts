@@ -49,6 +49,16 @@ test('a gap fetches the missed events before continuing', async () => {
   assert.equal(sync.seq, 6);
 });
 
+test('a call the local classifier allowed shows its reason on the card', async () => {
+  const { viewFromSnapshot, applyEvent } = await import('./backend-view.ts');
+  const view = viewFromSnapshot({ workspace: { id: 'default', name: 'Default' }, agents: [{ id: 1, title: 't', status: 'attention' }], transcript: [] });
+  const reason = 'allowed by the local classifier: go test is a build step';
+  applyEvent(view, { seq: 1, agentId: 1, kind: 'agent.tool', data: { callId: 'c2', name: 'bash', effect: 'exec', summary: 'go test ./...', state: 'done', by: 'classifier', reason, output: 'ok' } });
+  const entry = view.agents[0].activity[0];
+  assert.equal(entry.kind, 'tool');
+  assert.equal(entry.text, `Run · ${reason}`);
+});
+
 test('tool events become one entry per call and track pending calls', async () => {
   const { viewFromSnapshot, applyEvent, pendingCalls } = await import('./backend-view.ts');
   const view = viewFromSnapshot({ workspace: { id: 'default', name: 'Default' }, agents: [{ id: 1, title: 't', status: 'attention' }], transcript: [
@@ -66,6 +76,33 @@ test('tool events become one entry per call and track pending calls', async () =
   assert.deepEqual(pendingCalls(agent), []);
   applyEvent(view, { seq: 5, agentId: 1, kind: 'agent.message', data: { from: 'tool', results: [] } });
   assert.equal(agent.activity.length, 1);
+});
+
+test('board calls ask with what they add, as text, and an image call shows its image', async () => {
+  const { viewFromSnapshot, applyEvent, pendingCalls } = await import('./backend-view.ts');
+  const image = { callId: 'b1', name: 'board_add_image', effect: 'write', summary: 'board #1 "Plan": plot.png', preview: 'Add an image to board #1 "Plan", tagged "added by #7":\n\nplot.png (image/png, 30×20, 1 KB)', state: 'pending', reason: 'changes need review' };
+  const note = { callId: 'b2', name: 'board_add_note', effect: 'write', summary: 'board #1 "Plan": hi', preview: 'Add a note to board #1 "Plan", tagged "added by #7":\n\nhi', state: 'pending' };
+  const view = viewFromSnapshot({ seq: 1, workspace: { id: 'w', name: 'W' }, agents: [{ id: 7, title: 'a', status: 'attention' }], transcript: [
+    { seq: 1, agentId: 7, kind: 'agent.tool', data: image },
+    { seq: 2, agentId: 7, kind: 'agent.tool', data: note },
+  ] });
+  const [img, txt] = view.agents[0].activity;
+  assert.equal(img.kind, 'approval');
+  assert.equal(img.text, 'Add an image to board #1 "Plan": plot.png?');
+  assert.equal(img.language, 'text');
+  assert.equal(img.command, image.preview);
+  assert.equal(img.stagedImage, true);
+  assert.equal(txt.text, 'Add a note to board #1 "Plan": hi?');
+  assert.equal(txt.stagedImage, undefined);
+  assert.deepEqual(pendingCalls(view.agents[0]), ['b1', 'b2']);
+  applyEvent(view, { seq: 3, agentId: 7, kind: 'agent.tool', data: { ...note, state: 'done', output: 'Added a note to board #1 "Plan"' } });
+  const done = view.agents[0].activity[1];
+  assert.equal(done.kind, 'tool');
+  assert.equal(done.text, 'Add a note to · done');
+  assert.equal(done.output, 'Added a note to board #1 "Plan"');
+  assert.deepEqual(done.board, { id: 1, name: 'Plan', added: 'added a note to' });
+  applyEvent(view, { seq: 4, agentId: 7, kind: 'agent.tool', data: { ...image, state: 'denied', by: 'owner' } });
+  assert.equal(view.agents[0].activity[0].board, undefined); // only a finished write gets the line
 });
 
 test('MCP calls show as "Call <server> · <tool>" with JSON input', async () => {

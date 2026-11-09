@@ -7,20 +7,27 @@
 # First run: installs the release binary (checksum verified), creates the
 # xhaos user, its data folder and a systemd service, and offers optional
 # parts (build tools and languages, browsers, rootless containers, speech
-# dictation), each with what it is, why, and where it comes from. Later runs
-# update the binary and ask before restarting.
+# dictation, the optional command classifier model), each with what it is,
+# why, and where it comes from. Later runs update the binary and ask before
+# restarting.
 #
 # Options:
-#   --yes              answer yes to every question (unattended)
+#   --yes              answer yes to every question (unattended), except
+#                      adding the classifier model (needs --with classifier)
 #   --with a,b,c       install these parts without asking: devtools, flutter,
-#                      browsers, podman, dictation (also to update them)
+#                      browsers, podman, dictation, classifier (also to update
+#                      them). classifier is the optional command model, no by
+#                      default; the built-in command list needs no part.
 #   --without a,b      skip these parts, without asking
 #   --no-restart       never restart a running Xhaos
 #   --version vX.Y.Z   install that release instead of the latest
 #   --help
 #
 # Environment (mostly for testing): XHAOS_VERSION, XHAOS_BASE_URL (where
-# release archives are downloaded from), XHAOS_MODEL_BASE.
+# release archives are downloaded from), XHAOS_MODEL_BASE (the dictation
+# model's folder), XHAOS_LLAMA_BASE (where the llama.cpp release tarball is
+# downloaded from), XHAOS_CLASSIFIER_MODEL_BASE (the classifier model's folder).
+# Checksums are pinned in this file: a download from elsewhere must match them.
 set -eu
 
 REPO=devark28/xhaos
@@ -40,9 +47,12 @@ usage() {
 Xhaos installer and updater.
   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install.sh | sh
 Options:
-  --yes              answer yes to every question (unattended)
+  --yes              answer yes to every question (unattended), except
+                     adding the classifier model (needs --with classifier)
   --with a,b,c       install or update these parts without asking:
-                     devtools, flutter, browsers, podman, dictation
+                     devtools, flutter, browsers, podman, dictation,
+                     classifier (the optional command model; no by
+                     default, the built-in command list needs no part)
   --without a,b      skip these parts, without asking
   --no-restart       never restart a running Xhaos
   --version vX.Y.Z   install that release instead of the latest
@@ -143,10 +153,22 @@ trap 'rm -rf "$TMP"' EXIT
 
 DICT=$HOME_DIR/dictation
 MODEL_DIR=$DICT/models/whisper-large-v3-turbo
+# The command classifier model (optional, no by default): llama.cpp's
+# llama-server and a small model, as a service of its own on the loopback
+# (nothing else here uses port 8189). Xhaos's built-in list of build, test and
+# lint commands needs none of it.
+CLS=$HOME_DIR/classifier
+LLAMA_TAG=b12110
+LLAMA_DIR=$CLS/llama-$LLAMA_TAG
+LLAMA_SUMS=$CLS/llama-$LLAMA_TAG.sha256sums
+CLS_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
+CLS_PORT=8189
+CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
 
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180
-DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no
+DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -158,6 +180,7 @@ else
   has google-chrome && has firefox && BROWSERS=yes
   has podman && has docker-compose && PODMAN=yes
   xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes
+  xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$CLS_MODEL" && CLASSIFIER=yes
 fi
 
 # ---- the release -----------------------------------------------------------
@@ -345,6 +368,82 @@ install_dictation() {
   fetch_model
 }
 
+# The command classifier's pins: llama.cpp's prebuilt CPU build for Ubuntu
+# (MIT license), tag b12110 (a nightly, commit cd959bae99ff4bed22bef2604f45241c09bbb8c8),
+# one tarball per CPU, checked before it is unpacked; and the Qwen2.5-Coder
+# 1.5B Instruct model, Q4_K_M GGUF (Apache-2.0), pinned to a commit.
+LLAMA_BASE=${XHAOS_LLAMA_BASE:-https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG}
+LLAMA_X64_SUM=368227edcc229be5f9bed16a2223d79b5e41d0ac2e19bcf5825e82291c060e55
+LLAMA_ARM64_SUM=4758b51335e37b4346251f2687d64841ff1c07ecb27fc46323945bb2ec9c44d2
+CLS_MODEL_BASE=${XHAOS_CLASSIFIER_MODEL_BASE:-https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/f86cb2c1fa58255f8052cc32aeede1b7482d4361}
+CLS_MODEL_SUM=cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046
+
+# llama_ok "SUM NAME": the unpacked llama.cpp folder came from that tarball and
+# every file in it still matches the list written when it was unpacked.
+llama_ok() {
+  xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$LLAMA_SUMS" || return 1
+  [ "$(run sed -n 1p "$LLAMA_SUMS")" = "# $1" ] || return 1
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  as_user xhaos sh -c 'cd "$1" && sha256sum -c --quiet --strict --status "$2"' sh "$LLAMA_DIR" "$LLAMA_SUMS"
+}
+
+install_classifier() {
+  case $ARCH in
+    amd64) lname=llama-$LLAMA_TAG-bin-ubuntu-x64.tar.gz lsum=$LLAMA_X64_SUM ;;
+    *) lname=llama-$LLAMA_TAG-bin-ubuntu-arm64.tar.gz lsum=$LLAMA_ARM64_SUM ;;
+  esac
+  run install -d -m 755 -o xhaos -g xhaos "$CLS" "$CLS/models"
+  say "  llama.cpp $LLAMA_TAG (github.com/ggml-org/llama.cpp, $lname) in $LLAMA_DIR"
+  if llama_ok "$lsum $lname"; then
+    say "  already unpacked and checked"
+  else
+    tgz=$CLS/$lname.part
+    if [ "$(xsum "$tgz")" != "$lsum" ]; then
+      as_user xhaos curl -fL --retry 3 -C - -s -o "$tgz" "$LLAMA_BASE/$lname" || die "llama.cpp download failed: $lname"
+      [ "$(xsum "$tgz")" = "$lsum" ] || { run rm -f "$tgz"; die "llama.cpp checksum mismatch: $lname"; }
+    fi
+    # Unpacked whole with tar, beside the old folder, then swapped in: its
+    # libraries are symlinks found through RUNPATH=$ORIGIN, so it stays together.
+    run rm -rf "$CLS/.unpack"
+    as_user xhaos mkdir "$CLS/.unpack"
+    as_user xhaos tar -xzf "$tgz" -C "$CLS/.unpack"
+    new=$CLS/.unpack/llama-$LLAMA_TAG
+    xtest -x "$new/llama-server" || die "the llama.cpp tarball has no llama-$LLAMA_TAG/llama-server"
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    as_user xhaos sh -c 'cd "$1" && { printf "# %s\n" "$2"; find . -type f -exec sha256sum {} +; } >"$3"' sh "$new" "$lsum $lname" "$CLS/.unpack/sums"
+    run rm -rf "$LLAMA_DIR"
+    as_user xhaos mv "$new" "$LLAMA_DIR"
+    as_user xhaos mv "$CLS/.unpack/sums" "$LLAMA_SUMS"
+    run rm -rf "$CLS/.unpack" "$tgz"
+    say "  unpacked and checked"
+    touch "$TMP/classifier-changed"
+  fi
+  # llama-server needs libgomp and OpenSSL's libraries besides the C++ runtime.
+  if ! as_user xhaos "$LLAMA_DIR/llama-server" --version >/dev/null 2>&1; then
+    if [ "$APT" = yes ]; then apt_update; apt_install libgomp1 openssl; fi
+    out=$(as_user xhaos "$LLAMA_DIR/llama-server" --version 2>&1) || die "llama-server does not run here: $(printf '%s' "$out" | tail -n 3)"
+  fi
+  say "  Qwen2.5-Coder 1.5B Instruct, Q4_K_M (Hugging Face, 1.1 GB, checked) in $CLS/models"
+  if xtest -f "$CLS_MODEL" && [ "$(xsum "$CLS_MODEL")" = "$CLS_MODEL_SUM" ]; then
+    say "  already downloaded and checked"
+  else
+    say "  downloading $CLS_MODEL_FILE"
+    as_user xhaos curl -fL --retry 3 -C - -s -o "$CLS_MODEL.part" "$CLS_MODEL_BASE/$CLS_MODEL_FILE" || die "model download failed: $CLS_MODEL_FILE (re-run to resume)"
+    [ "$(xsum "$CLS_MODEL.part")" = "$CLS_MODEL_SUM" ] || { run rm -f "$CLS_MODEL.part"; die "model checksum mismatch: $CLS_MODEL_FILE"; }
+    as_user xhaos mv "$CLS_MODEL.part" "$CLS_MODEL"
+    touch "$TMP/classifier-changed"
+  fi
+}
+
+# classifier_remove HEADER: how to delete the classifier's files (never done
+# on its own).
+classifier_remove() {
+  say "  $1"
+  say "    sudo rm -f $CLS_UNIT"
+  say "    sudo systemctl daemon-reload"
+  say "    sudo rm -rf $CLS"
+}
+
 # part NAME INSTALLED DEFAULT DESCRIPTION: install or update an optional part.
 # --with NAME installs or updates it without asking; --without NAME skips it;
 # an installed part is otherwise left alone. A part not installed yet is
@@ -386,6 +485,30 @@ part podman "$PODMAN" n "Rootless Podman with Docker Compose.
   To run compose.yaml / docker-compose.yml stacks as your user (not for agents). From Ubuntu's apt and GitHub (checksum verified)."
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
+# --yes answers yes to the other parts, but never adds the classifier model
+# (1.1 GB, and RAM while it runs): only --with classifier or the terminal does.
+cls_yes_only() {
+  [ "$YES" = yes ] && [ "$CLASSIFIER" != yes ] || return 1
+  case $WITH$WITHOUT in *",classifier,"*) return 1 ;; esac
+}
+if cls_yes_only; then
+  say "classifier: not installed (--yes does not add it; add it with --with classifier)"
+else
+part classifier "$CLASSIFIER" n "Command classifier model (optional; most servers do not need it).
+  Xhaos's built-in list of build, test and lint commands already runs those without asking, with no model (on by default; Settings → Tools → Commands turns it off).
+  This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
+  Dangerous commands still ask, and nothing leaves the server.
+  Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 1.5B Instruct Q4_K_M (Hugging Face, 1.1 GB, Apache-2.0),
+  both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
+fi
+case $WITHOUT in *",classifier,"*)
+  if [ "$CLASSIFIER" = yes ]; then
+    say "  It stays installed and on: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1)), service xhaos-classifier."
+    say "  Turn it off: Settings → Tools → Commands (server-wide), or set CLASSIFIER='no' in $CONF and re-run this installer"
+    say "  (that drops -classifier-url from Xhaos's service and stops xhaos-classifier)."
+    classifier_remove "Delete it: turn it off with CLASSIFIER='no' and a re-run as above, then:"
+  fi ;;
+esac
 # An installed sidecar follows the release it came with.
 if [ "$DICTATION" = yes ] && [ -f "$NEW/dictation/stt.py" ] && ! run cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py"; then
   run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
@@ -398,7 +521,7 @@ run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION"
+  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER"
 } > "$TMP/install.conf"
 run install -m 644 "$TMP/install.conf" "$CONF"
 
@@ -408,11 +531,15 @@ flags="-db $DATA/xhaos.db -sandbox on"
 if [ "$DICTATION" = yes ]; then
   flags="$flags -dictation-cmd $DICT/venv/bin/python -dictation-model $MODEL_DIR -dictation-args \"$DICT/stt.py {wav} --model {model} --language={language} --prompt={prompt}\""
 fi
+[ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url http://127.0.0.1:$CLS_PORT"
 path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [ "$FLUTTER" = yes ] && path="$path:$DATA/sandbox/flutter/bin"
 {
   printf '%s\n' "$MARK"
-  printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n\n'
+  printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n'
+  # Wanted, not required: Xhaos starts even if the classifier fails (commands then ask).
+  [ "$CLASSIFIER" = yes ] && printf 'Wants=xhaos-classifier.service\nAfter=xhaos-classifier.service\n'
+  printf '\n'
   printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\nUMask=0002\n' "$HOME_DIR"
   printf 'Environment=WAILS_SERVER_HOST=%s\nEnvironment=WAILS_SERVER_PORT=%s\nEnvironment=PATH=%s\n' "$LISTEN" "$PORT" "$path"
   [ "$DEVTOOLS" = yes ] && printf 'Environment=RUSTUP_HOME=/opt/rust/rustup\n'
@@ -420,6 +547,44 @@ path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   printf '# Hardening that leaves the sandbox working.\nProtectSystem=strict\nReadWritePaths=%s %s\n' "$HOME_DIR" "$PROJECTS"
   printf 'PrivateTmp=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
 } > "$TMP/xhaos.service"
+
+# The classifier's service, set up before Xhaos's (which wants it).
+if [ "$CLASSIFIER" = yes ]; then
+  cls_cmd="$LLAMA_DIR/llama-server --host 127.0.0.1 --port $CLS_PORT -m $CLS_MODEL -t 4 -c 4096"
+  {
+    printf '%s\n' "$MARK"
+    printf '[Unit]\nDescription=Xhaos command classifier (llama.cpp server, loopback only)\n\n'
+    printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\n' "$CLS"
+    printf '# It logs "no API key is set and CORS allows all origins" at start: expected,\n'
+    printf '# it listens on 127.0.0.1 only, for Xhaos on this server.\n'
+    printf 'ExecStart=%s\nRestart=on-failure\n' "$cls_cmd"
+    printf 'ProtectSystem=strict\nReadWritePaths=%s\nPrivateTmp=yes\nNoNewPrivileges=yes\n' "$CLS"
+    printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
+  } > "$TMP/xhaos-classifier.service"
+  if [ "$SYSTEMD" = no ]; then
+    run install -m 644 "$TMP/xhaos-classifier.service" "$CONF_DIR/xhaos-classifier.service.example"
+    say "No systemd here: start the classifier yourself, as the xhaos user, before Xhaos:"
+    say "  sudo -u xhaos $cls_cmd"
+  else
+    cls_changed=no
+    [ -f "$TMP/classifier-changed" ] && cls_changed=yes
+    if ! cmp -s "$TMP/xhaos-classifier.service" "$CLS_UNIT" 2>/dev/null; then
+      run install -m 644 "$TMP/xhaos-classifier.service" "$CLS_UNIT"; run systemctl daemon-reload; cls_changed=yes
+    fi
+    if ! systemctl is-enabled xhaos-classifier >/dev/null 2>&1 || ! systemctl is-active xhaos-classifier >/dev/null 2>&1; then
+      run systemctl enable --now xhaos-classifier; say "Classifier started (127.0.0.1:$CLS_PORT; it loads its model in a few seconds)."
+    elif [ "$cls_changed" = yes ]; then
+      run systemctl restart xhaos-classifier; say "Classifier restarted."
+    fi
+  fi
+elif [ -f "$CLS_UNIT" ] || [ -n "$(run find "$CLS" -mindepth 1 ! -path "$CLS/models" 2>/dev/null | head -n 1)" ]; then
+  # Off in $CONF, but here: stopped, never deleted.
+  if [ "$SYSTEMD" = yes ] && [ -f "$CLS_UNIT" ] && { systemctl is-enabled xhaos-classifier >/dev/null 2>&1 || systemctl is-active xhaos-classifier >/dev/null 2>&1; }; then
+    run systemctl disable --now xhaos-classifier; say "Stopped and disabled the classifier service (CLASSIFIER='no' in $CONF)."
+  fi
+  say "The classifier is not on, but its files are here: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1))."
+  classifier_remove "Delete them (nothing is deleted on its own):"
+fi
 
 if [ "$SYSTEMD" = no ]; then
   run install -m 644 "$TMP/xhaos.service" "$CONF_DIR/xhaos.service.example"

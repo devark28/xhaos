@@ -15,7 +15,7 @@ export function openPanel(kind: PanelKind, args: Omit<Panel, 'kind'> = {}) { upd
 // showAgentsView goes back to the agents (phones; a no-op elsewhere).
 export function showAgentsView() { update(s => { s.mobileView = 'agents'; }); }
 export function showMessageComposer() { update(s => { s.mode = 'message'; }); focusComposer(); }
-export function showDraw() { update(s => { s.mode = 'draw'; }); }
+export function showDraw() { update(s => { s.mode = 'draw'; if (s.boardId !== null) delete s.boardChanges[s.boardId]; }); }
 // selectPanel shows a tab's panel in the side panel (which is always open).
 // Settings also refreshes the MCP server count it shows.
 export function selectPanel(kind: PanelKind) {

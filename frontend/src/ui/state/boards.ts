@@ -5,7 +5,7 @@ import { call } from './backend.ts';
 import { get, update, toast, errorText } from './store.ts';
 import { addFiles } from './composer.ts';
 import { isNarrow } from '../narrow.ts';
-import { LEGACY_KEY, dataURLFor, nextAfterDelete, nextUntitled, parseLegacyScene } from '../../board.ts';
+import { LEGACY_KEY, dataURLFor, markChanged, nextAfterDelete, nextUntitled, noticeAgent, parseLegacyScene } from '../../board.ts';
 import { importScene, type BoardCall, type BoardSession, type ServerBoard } from '../../board-session.ts';
 import type { BackendEvent, BoardSummary } from '../../types.ts';
 
@@ -53,8 +53,14 @@ function readLegacy(): string | null {
 
 // openBoard shows a board in the Draw tab. Phones have no canvas: they only
 // list boards (the Boards panel), so there the board is just selected.
+// Opening a board clears its "changed" mark.
 export function openBoard(id: number) {
-  update(s => { s.boardId = id; if (!isNarrow()) s.mode = 'draw'; });
+  update(s => { s.boardId = id; if (!isNarrow()) s.mode = 'draw'; delete s.boardChanges[id]; });
+}
+
+// dismissBoardChange clears a board's "changed" mark without opening it.
+export function dismissBoardChange(id: number) {
+  update(s => { delete s.boardChanges[id]; });
 }
 
 // newBoard makes an empty board, named "Untitled N", and opens it.
@@ -79,6 +85,7 @@ export async function deleteBoard(id: number) {
       const next = nextAfterDelete(s.boards, id);
       s.boards = s.boards.filter(b => b.id !== id);
       if (s.boardId === id) s.boardId = next;
+      delete s.boardChanges[id];
     });
   } catch (error) { toast(`Could not delete the board: ${errorText(error)}`); }
 }
@@ -94,17 +101,24 @@ function upsert(list: BoardSummary[], board: BoardSummary) {
 // BoardNotice is a save's changed elements, sent live (board.Notice on the server).
 export interface BoardNotice { id: number; source?: string; elements: any[] }
 
-// onBoardNotice hands a save from another page to the open board's session.
-// A save for a board that is not open changes nothing here: its list entry
-// does not change, and it loads the scene when opened.
 // resyncOpenBoard reloads the open board and merges it into the scene. Notices
 // are not replayed, so a page that was off the stream calls this on reconnect.
 export function resyncOpenBoard() {
   open?.resync().catch(error => toast(`Could not refresh the board: ${errorText(error)}`));
 }
 
+// onBoardNotice hands a save from another page or an agent to the open
+// board's session; any other board loads its scene when opened. An agent's
+// addition to a board not showing in Draw marks it "changed" in the Boards
+// panel (and its tab) until it is opened or the mark is dismissed. Marks live
+// in this page only: notices are not replayed, so a reload starts clean.
 export function onBoardNotice(n: BoardNotice) {
-  if (Number(n?.id) === get().boardId) open?.notice({ source: n.source, elements: n.elements ?? [] });
+  const id = Number(n?.id);
+  const s = get();
+  if (id === s.boardId) open?.notice({ source: n.source, elements: n.elements ?? [] });
+  const showing = id === s.boardId && s.mode === 'draw' && !isNarrow();
+  const next = markChanged(s.boardChanges, id, noticeAgent(n?.source), showing);
+  if (next !== s.boardChanges) update(d => { d.boardChanges = next; });
 }
 
 // onBoardEvent applies a stored board event from the stream: list changes go
@@ -121,6 +135,7 @@ export function onBoardEvent(event: BackendEvent): boolean {
         const next = nextAfterDelete(s.boards, id);
         s.boards = s.boards.filter(b => b.id !== id);
         if (s.boardId === id) s.boardId = next;
+        delete s.boardChanges[id];
       });
       return true;
     }
