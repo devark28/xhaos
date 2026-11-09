@@ -7,17 +7,20 @@
 # First run: installs the release binary (checksum verified), creates the
 # xhaos user, its data folder and a systemd service, and offers optional
 # parts (build tools and languages, browsers, rootless containers, speech
-# dictation, the optional command classifier model), each with what it is,
-# why, and where it comes from. Later runs update the binary and ask before
+# dictation, the optional command classifier model, the optional search of
+# past sessions), each with what it is, why, and where it comes from. Later runs update the binary and ask before
 # restarting.
 #
 # Options:
 #   --yes              answer yes to every question (unattended), except
 #                      adding the classifier model (needs --with classifier)
+#                      or the past-sessions search (needs --with history)
 #   --with a,b,c       install these parts without asking: devtools, flutter,
-#                      browsers, podman, dictation, classifier (also to update
-#                      them). classifier is the optional command model, no by
-#                      default; the built-in command list needs no part.
+#                      browsers, podman, dictation, classifier, history (also
+#                      to update them). classifier is the optional command
+#                      model, no by default; the built-in command list needs
+#                      no part. history is the optional search of imported
+#                      past sessions, no by default.
 #   --without a,b      skip these parts, without asking
 #   --no-restart       never restart a running Xhaos
 #   --version vX.Y.Z   install that release instead of the latest
@@ -26,7 +29,8 @@
 # Environment (mostly for testing): XHAOS_VERSION, XHAOS_BASE_URL (where
 # release archives are downloaded from), XHAOS_MODEL_BASE (the dictation
 # model's folder), XHAOS_LLAMA_BASE (where the llama.cpp release tarball is
-# downloaded from), XHAOS_CLASSIFIER_MODEL_BASE (the classifier model's folder).
+# downloaded from), XHAOS_CLASSIFIER_MODEL_BASE (the classifier model's folder),
+# XHAOS_HISTORY_MODEL_BASE (the embedding model's folder).
 # Checksums are pinned in this file: a download from elsewhere must match them.
 set -eu
 
@@ -49,10 +53,13 @@ Xhaos installer and updater.
 Options:
   --yes              answer yes to every question (unattended), except
                      adding the classifier model (needs --with classifier)
+                     and the past-sessions search (needs --with history)
   --with a,b,c       install or update these parts without asking:
                      devtools, flutter, browsers, podman, dictation,
                      classifier (the optional command model; no by
-                     default, the built-in command list needs no part)
+                     default, the built-in command list needs no part),
+                     history (the optional search of past sessions; no by
+                     default)
   --without a,b      skip these parts, without asking
   --no-restart       never restart a running Xhaos
   --version vX.Y.Z   install that release instead of the latest
@@ -165,10 +172,18 @@ CLS_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
 CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
 CLS_PORT=8189
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
+# The past-sessions search (optional, no by default): the same llama-server,
+# and a small embedding model, as a service of its own on the loopback (port
+# 8190, after the classifier's 8189).
+HIST=$HOME_DIR/history
+HIST_MODEL_FILE=bge-small-en-v1.5-q8_0.gguf
+HIST_MODEL=$HIST/models/$HIST_MODEL_FILE
+HIST_PORT=8190
+HIST_UNIT=/etc/systemd/system/xhaos-history.service
 
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180
-DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
+DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no HISTORY=no
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -181,6 +196,7 @@ else
   has podman && has docker-compose && PODMAN=yes
   xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes
   xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$CLS_MODEL" && CLASSIFIER=yes
+  xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$HIST_MODEL" && HISTORY=yes
 fi
 
 # ---- the release -----------------------------------------------------------
@@ -387,7 +403,10 @@ llama_ok() {
   as_user xhaos sh -c 'cd "$1" && sha256sum -c --quiet --strict --status "$2"' sh "$LLAMA_DIR" "$LLAMA_SUMS"
 }
 
-install_classifier() {
+# install_llama: llama.cpp's llama-server, unpacked and checked. The classifier
+# and the past-sessions search share it. Touches $TMP/llama-changed when it
+# unpacked a new one.
+install_llama() {
   case $ARCH in
     amd64) lname=llama-$LLAMA_TAG-bin-ubuntu-x64.tar.gz lsum=$LLAMA_X64_SUM ;;
     *) lname=llama-$LLAMA_TAG-bin-ubuntu-arm64.tar.gz lsum=$LLAMA_ARM64_SUM ;;
@@ -416,13 +435,18 @@ install_classifier() {
     as_user xhaos mv "$CLS/.unpack/sums" "$LLAMA_SUMS"
     run rm -rf "$CLS/.unpack" "$tgz"
     say "  unpacked and checked"
-    touch "$TMP/classifier-changed"
+    touch "$TMP/llama-changed"
   fi
   # llama-server needs libgomp and OpenSSL's libraries besides the C++ runtime.
   if ! as_user xhaos "$LLAMA_DIR/llama-server" --version >/dev/null 2>&1; then
     if [ "$APT" = yes ]; then apt_update; apt_install libgomp1 openssl; fi
     out=$(as_user xhaos "$LLAMA_DIR/llama-server" --version 2>&1) || die "llama-server does not run here: $(printf '%s' "$out" | tail -n 3)"
   fi
+}
+
+install_classifier() {
+  install_llama
+  if [ -f "$TMP/llama-changed" ]; then touch "$TMP/classifier-changed"; fi
   say "  Qwen2.5-Coder 1.5B Instruct, Q4_K_M (Hugging Face, 1.1 GB, checked) in $CLS/models"
   if xtest -f "$CLS_MODEL" && [ "$(xsum "$CLS_MODEL")" = "$CLS_MODEL_SUM" ]; then
     say "  already downloaded and checked"
@@ -435,13 +459,47 @@ install_classifier() {
   fi
 }
 
+# The past-sessions search's embedding model: bge-small-en-v1.5 (MIT license),
+# the Q8_0 GGUF from CompendiumLabs/bge-small-en-v1.5-gguf, pinned to a commit.
+HIST_MODEL_BASE=${XHAOS_HISTORY_MODEL_BASE:-https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/d32f8c040ea3b516330eeb75b72bcc2d3a780ab7}
+HIST_MODEL_SUM=ec38e8da142596baa913124ae50550de284b6916bf59577ef2f0cb9660c2f514
+
+install_history() {
+  install_llama
+  run install -d -m 755 -o xhaos -g xhaos "$HIST" "$HIST/models"
+  say "  bge-small-en-v1.5 (Hugging Face, 37 MB, checked) in $HIST/models"
+  if xtest -f "$HIST_MODEL" && [ "$(xsum "$HIST_MODEL")" = "$HIST_MODEL_SUM" ]; then
+    say "  already downloaded and checked"
+  else
+    say "  downloading $HIST_MODEL_FILE"
+    as_user xhaos curl -fL --retry 3 -C - -s -o "$HIST_MODEL.part" "$HIST_MODEL_BASE/$HIST_MODEL_FILE" || die "model download failed: $HIST_MODEL_FILE (re-run to resume)"
+    [ "$(xsum "$HIST_MODEL.part")" = "$HIST_MODEL_SUM" ] || { run rm -f "$HIST_MODEL.part"; die "model checksum mismatch: $HIST_MODEL_FILE"; }
+    as_user xhaos mv "$HIST_MODEL.part" "$HIST_MODEL"
+    touch "$TMP/history-changed"
+  fi
+}
+
+# history_remove HEADER: how to delete the search's files (never done on its own).
+history_remove() {
+  say "  $1"
+  say "    sudo rm -f $HIST_UNIT"
+  say "    sudo systemctl daemon-reload"
+  say "    sudo rm -rf $HIST"
+}
+
 # classifier_remove HEADER: how to delete the classifier's files (never done
 # on its own).
 classifier_remove() {
   say "  $1"
   say "    sudo rm -f $CLS_UNIT"
   say "    sudo systemctl daemon-reload"
-  say "    sudo rm -rf $CLS"
+  if [ "$HISTORY" = yes ]; then
+    # The past-sessions search runs llama-server from this folder: keep it.
+    say "    sudo rm -rf $CLS/models"
+    say "  (llama.cpp stays in $LLAMA_DIR: the past-sessions search uses it.)"
+  else
+    say "    sudo rm -rf $CLS"
+  fi
 }
 
 # part NAME INSTALLED DEFAULT DESCRIPTION: install or update an optional part.
@@ -501,6 +559,20 @@ part classifier "$CLASSIFIER" n "Command classifier model (optional; most server
   Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 1.5B Instruct Q4_K_M (Hugging Face, 1.1 GB, Apache-2.0),
   both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
 fi
+# --yes answers yes to the other parts, but never adds the past-sessions search
+# (a second service and 37 MB): only --with history or the terminal does.
+hist_yes_only() {
+  [ "$YES" = yes ] && [ "$HISTORY" != yes ] || return 1
+  case $WITH$WITHOUT in *",history,"*) return 1 ;; esac
+}
+if hist_yes_only; then
+  say "history: not installed (--yes does not add it; add it with --with history)"
+else
+part history "$HISTORY" n "Past-sessions search (optional): agents search your imported Claude Code transcripts for earlier decisions and context.
+  Read-only, and the transcripts stay on this server. Import them with -history-import (see docs/guide.md).
+  Downloads llama.cpp $LLAMA_TAG (shared with the classifier; GitHub, ~20 MB, MIT license) and bge-small-en-v1.5 (Hugging Face, 37 MB, MIT license),
+  both checked against pinned SHA-256 sums; runs as the service xhaos-history on 127.0.0.1:$HIST_PORT."
+fi
 case $WITHOUT in *",classifier,"*)
   if [ "$CLASSIFIER" = yes ]; then
     say "  It stays installed and on: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1)), service xhaos-classifier."
@@ -521,7 +593,7 @@ run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER"
+  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nHISTORY='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$HISTORY"
 } > "$TMP/install.conf"
 run install -m 644 "$TMP/install.conf" "$CONF"
 
@@ -532,6 +604,7 @@ if [ "$DICTATION" = yes ]; then
   flags="$flags -dictation-cmd $DICT/venv/bin/python -dictation-model $MODEL_DIR -dictation-args \"$DICT/stt.py {wav} --model {model} --language={language} --prompt={prompt}\""
 fi
 [ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url http://127.0.0.1:$CLS_PORT"
+[ "$HISTORY" = yes ] && flags="$flags -history-url http://127.0.0.1:$HIST_PORT"
 path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [ "$FLUTTER" = yes ] && path="$path:$DATA/sandbox/flutter/bin"
 {
@@ -539,6 +612,7 @@ path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n'
   # Wanted, not required: Xhaos starts even if the classifier fails (commands then ask).
   [ "$CLASSIFIER" = yes ] && printf 'Wants=xhaos-classifier.service\nAfter=xhaos-classifier.service\n'
+  [ "$HISTORY" = yes ] && printf 'Wants=xhaos-history.service\nAfter=xhaos-history.service\n'
   printf '\n'
   printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\nUMask=0002\n' "$HOME_DIR"
   printf 'Environment=WAILS_SERVER_HOST=%s\nEnvironment=WAILS_SERVER_PORT=%s\nEnvironment=PATH=%s\n' "$LISTEN" "$PORT" "$path"
@@ -577,13 +651,52 @@ if [ "$CLASSIFIER" = yes ]; then
       run systemctl restart xhaos-classifier; say "Classifier restarted."
     fi
   fi
-elif [ -f "$CLS_UNIT" ] || [ -n "$(run find "$CLS" -mindepth 1 ! -path "$CLS/models" 2>/dev/null | head -n 1)" ]; then
+elif [ -f "$CLS_UNIT" ] || [ -n "$(run find "$CLS" -mindepth 1 ! -path "$CLS/models" ! -path "$LLAMA_DIR" ! -path "$LLAMA_DIR/*" ! -path "$LLAMA_SUMS" 2>/dev/null | head -n 1)" ]; then
   # Off in $CONF, but here: stopped, never deleted.
   if [ "$SYSTEMD" = yes ] && [ -f "$CLS_UNIT" ] && { systemctl is-enabled xhaos-classifier >/dev/null 2>&1 || systemctl is-active xhaos-classifier >/dev/null 2>&1; }; then
     run systemctl disable --now xhaos-classifier; say "Stopped and disabled the classifier service (CLASSIFIER='no' in $CONF)."
   fi
   say "The classifier is not on, but its files are here: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1))."
   classifier_remove "Delete them (nothing is deleted on its own):"
+fi
+
+# The past-sessions search's service, set up before Xhaos's (which wants it).
+if [ "$HISTORY" = yes ]; then
+  hist_cmd="$LLAMA_DIR/llama-server --host 127.0.0.1 --port $HIST_PORT -m $HIST_MODEL --embedding -t 4 -c 2048 -np 4 -ub 512"
+  {
+    printf '%s\n' "$MARK"
+    printf '[Unit]\nDescription=Xhaos past-sessions search (llama.cpp embedding server, loopback only)\n\n'
+    printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\n' "$HIST"
+    printf '# It logs "no API key is set and CORS allows all origins" at start: expected,\n'
+    printf '# it listens on 127.0.0.1 only, for Xhaos on this server.\n'
+    printf '# -c 2048 -np 4: each of the 4 parallel slots gets 512 tokens, the model'"'"'s limit.\n'
+    printf 'ExecStart=%s\nRestart=on-failure\n' "$hist_cmd"
+    printf 'ProtectSystem=strict\nReadWritePaths=%s\nPrivateTmp=yes\nNoNewPrivileges=yes\n' "$HIST"
+    printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
+  } > "$TMP/xhaos-history.service"
+  if [ "$SYSTEMD" = no ]; then
+    run install -m 644 "$TMP/xhaos-history.service" "$CONF_DIR/xhaos-history.service.example"
+    say "No systemd here: start the search's embedding server yourself, as the xhaos user, before Xhaos:"
+    say "  sudo -u xhaos $hist_cmd"
+  else
+    hist_changed=no
+    if [ -f "$TMP/history-changed" ] || [ -f "$TMP/llama-changed" ]; then hist_changed=yes; fi
+    if ! cmp -s "$TMP/xhaos-history.service" "$HIST_UNIT" 2>/dev/null; then
+      run install -m 644 "$TMP/xhaos-history.service" "$HIST_UNIT"; run systemctl daemon-reload; hist_changed=yes
+    fi
+    if ! systemctl is-enabled xhaos-history >/dev/null 2>&1 || ! systemctl is-active xhaos-history >/dev/null 2>&1; then
+      run systemctl enable --now xhaos-history; say "Past-sessions search started (127.0.0.1:$HIST_PORT; it loads its model in a few seconds)."
+    elif [ "$hist_changed" = yes ]; then
+      run systemctl restart xhaos-history; say "Past-sessions search restarted."
+    fi
+  fi
+elif [ -f "$HIST_UNIT" ] || [ -n "$(run find "$HIST" -mindepth 1 ! -path "$HIST/models" 2>/dev/null | head -n 1)" ]; then
+  # Off in $CONF, but here: stopped, never deleted.
+  if [ "$SYSTEMD" = yes ] && [ -f "$HIST_UNIT" ] && { systemctl is-enabled xhaos-history >/dev/null 2>&1 || systemctl is-active xhaos-history >/dev/null 2>&1; }; then
+    run systemctl disable --now xhaos-history; say "Stopped and disabled the past-sessions search service (HISTORY='no' in $CONF)."
+  fi
+  say "The past-sessions search is not on, but its files are here: $HIST ($(run du -sh "$HIST" 2>/dev/null | cut -f1))."
+  history_remove "Delete them (nothing is deleted on its own):"
 fi
 
 if [ "$SYSTEMD" = no ]; then
