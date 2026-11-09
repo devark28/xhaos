@@ -95,16 +95,31 @@ curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/flash-node.sh |
 - It takes the two downloaded files rather than the Wi-Fi password or code as options, so no secret ends up in shell history or `ps`.
 - `--rpiboot` first runs `rpiboot -d mass-storage-gadget64` so a Pi plugged in by USB shows its card as a disk, then continues the same way. This needs `rpiboot` installed (Debian/Ubuntu package `rpiboot`). On a Zero 2 W it only works when the card in the Pi does not boot; on a Pi 5 it also overwrites a card that boots (see above). The first new disk that appears after `rpiboot` is offered, and its name must still be typed.
 
-### 2. USB stick config on a running node
+### 2. USB stick config on a running node (built)
 
-This lets a node that is already set up get new settings without SSH or a screen: new Wi-Fi, or joining again after it was removed.
+This lets a node that is already set up get new settings without SSH or a screen: new Wi-Fi, or joining again after it was removed. A stick with no settings on it is also a way to find a node: plugging it in writes the node's addresses to it.
 
-- Make a stick with a FAT file system labelled `XHAOS`. Put `xhaos-node.conf` on it, with lines like `wifi_ssid=`, `wifi_password=`, `wifi_country=` and optionally `server=` with `code=` (a fresh join code from Add node).
-- `install-node.sh` adds a udev rule. When a filesystem labelled `XHAOS` appears, the rule starts a one-shot root service, `xhaos-node apply-usb /dev/…`, which mounts the stick read-write with `nosuid,nodev,noexec`.
-- That service adds the Wi-Fi with NetworkManager (`nmcli`) and joins again if a code is given; the old key is replaced only after the new join succeeds. Only this one-shot service runs as root; the node service stays unprivileged.
-- It writes `xhaos-node-result.txt` back to the stick: the time, the hostname, the IP addresses, the node's state and any errors. This is the feedback for blind setup: plug the stick in, wait for the LED, read the file on a computer.
-- It rewrites `xhaos-node.conf` without the password and the code, so the stick does not keep secrets. The password is then only in NetworkManager's root-only files.
-- `install-node.sh --no-usb-config` leaves the rule out. Anyone with the Pi in hand can already take its card, so the stick adds no new risk for a Pi. It might for a build PC, so the release notes should mention this option.
+Format a stick as FAT32 or exFAT, labelled `XHAOS`, and put `xhaos-node.conf` at its top level:
+
+```
+# lines starting with # are comments
+wifi_ssid=Lab 5G
+wifi_password=correct horse battery
+wifi_country=RW
+# to join (again): a fresh code from Nodes → Add node or New code
+server=https://xhaos.example.com
+code=ABCD-EFGH-JKMN
+```
+
+- Every line is optional. The known settings are `wifi_ssid`, `wifi_password` (leave it out for an open network), `wifi_country`, `wifi_hidden` (`yes` for a hidden network), `server` and `code`. Without `server=`, `code=` joins the server the node already knows. Spaces around a value are dropped; put it in double quotes to keep them.
+- Any mistake (an unknown setting, a setting given twice, a password shorter than 8 characters) rejects the whole file, so a stick is applied completely or not at all.
+- `install-node.sh` (with systemd) adds a udev rule, `/etc/udev/rules.d/90-xhaos-node-usb.rules`. When a FAT or exFAT file system labelled `XHAOS` appears, the rule starts `xhaos-node-usb@<partition>.service`. This is a one-shot service that runs `xhaos-node apply-usb /dev/<partition>` as root. The service also runs at boot when the stick is already plugged in. Only this service runs as root; the node service stays unprivileged.
+- `apply-usb` mounts the stick on its own with `nosuid,nodev,noexec`, so nothing on it can run.
+- **Wi-Fi:** it writes a NetworkManager connection, `xhaos-usb-<ssid>`, to `/etc/NetworkManager/system-connections/` (readable by root only). The connection is preferred over the node's other networks. It then reloads NetworkManager and connects (waiting up to 45 s). A network out of reach is kept for later, and the node stays on its other networks meanwhile. `wifi_country` uses `raspi-config` where there is one, otherwise `iw reg set`, which lasts until the next restart.
+- **Joining:** it joins with the code into a temporary folder, retrying for up to 2 minutes while the network comes up. It stops at once when the server refuses the code. Only after the join succeeds does it stop the node service, replace the key and settings (owned by the `xhaos-node` user), and start the service again. A failed join leaves the old key. The node keeps its folder, devices and sandbox mode. The node's old entry, on its old server, stays there as offline until it is removed.
+- **Result:** it writes `xhaos-node-result.txt` back to the stick: the time, what it did, any errors, and the hostname, IP addresses, active connections, the node it is joined as and whether its service runs. Plug the stick in, wait a minute, unplug it and read the file on a computer. There is no LED signal yet.
+- **Secrets:** whatever happened, it rewrites `xhaos-node.conf` with every setting commented out and the password and the code removed. Plugging the stick in again only writes a new result. The password then lives only in NetworkManager's root-only file.
+- `install-node.sh --no-usb-config` leaves the rule out, or removes it. Anyone who can plug in a stick can move the node to their own server. For a Pi that adds little, since anyone holding it can already take its card. For a build PC in a shared room, use this option.
 
 ### 3. USB installer stick (writes the SD card)
 
@@ -178,7 +193,7 @@ The version is checked on `hello`; a node too old for the server is told so and 
 ## Phases
 
 1. **Run and copy, and join a Pi without a screen.** `xhaos-node` (join, run as a service, exec, jobs, put/get, sandbox, devices); `app/node` with join codes, keys, sessions and grants; the four tools; the Nodes tab (add with a join command or the Raspberry Pi first-boot files, list, grant, remove, jobs); `install-node.sh`; release builds. Enough to build on a strong machine and test on Pis.
-2. **Easier blind setup**, in this order: `flash-node.sh` (with `--rpiboot`), the USB stick config, then the USB installer stick (see [Easier blind setup](#easier-blind-setup-phase-2)).
+2. **Easier blind setup**, in this order: `flash-node.sh` (with `--rpiboot`) and the USB stick config (both built), then the USB installer stick (see [Easier blind setup](#easier-blind-setup-phase-2)).
 3. **Hardware.** Hardware facts (cameras, GPUs, USB devices) on node cards; picking a node by label ("any `pi5`").
 4. **Projects on nodes.** A project can live on a node (node + folder), so an agent's ordinary tools (`read_file`, `edit_file`, `bash`…) run there. Incremental sync of a project to a node. Nodes update themselves when the server is updated.
 

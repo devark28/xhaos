@@ -161,7 +161,7 @@ func Join(ctx context.Context, state string, c Config, code, version string) (Co
 		}
 	}
 	if m.Type == wire.TError {
-		return c, errors.New(m.Error)
+		return c, refusal{m.Error} // trying again will not help: Refused(err)
 	}
 	if m.Type != wire.TJoined || m.Node == 0 {
 		return c, fmt.Errorf("joining: unexpected answer %q", m.Type)
@@ -225,13 +225,14 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 }
 
-// refusal is the server saying no (removed node, wrong key, old protocol).
+// refusal is the server saying no (removed node, wrong key, old protocol,
+// a wrong, used or expired join code).
 type refusal struct{ why string }
 
 func (r refusal) Error() string { return "the server refused this node: " + r.why }
 
-// Refused reports whether Run ended because the server refused this node
-// (it was removed): retrying will not help.
+// Refused reports whether Run or Join ended because the server refused this
+// node (it was removed, or the join code is no good): retrying will not help.
 func Refused(err error) bool {
 	var r refusal
 	return errors.As(err, &r)

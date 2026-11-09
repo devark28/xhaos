@@ -5,6 +5,7 @@
 //	xhaos-node run
 //	xhaos-node status
 //	xhaos-node leave
+//	xhaos-node apply-usb /dev/sda1   (as root, from install-node.sh's udev rule)
 //
 // It dials out to the server and keeps one WebSocket open: the machine needs
 // no open port. Commands run inside the node's folder, under Landlock.
@@ -40,6 +41,9 @@ const usage = `xhaos-node: this machine as a node of an Xhaos server
   xhaos-node run       serve the server (what the systemd service runs)
   xhaos-node status    what this node is joined to, and its sandbox
   xhaos-node leave     forget the server: delete this node's key
+  xhaos-node apply-usb DEVICE
+                       apply an XHAOS USB stick's xhaos-node.conf (as root;
+                       install-node.sh's udev rule runs it when one is plugged in)
   xhaos-node version
 
 Every command takes --state DIR (default: $XHAOS_NODE_STATE, else
@@ -65,6 +69,8 @@ func main() {
 		err = status(args)
 	case "leave":
 		err = leave(args)
+	case "apply-usb":
+		err = applyUSB(args)
 	case "version", "--version", "-version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
