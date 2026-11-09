@@ -151,7 +151,7 @@ sudo systemctl daemon-reload
 sudo rm -rf /var/lib/xhaos/classifier
 ```
 
-By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (10 s by default) limits each answer; past it the command asks.
+By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (15 s by default) limits each answer; past it the command asks.
 
 ## Reverse proxy (HTTPS)
 

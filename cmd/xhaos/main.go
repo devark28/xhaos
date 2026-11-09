@@ -75,7 +75,7 @@ func main() {
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
 	classifierURL := flag.String("classifier-url", "", "llama-server base URL of the local command classifier, e.g. http://127.0.0.1:8081 (optional; without it only the built-in list of build, test and lint commands is used)")
-	classifierTimeout := flag.Duration("classifier-timeout", 10*time.Second, "time limit for one classifier answer; past it the command asks")
+	classifierTimeout := flag.Duration("classifier-timeout", 15*time.Second, "time limit for one classifier answer; past it the command asks")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {

@@ -23,7 +23,7 @@
 // Configuration (cmd/xhaos flags, passed as Config):
 //
 //	-classifier-url      llama-server's base URL; empty turns the model off (the list stays).
-//	-classifier-timeout  the limit for one answer (default 10 s).
+//	-classifier-timeout  the limit for one answer (default 15 s).
 //
 // The owner turns the list and the model on or off together, server-wide (on
 // by default), and can keep a developer log of every decision (off by default).
@@ -56,7 +56,7 @@ const logFile = "log.jsonl"
 // Config says where the model is.
 type Config struct {
 	URL     string        // llama-server's base URL; "" turns the model off (the built-in list still applies)
-	Timeout time.Duration // limit for one answer; 0 is 10 s
+	Timeout time.Duration // limit for one answer; 0 is 15 s
 	Debug   string        // folder for the developer log (beside the database); "" disables it
 }
 

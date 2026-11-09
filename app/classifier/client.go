@@ -28,10 +28,10 @@ const (
 )
 
 // NewClient returns a client for the llama-server at url (for example
-// http://127.0.0.1:8081). Each request is cut off after timeout (0: 10 s).
+// http://127.0.0.1:8081). Each request is cut off after timeout (0: 15 s).
 func NewClient(url string, timeout time.Duration) *Client {
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = 15 * time.Second
 	}
 	return &Client{url: strings.TrimRight(url, "/"), timeout: timeout, http: &http.Client{}}
 }
