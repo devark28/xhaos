@@ -41,6 +41,7 @@ import (
 	"github.com/devark28/xhaos/app/agent"
 	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/sandbox"
+	"github.com/devark28/xhaos/app/tool"
 )
 
 // How long a session may last.
@@ -86,58 +87,132 @@ func Protected(branch string) bool {
 	return strings.HasPrefix(branch, "release")
 }
 
-var (
-	gitPush   = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bpush\b([^;&|\n]*)`)
-	gitBranch = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bbranch\b([^;&|\n]*)`)
-)
-
 // CheckCommand returns why a command would do what dangerously allow cannot
 // undo afterwards (a push to a protected branch, a force or delete push, a
 // push that does not name its branch, deleting or renaming branches), or "".
 // Local changes are guarded by Capture and Repair instead.
+//
+// The check reads the shell-parsed words (quotes removed), so g'i't or "git"
+// is git. A word with spaces (as in sh -c 'git push …') is checked as a
+// command line of its own. A line that cannot be parsed is checked as text,
+// both as given and with the quote marks, backslashes and $ removed.
 func CheckCommand(command string) string {
-	for _, m := range gitBranch.FindAllStringSubmatch(command, -1) {
-		for _, a := range strings.Fields(m[1]) {
-			if a == "-d" || a == "-D" || a == "--delete" || a == "-m" || a == "-M" || a == "--move" || a == "-f" || a == "--force" {
-				return "deleting, renaming or forcing branches is refused while dangerously allowed"
-			}
-		}
+	return checkLine(command, 0)
+}
+
+// maxNesting bounds how deep quoted command lines are read.
+const maxNesting = 3
+
+func checkLine(command string, depth int) string {
+	cmds, ok := tool.SimpleCommands(command)
+	if !ok {
+		return checkText(strings.NewReplacer(`'`, "", `"`, "", `\`, "", `$`, "").Replace(command))
 	}
-	for _, m := range gitPush.FindAllStringSubmatch(command, -1) {
-		var plain []string
-		for _, a := range strings.Fields(m[1]) {
-			switch {
-			case a == "-f" || strings.HasPrefix(a, "--force") || a == "--delete" || a == "-d" || a == "--mirror" || a == "--all" || a == "--prune" || a == "--tags":
-				return fmt.Sprintf("git push %s is refused while dangerously allowed: push one branch by name, without force", a)
-			case strings.HasPrefix(a, "-"):
-			default:
-				plain = append(plain, a)
-			}
+	for _, words := range cmds {
+		if why := checkWords(words); why != "" {
+			return why
 		}
-		// plain: [remote] [refspec…]; the branch must be named, so the
-		// destination is known before anything leaves this machine.
-		if len(plain) < 2 {
-			return "name the branch to push while dangerously allowed: git push origin <branch>"
+		if depth >= maxNesting {
+			continue
 		}
-		for _, ref := range plain[1:] {
-			if strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, ":") {
-				return fmt.Sprintf("force or delete refspec %q is refused while dangerously allowed", ref)
-			}
-			dst := ref
-			if _, after, ok := strings.Cut(ref, ":"); ok {
-				dst = after
-			}
-			dst = strings.TrimPrefix(dst, "refs/heads/")
-			if dst == "HEAD" || dst == "@" {
-				return "name the branch to push while dangerously allowed, not HEAD: git push origin <branch>"
-			}
-			if Protected(dst) {
-				return fmt.Sprintf("pushing to %s is refused while dangerously allowed: it is a protected branch", dst)
+		for _, w := range words {
+			if strings.ContainsAny(w, " \t") {
+				if why := checkLine(w, depth+1); why != "" {
+					return why
+				}
 			}
 		}
 	}
 	return ""
 }
+
+// checkWords checks one parsed simple command: every git in it, and the
+// branch or push subcommand after it, with the words that follow.
+func checkWords(words []string) string {
+	for i, w := range words {
+		if w != "git" && !strings.HasSuffix(w, "/git") {
+			continue
+		}
+		for j := i + 1; j < len(words); j++ {
+			switch words[j] {
+			case "branch":
+				if why := checkBranchArgs(words[j+1:]); why != "" {
+					return why
+				}
+			case "push":
+				if why := checkPushArgs(words[j+1:]); why != "" {
+					return why
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func checkBranchArgs(args []string) string {
+	for _, a := range args {
+		if a == "-d" || a == "-D" || a == "--delete" || a == "-m" || a == "-M" || a == "--move" || a == "-f" || a == "--force" {
+			return "deleting, renaming or forcing branches is refused while dangerously allowed"
+		}
+	}
+	return ""
+}
+
+func checkPushArgs(args []string) string {
+	var plain []string
+	for _, a := range args {
+		switch {
+		case a == "-f" || strings.HasPrefix(a, "--force") || a == "--delete" || a == "-d" || a == "--mirror" || a == "--all" || a == "--prune" || a == "--tags":
+			return fmt.Sprintf("git push %s is refused while dangerously allowed: push one branch by name, without force", a)
+		case strings.HasPrefix(a, "-"):
+		default:
+			plain = append(plain, a)
+		}
+	}
+	// plain: [remote] [refspec…]; the branch must be named, so the
+	// destination is known before anything leaves this machine.
+	if len(plain) < 2 {
+		return "name the branch to push while dangerously allowed: git push origin <branch>"
+	}
+	for _, ref := range plain[1:] {
+		if strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, ":") {
+			return fmt.Sprintf("force or delete refspec %q is refused while dangerously allowed", ref)
+		}
+		dst := ref
+		if _, after, ok := strings.Cut(ref, ":"); ok {
+			dst = after
+		}
+		dst = strings.TrimPrefix(dst, "refs/heads/")
+		if dst == "HEAD" || dst == "@" {
+			return "name the branch to push while dangerously allowed, not HEAD: git push origin <branch>"
+		}
+		if Protected(dst) {
+			return fmt.Sprintf("pushing to %s is refused while dangerously allowed: it is a protected branch", dst)
+		}
+	}
+	return ""
+}
+
+// checkText is checkWords for a line that could not be parsed: the same
+// rules applied to the text, which is the old behaviour.
+func checkText(command string) string {
+	for _, m := range gitBranch.FindAllStringSubmatch(command, -1) {
+		if why := checkBranchArgs(strings.Fields(m[1])); why != "" {
+			return why
+		}
+	}
+	for _, m := range gitPush.FindAllStringSubmatch(command, -1) {
+		if why := checkPushArgs(strings.Fields(m[1])); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+var (
+	gitPush   = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bpush\b([^;&|\n]*)`)
+	gitBranch = regexp.MustCompile(`\bgit\b[^;&|\n]*?\bbranch\b([^;&|\n]*)`)
+)
 
 // CurrentBranch reads the checked-out branch from .git/HEAD, without running
 // git (a project's git config could run commands). "" when root is not a

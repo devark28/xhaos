@@ -200,6 +200,23 @@ func splitCommands(line string) []string {
 	return append(parts, cur.String())
 }
 
+// SimpleCommands splits a command line into its simple commands, each as
+// shell words with the quotes removed (so g'i't and "git" read as git). ok is
+// false when the line cannot be read safely (see shellWords); callers must then
+// treat the line as unknown.
+func SimpleCommands(line string) (cmds [][]string, ok bool) {
+	for _, part := range splitCommands(line) {
+		words, ok := shellWords(part)
+		if !ok {
+			return nil, false
+		}
+		if len(words) > 0 {
+			cmds = append(cmds, words)
+		}
+	}
+	return cmds, true
+}
+
 // shellWords splits one simple command into words, honoring quotes. It fails
 // on unbalanced quotes and on characters with shell meaning it does not model.
 func shellWords(s string) ([]string, bool) {
