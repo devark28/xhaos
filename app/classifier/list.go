@@ -3,6 +3,8 @@ package classifier
 import (
 	"regexp"
 	"strings"
+
+	"github.com/devark28/xhaos/app/tool"
 )
 
 // The built-in list: exact build, test and lint commands that are allowed
@@ -81,6 +83,26 @@ func ListedIn(root, command string) (name string, ok bool) {
 	return strings.Join(names, ", "), true
 }
 
+// readPart reports a simple command that only reads, as the gate classifies
+// it (tool.ReadWords), with no glob: a glob could expand to a file name that
+// starts with a dash and turns the read into a write.
+//
+// git is not taken: git diff and log can run a program named by the project's
+// config (diff.external, textconv drivers), which the list does not judge.
+func readPart(toks []token) bool {
+	words := make([]string, 0, len(toks))
+	for _, t := range toks {
+		if t.op == "2>" {
+			continue
+		}
+		if t.glob {
+			return false
+		}
+		words = append(words, t.text)
+	}
+	return words[0] != "git" && tool.ReadWords(words)
+}
+
 // simple checks one simple command. A filter is allowed only after a pipe and
 // returns an empty name.
 func simple(toks []token, afterPipe bool, root string) (string, bool) {
@@ -111,6 +133,9 @@ func simple(toks []token, afterPipe bool, root string) (string, bool) {
 		if f, ok := filters[prog]; ok {
 			return "", f(args)
 		}
+	} else if readPart(toks) {
+		// A read beside listed commands (echo ok && go build ./...): it adds no name.
+		return "", true
 	}
 	p, ok := programs[prog]
 	if !ok {
@@ -496,8 +521,37 @@ var (
 		},
 		pos: plainPath,
 	}
-	makeArgs = spec{bools: []string{"-k", "-s", "--silent", "--keep-going"}, values: map[string]func(string) bool{"-j": number}, pos: target("build", "test", "lint")}
+	// date prints the time: no setting, no file (no -s, -f, -r, -d).
+	dateArgs = spec{bools: []string{"-u", "--utc", "--universal"}, pos: dateFormat}
+	// lsArgs are npm ls, pnpm ls and yarn list: they print the installed tree
+	// from node_modules and the lockfile, and change nothing.
+	lsArgs = spec{
+		bools:  []string{"--all", "--long", "-l", "--json", "--parseable", "--prod", "--production", "--dev"},
+		values: map[string]func(string) bool{"--depth": number},
+		pos:    packageName,
+	}
+	makeArgs = spec{bools: []string{"-k", "-s", "--silent", "--keep-going", "-n", "--dry-run", "--just-print"}, values: map[string]func(string) bool{"-j": number}, pos: target("build", "test", "lint")}
 )
+
+// dateFormat is a date output format: +FORMAT, with no shell expansion.
+var dateFormat = func(w arg) bool {
+	return !w.glob && match(`^\+[-A-Za-z0-9%:._,/+ ]*$`)(w.text)
+}
+
+// packageName is an npm package name, optionally scoped.
+var packageName = func(w arg) bool {
+	return !w.glob && match(`^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9._-]+$`)(w.text)
+}
+
+// withTree adds a read-only listing form (npm ls, yarn list) to a runner.
+func withTree(prog, sub string, run program) program {
+	return func(a []arg) (string, bool) {
+		if first(a) == sub {
+			return named(prog+" "+sub, lsArgs.check(a[1:]))
+		}
+		return run(a)
+	}
+}
 
 // target accepts one of names as a positional word.
 func target(names ...string) func(arg) bool {
@@ -604,9 +658,10 @@ func init() {
 	programs["golangci-lint"] = func(a []arg) (string, bool) {
 		return named("golangci-lint run", first(a) == "run" && golangci.check(a[1:]))
 	}
-	programs["npm"] = runScript("npm", false)
-	programs["pnpm"] = runScript("pnpm", true)
-	programs["yarn"] = runScript("yarn", true)
+	programs["npm"] = withTree("npm", "ls", runScript("npm", false))
+	programs["pnpm"] = withTree("pnpm", "ls", runScript("pnpm", true))
+	programs["yarn"] = withTree("yarn", "list", runScript("yarn", true))
+	programs["date"] = func(a []arg) (string, bool) { return named("date", dateArgs.check(a)) }
 	programs["make"] = func(a []arg) (string, bool) { return named("make", makeArgs.check(a)) }
 	programs["pytest"] = func(a []arg) (string, bool) { return named("pytest", pytest.check(a)) }
 	for _, py := range []string{"python", "python3"} {

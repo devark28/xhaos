@@ -60,3 +60,31 @@ func TestReadCommandsThatWriteOrRunAreExec(t *testing.T) {
 		}
 	}
 }
+
+// ReadWords is ClassifyCommand's read class for one simple command.
+func TestReadWords(t *testing.T) {
+	read := [][]string{
+		{"echo", "ok"},
+		{"ls", "-la"},
+		{"cat", "go.mod"},
+		{"grep", "-r", "foo", "app"},
+		{"git", "status"}, // the gate's read class; the list leaves git out (see readPart)
+	}
+	for _, w := range read {
+		if !ReadWords(w) {
+			t.Errorf("ReadWords(%q) = false; want true", w)
+		}
+	}
+	notRead := [][]string{
+		nil,
+		{"sort", "-o", "out.txt", "a"},
+		{"cat", "/etc/passwd"},
+		{"go", "build", "./..."},
+		{"rm", "x"},
+	}
+	for _, w := range notRead {
+		if ReadWords(w) {
+			t.Errorf("ReadWords(%q) = true; want false", w)
+		}
+	}
+}

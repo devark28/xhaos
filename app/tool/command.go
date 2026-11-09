@@ -74,6 +74,13 @@ func ClassifyCommand(line string) string {
 	return class
 }
 
+// ReadWords reports whether one simple command, given as its words after shell
+// quoting, is Read by ClassifyCommand: a read command whose arguments stay
+// inside the project and that writes or runs nothing.
+func ReadWords(words []string) bool {
+	return len(words) > 0 && classifyWords(words) == Read
+}
+
 func classifyWords(words []string) string {
 	name := words[0]
 	if strings.Contains(name, "=") || strings.Contains(name, "/") {
