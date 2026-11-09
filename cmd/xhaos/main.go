@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -32,10 +33,12 @@ import (
 	"github.com/devark28/xhaos/app/egress"
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/health"
+	"github.com/devark28/xhaos/app/history"
 	"github.com/devark28/xhaos/app/live"
 	"github.com/devark28/xhaos/app/run"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/serve"
+	"github.com/devark28/xhaos/app/workspace"
 	"github.com/devark28/xhaos/frontend"
 )
 
@@ -76,6 +79,9 @@ func main() {
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
 	classifierURL := flag.String("classifier-url", "", "llama-server base URL of the local command classifier, e.g. http://127.0.0.1:8081 (optional; without it only the built-in list of build, test and lint commands is used)")
 	classifierTimeout := flag.Duration("classifier-timeout", 10*time.Second, "time limit for one classifier answer; past it the command asks")
+	historyURL := flag.String("history-url", "", "llama-server base URL serving an embedding model (started with --embedding), e.g. http://127.0.0.1:8082; enables search of past sessions (optional)")
+	historyImport := flag.String("history-import", "", "folder of Claude Code session folders (…/.claude/projects) to import into the history; the proposed project of each folder is logged first")
+	historyConfirm := flag.Bool("history-confirm", false, "import the folders of -history-import, with the proposed projects (without it the import only logs the proposals)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -136,12 +142,16 @@ func main() {
 			Timeout: *classifierTimeout,
 			Debug:   filepath.Join(filepath.Dir(*dbPath), "classifier-debug"),
 		},
-		Publish:   func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
-		Notify:    func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
-		BoardLive: func(ws string, n board.Notice) { hub.Publish(ws, BoardEventName, n) },
+		HistoryURL: *historyURL,
+		Publish:    func(e eventlog.Event) { hub.Publish(e.WorkspaceID, EventName, e) },
+		Notify:     func(d run.Delta) { hub.PublishLossy(d.WorkspaceID, DeltaEventName, d) },
+		BoardLive:  func(ws string, n board.Notice) { hub.Publish(ws, BoardEventName, n) },
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *historyImport != "" {
+		go importHistory(services, *historyImport, *historyConfirm)
 	}
 	// A stream carries only its session's workspace.
 	hub.Workspace = func(r *http.Request) string { return auth.WorkspaceOf(r.Context()) }
@@ -243,6 +253,38 @@ func noCache(next http.Handler) http.Handler {
 // is reachable from the browser. Agent-side operations (posting to channels,
 // spawning, saving memories as an agent) take the acting agent, so they stay
 // off this list; channels are bound through their read-only Owner view.
+// importHistory plans the import of the transcript folders under root into
+// the default workspace, logs the proposed project of each folder, and imports
+// them only when confirm is set. It runs in the background: a large import
+// takes minutes, and the server serves meanwhile.
+func importHistory(s *backend.Services, root string, confirm bool) {
+	ctx := context.Background()
+	proposals, unmatched, err := history.Plan(s.History, workspace.DefaultID, root)
+	if err != nil {
+		log.Printf("history import: %v", err)
+		return
+	}
+	for _, p := range proposals {
+		log.Printf("history import: folder %s → project %q (%s) exact=%v", p.Folder, p.Project.Name, p.Project.Path, p.Exact)
+	}
+	for _, f := range unmatched {
+		log.Printf("history import: folder %s matches no project; not imported", f)
+	}
+	if !confirm {
+		log.Printf("history import: nothing imported; rerun with -history-confirm to import the folders above")
+		return
+	}
+	reports, err := history.Import(ctx, s.History, workspace.DefaultID, root, proposals)
+	for i, r := range reports {
+		log.Printf("history import: %s: %d files, %d turns, %d chunks (%d scrubbed), %d new, %d embedded", proposals[i].Folder, r.Files, r.Turns, r.Chunks, r.Scrubbed, r.New, r.Embedded)
+	}
+	if err != nil {
+		log.Printf("history import: stopped: %v", err)
+		return
+	}
+	log.Printf("history import: done")
+}
+
 func bindings(s *backend.Services) []application.Service {
 	return []application.Service{
 		application.NewService(health.New(version)),
@@ -266,5 +308,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Web),
 		application.NewService(s.Dictation),
 		application.NewService(s.Classifier.Owner()),
+		application.NewService(s.History),
 	}
 }

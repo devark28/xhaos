@@ -54,6 +54,8 @@ var serverWide = map[string]bool{
 	"classifier.Service.Enabled": true, "classifier.Service.Health": true, // whether a local classifier is configured, and its model server's state
 	"classifier.Service.On": true, "classifier.Service.SetOn": true, // the server-wide classifier switch
 	"classifier.Service.DeveloperLog": true, "classifier.Service.SetDeveloperLog": true, "classifier.Service.DeleteLog": true, // the Developer setting: log every decision
+	"history.Service.Enabled": true, "history.Service.Health": true, // whether an embedding server is configured, and its state
+	"history.Service.AllProjects": true, "history.Service.SetAllProjects": true, // the server-wide switch: agents search the whole workspace's history
 	"prefs.Service.Get": true, "prefs.Service.Set": true, // appearance, shared by the server
 	"usage.Service.Prices": true, "usage.Service.SetPrice": true, "usage.Service.ResetPrice": true, "usage.Service.PriceOf": true, // model prices
 }

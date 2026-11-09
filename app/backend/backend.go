@@ -13,6 +13,7 @@ import (
 	"github.com/devark28/xhaos/app/channel"
 	"github.com/devark28/xhaos/app/classifier"
 	"github.com/devark28/xhaos/app/dictation"
+	"github.com/devark28/xhaos/app/history"
 	"github.com/devark28/xhaos/app/llm/openai"
 	"github.com/devark28/xhaos/app/llm/sim"
 	"github.com/devark28/xhaos/app/mcp"
@@ -65,6 +66,9 @@ type Options struct {
 	Dictation dictation.Config
 	// Classifier is the local command classifier (zero URL: no model; the built-in list still applies).
 	Classifier classifier.Config
+	// HistoryURL is the embedding server for the searchable history (""
+	// turns history search off).
+	HistoryURL string
 }
 
 // Services are the client-facing feature services plus server internals.
@@ -90,6 +94,9 @@ type Services struct {
 	Skills     *skill.Service
 	Web        *web.Service
 	Dictation  *dictation.Service
+	// History is the searchable past sessions (the page's search box and
+	// the agents' history_search tool).
+	History *history.Service
 	// Classifier decides ordinary commands for the runner; the page binds
 	// its Owner view.
 	Classifier *classifier.Classifier
@@ -131,6 +138,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"prefs", prefs.Migrate},
 		{"dictation", dictation.Migrate},
 		{"classifier", classifier.Migrate},
+		{"history", history.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -203,7 +211,13 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)
 	runner.Memories = memories.Index
-	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memory.NewTools(memories)}
+	// The history's embedding server is optional: without it, search says so.
+	var embedder history.Embedder
+	if opts.HistoryURL != "" {
+		embedder = history.NewClient(opts.HistoryURL)
+	}
+	past := history.NewService(db, embedder)
+	runner.Extras = []run.ExternalTools{tools, channels.Tools(), memory.NewTools(memories), history.NewTools(past)}
 	side := btw.NewService(agents, providers)
 	side.Usage = counter
 	side.Context = func(ws string) string {
@@ -253,7 +267,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...)...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...), history.NewTools(past).Catalog()...)...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -322,6 +336,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Skills:     skills,
 		Web:        webs,
 		Dictation:  dictation.NewService(db, opts.Dictation),
+		History:    past,
 		Classifier: runner.Classifier,
 		mcp:        tools,
 		egress:     out,
