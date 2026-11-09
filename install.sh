@@ -161,7 +161,7 @@ CLS=$HOME_DIR/classifier
 LLAMA_TAG=b12110
 LLAMA_DIR=$CLS/llama-$LLAMA_TAG
 LLAMA_SUMS=$CLS/llama-$LLAMA_TAG.sha256sums
-CLS_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+CLS_MODEL_FILE=qwen2.5-coder-3b-instruct-q4_k_m.gguf
 CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
 CLS_PORT=8189
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
@@ -371,12 +371,12 @@ install_dictation() {
 # The command classifier's pins: llama.cpp's prebuilt CPU build for Ubuntu
 # (MIT license), tag b12110 (a nightly, commit cd959bae99ff4bed22bef2604f45241c09bbb8c8),
 # one tarball per CPU, checked before it is unpacked; and the Qwen2.5-Coder
-# 1.5B Instruct model, Q4_K_M GGUF (Apache-2.0), pinned to a commit.
+# 3B Instruct model, Q4_K_M GGUF (Apache-2.0), pinned to a commit.
 LLAMA_BASE=${XHAOS_LLAMA_BASE:-https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG}
 LLAMA_X64_SUM=368227edcc229be5f9bed16a2223d79b5e41d0ac2e19bcf5825e82291c060e55
 LLAMA_ARM64_SUM=4758b51335e37b4346251f2687d64841ff1c07ecb27fc46323945bb2ec9c44d2
-CLS_MODEL_BASE=${XHAOS_CLASSIFIER_MODEL_BASE:-https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/f86cb2c1fa58255f8052cc32aeede1b7482d4361}
-CLS_MODEL_SUM=cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046
+CLS_MODEL_BASE=${XHAOS_CLASSIFIER_MODEL_BASE:-https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/f74adce6aa16316c625447af059dbebe4983757c}
+CLS_MODEL_SUM=724fb256bec1ff062b2f65e4569e871ad2e95ab2a3989723d1769c54294730b7
 
 # llama_ok "SUM NAME": the unpacked llama.cpp folder came from that tarball and
 # every file in it still matches the list written when it was unpacked.
@@ -423,7 +423,7 @@ install_classifier() {
     if [ "$APT" = yes ]; then apt_update; apt_install libgomp1 openssl; fi
     out=$(as_user xhaos "$LLAMA_DIR/llama-server" --version 2>&1) || die "llama-server does not run here: $(printf '%s' "$out" | tail -n 3)"
   fi
-  say "  Qwen2.5-Coder 1.5B Instruct, Q4_K_M (Hugging Face, 1.1 GB, checked) in $CLS/models"
+  say "  Qwen2.5-Coder 3B Instruct, Q4_K_M (Hugging Face, 2.1 GB, checked) in $CLS/models"
   if xtest -f "$CLS_MODEL" && [ "$(xsum "$CLS_MODEL")" = "$CLS_MODEL_SUM" ]; then
     say "  already downloaded and checked"
   else
@@ -486,7 +486,7 @@ part podman "$PODMAN" n "Rootless Podman with Docker Compose.
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
 # --yes answers yes to the other parts, but never adds the classifier model
-# (1.1 GB, and RAM while it runs): only --with classifier or the terminal does.
+# (2.1 GB, and about 3.7 GB of RAM while it runs): only --with classifier or the terminal does.
 cls_yes_only() {
   [ "$YES" = yes ] && [ "$CLASSIFIER" != yes ] || return 1
   case $WITH$WITHOUT in *",classifier,"*) return 1 ;; esac
@@ -498,7 +498,7 @@ part classifier "$CLASSIFIER" n "Command classifier model (optional; most server
   Xhaos's built-in list of build, test and lint commands already runs those without asking, with no model (on by default; Settings → Tools → Commands turns it off).
   This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
   Dangerous commands still ask, and nothing leaves the server.
-  Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 1.5B Instruct Q4_K_M (Hugging Face, 1.1 GB, Apache-2.0),
+  Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 3B Instruct Q4_K_M (Hugging Face, 2.1 GB, Apache-2.0),
   both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
 fi
 case $WITHOUT in *",classifier,"*)
