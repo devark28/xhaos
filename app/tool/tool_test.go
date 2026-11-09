@@ -102,7 +102,17 @@ func TestBash(t *testing.T) {
 	if _, err := run(t, root, "bash", map[string]any{"command": "exit 3"}); err == nil || !strings.Contains(err.Error(), "exit code 3") {
 		t.Fatalf("exit status error = %v", err)
 	}
-	for cmd, want := range map[string]bool{"git commit -m x": true, "cd a && git push": true, "git status": false, "echo commit": false} {
+	for cmd, want := range map[string]bool{
+		"git commit -m x": true, "cd a && git push": true, "git status": false, "echo commit": false,
+		// quoted and nested forms are commits too (the shell runs them)
+		"gi''t commit -m x":                true,
+		`"git" push origin feat/x`:         true,
+		"g\\it commit -m x":                true,
+		"sh -c 'git commit -m x'":          true,
+		`bash -c "gi''t push origin main"`: true,
+		"git add -A && git status":         false,
+		"echo 'git commit' > /dev/null":    true, // text check: a quoted commit counts
+	} {
 		c, _ := Prepare(root, call("bash", map[string]any{"command": cmd}))
 		if c.Commit != want {
 			t.Errorf("%q commit = %v", cmd, c.Commit)
