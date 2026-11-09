@@ -53,8 +53,12 @@ type chatRequest struct {
 }
 
 // The same command should get the same answer every time: greedy decoding and
-// a fixed seed. cache_prompt is off so every request runs the whole prompt;
-// whether a cached prompt changes answers is not measured.
+// a fixed seed. cache_prompt lets the server reuse the prompt's processing
+// between requests (it is the same for every command). Measured on the
+// 98-command held-out set, cache on: no verdict changed between two passes
+// for the 1.5B model, and none for the 3B and 7B models except where pass 1
+// hit a 30 s timeout (a timeout is an ask). Answers with the cache off were
+// not measured on that set.
 const (
 	decodeSeed = 1
 	decodeTopK = 1
@@ -93,7 +97,7 @@ func (c *Client) Ask(ctx context.Context, text string) (allow bool, reason strin
 		Temperature:    0,
 		TopK:           decodeTopK,
 		Seed:           decodeSeed,
-		CachePrompt:    false,
+		CachePrompt:    true,
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
 	})

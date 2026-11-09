@@ -63,7 +63,7 @@ func TestAskSendsTheFixedDecodeAndExamples(t *testing.T) {
 	if !ok {
 		t.Fatal("no request reached the model")
 	}
-	if req.Temperature != 0 || req.Seed != decodeSeed || req.TopK != decodeTopK || req.CachePrompt {
+	if req.Temperature != 0 || req.Seed != decodeSeed || req.TopK != decodeTopK || !req.CachePrompt {
 		t.Errorf("decode settings = temperature %v, seed %d, top_k %d, cache_prompt %v", req.Temperature, req.Seed, req.TopK, req.CachePrompt)
 	}
 	if want := 2 + 2*len(examples); len(req.Messages) != want {
