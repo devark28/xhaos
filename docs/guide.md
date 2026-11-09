@@ -31,6 +31,8 @@ For read-write agents on auto review, the project's own build, test and lint com
 
 `npx`, `pnpx` and `bunx` are on the list only for a JavaScript tool that is already installed in the project's `node_modules/.bin` (`npx tsc --noEmit`, `npx vitest run`), with the flags the tool's own command takes. Anything else with them asks, since they would download a package.
 
+The project's installed tools are part of the project, and an agent can change them: a file it writes into `node_modules/.bin` is what `npx` then runs. Only the project owner can judge whether those tools can be trusted.
+
 These commands run inside the sandbox as usual, and with four caveats:
 
 - `make` with no target runs the Makefile's default target, whatever that is.
