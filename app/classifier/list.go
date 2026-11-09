@@ -44,6 +44,9 @@ func ListedIn(root, command string) (name string, ok bool) {
 	}
 	var names []string
 	seen := map[string]bool{}
+	// read is set when a simple command is a read beside the listed commands
+	// (see simple); a runner's package is then not allowed in the same line.
+	read := false
 	// Split into simple commands; remember which follow a pipe.
 	var cmd []token
 	afterPipe := false
@@ -51,6 +54,9 @@ func ListedIn(root, command string) (name string, ok bool) {
 		n, ok := simple(cmd, afterPipe, root)
 		if !ok {
 			return false
+		}
+		if n == "" && !afterPipe && len(cmd) > 0 {
+			read = true
 		}
 		if n != "" && !seen[n] {
 			seen[n] = true
@@ -78,6 +84,11 @@ func ListedIn(root, command string) (name string, ok bool) {
 		}
 	}
 	if !flush(false) || len(names) == 0 {
+		return "", false
+	}
+	if read && anyRunner(names) {
+		// npx TOOL can download a package; a read beside it is not taken
+		// (true; npx eslint . would otherwise be listed).
 		return "", false
 	}
 	return strings.Join(names, ", "), true
