@@ -184,6 +184,7 @@ HIST_UNIT=/etc/systemd/system/xhaos-history.service
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180
 DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no HISTORY=no
+HISTORY_THREADS=4
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -593,7 +594,7 @@ run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nHISTORY='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$HISTORY"
+  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nHISTORY='%s'\nHISTORY_THREADS='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$HISTORY" "$HISTORY_THREADS"
 } > "$TMP/install.conf"
 run install -m 644 "$TMP/install.conf" "$CONF"
 
@@ -662,7 +663,8 @@ fi
 
 # The past-sessions search's service, set up before Xhaos's (which wants it).
 if [ "$HISTORY" = yes ]; then
-  hist_cmd="$LLAMA_DIR/llama-server --host 127.0.0.1 --port $HIST_PORT -m $HIST_MODEL --embedding -t 4 -c 2048 -np 4 -ub 512"
+  case $HISTORY_THREADS in ''|*[!0-9]*|0) die "HISTORY_THREADS in $CONF must be a whole number of threads, 1 or more (got '$HISTORY_THREADS')" ;; esac
+  hist_cmd="$LLAMA_DIR/llama-server --host 127.0.0.1 --port $HIST_PORT -m $HIST_MODEL --embedding -t $HISTORY_THREADS -c 2048 -np 4 -ub 512"
   {
     printf '%s\n' "$MARK"
     printf '[Unit]\nDescription=Xhaos past-sessions search (llama.cpp embedding server, loopback only)\n\n'
@@ -670,6 +672,7 @@ if [ "$HISTORY" = yes ]; then
     printf '# It logs "no API key is set and CORS allows all origins" at start: expected,\n'
     printf '# it listens on 127.0.0.1 only, for Xhaos on this server.\n'
     printf '# -c 2048 -np 4: each of the 4 parallel slots gets 512 tokens, the model'"'"'s limit.\n'
+    printf '# -t: HISTORY_THREADS in %s (4 by default; 8 was fastest on an 8-vCPU server, 16 slower).\n' "$CONF"
     printf 'ExecStart=%s\nRestart=on-failure\n' "$hist_cmd"
     printf 'ProtectSystem=strict\nReadWritePaths=%s\nPrivateTmp=yes\nNoNewPrivileges=yes\n' "$HIST"
     printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
