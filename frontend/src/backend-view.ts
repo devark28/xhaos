@@ -44,7 +44,8 @@ function toolEntry(data: ToolData, seq: number): Entry {
     const what = data.name === 'bash' ? 'Run this command?' : `${verb} ${data.summary}?`;
     return { kind: 'approval', callId: data.callId, state: data.state, text: what, command: write ? data.preview || '' : data.summary, language: write ? 'diff' : 'bash', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
   }
-  const note = data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : stateNotes[data.state] || data.state;
+  // A call the local classifier allowed says so, with its reason (see docs/guide.md).
+  const note = data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : data.by === 'classifier' && data.reason ? data.reason : stateNotes[data.state] || data.state;
   const output = data.state === 'denied' ? '' : data.output || '';
   return {
     kind: write && data.preview && data.state !== 'failed' ? 'diff' : 'tool',

@@ -17,6 +17,7 @@ import { DictationSettings } from './DictationSettings.tsx';
 import { Secrets } from './Secrets.tsx';
 import { Skills } from './Skills.tsx';
 import { WebSettings } from './WebSettings.tsx';
+import { ClassifierSettings } from './ClassifierSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { BoardList } from './Boards.tsx';
@@ -517,6 +518,8 @@ function Tools() {
         : <>
           <h3 {...stylex.props(tools.subheading, tools.first)}>Web</h3>
           <WebSettings />
+          <h3 {...stylex.props(tools.subheading)}>Commands</h3>
+          <ClassifierSettings />
           {catalog.sandbox && (
             <div data-sandbox={catalog.sandbox.active ? 'on' : 'off'} {...stylex.props(tools.sandbox, !catalog.sandbox.active && tools.sandboxOff)}>
               <strong>{catalog.sandbox.active ? `Commands are sandboxed (Landlock v${catalog.sandbox.abi})` : 'Commands are not sandboxed'}</strong>
