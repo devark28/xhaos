@@ -377,7 +377,7 @@ func TestEstimateLearnsTheServersSpeed(t *testing.T) {
 	if got, err := s.Estimate(60); err != nil || got != 0 {
 		t.Fatalf("no takes yet: %v %v, want 0 (the page's default)", got, err)
 	}
-	s.recordSpeed(66, 75, false) // the VPS: slower than real time
+	s.recordSpeed(66, 75, false, false) // the VPS: slower than real time
 	if got, _ := s.Estimate(66); got != 75 {
 		t.Errorf("one take: %v s for the same length, want 75", got)
 	}
@@ -386,20 +386,20 @@ func TestEstimateLearnsTheServersSpeed(t *testing.T) {
 	}
 	// Takes of 10 s and 60 s at 8 s fixed + 1 s per second.
 	for _, l := range []float64{10, 60, 10, 60} {
-		s.recordSpeed(l, 8+l, false)
+		s.recordSpeed(l, 8+l, false, false)
 	}
 	if got, _ := s.Estimate(5); got < 12 || got > 15 {
 		t.Errorf("a short take: %v s, want about the fixed part plus 5 s", got)
 	}
 	// It keeps only recent takes: a faster machine takes over.
 	for range speedSamples {
-		s.recordSpeed(60, 15, false)
+		s.recordSpeed(60, 15, false, false)
 	}
 	if got, _ := s.Estimate(60); got != 15 {
 		t.Errorf("after %d new takes: %v s, want 15", speedSamples, got)
 	}
 	// A timed-out take counts at its limit, which is at least how slow it was.
-	s.recordSpeed(60, 159, true)
+	s.recordSpeed(60, 159, true, false)
 	if got, _ := s.Estimate(60); got <= 15 {
 		t.Errorf("after a timeout: %v s, want it to rise", got)
 	}
