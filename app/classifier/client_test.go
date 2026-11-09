@@ -128,12 +128,13 @@ func TestAskRequest(t *testing.T) {
 	if format.Type != "json_schema" || !format.JSONSchema.Strict || strings.Join(format.JSONSchema.Schema.Properties.Verdict.Enum, ",") != "allow,ask" || len(format.JSONSchema.Schema.Required) != 2 {
 		t.Errorf("response_format = %s", req.ResponseFormat)
 	}
-	if len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[0].Content != systemPrompt || req.Messages[1].Role != "user" {
-		t.Fatalf("messages = %+v", req.Messages)
+	last := len(req.Messages) - 1
+	if len(req.Messages) != 2+2*len(examples) || req.Messages[0].Role != "system" || req.Messages[0].Content != systemPrompt || req.Messages[last].Role != "user" {
+		t.Fatalf("messages = %d, first %q, last %q", len(req.Messages), req.Messages[0].Role, req.Messages[last].Role)
 	}
 	quoted, _ := json.Marshal(command)
-	if req.Messages[1].Content != userPrefix+string(quoted) {
-		t.Errorf("user message = %q, want the prefix and the JSON-quoted command", req.Messages[1].Content)
+	if req.Messages[last].Content != userPrefix+string(quoted) {
+		t.Errorf("user message = %q, want the prefix and the JSON-quoted command", req.Messages[last].Content)
 	}
 	if strings.Contains(req.Messages[0].Content, command) {
 		t.Error("the command is in the system prompt")

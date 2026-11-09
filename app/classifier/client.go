@@ -44,10 +44,21 @@ type chatMessage struct {
 type chatRequest struct {
 	Messages       []chatMessage   `json:"messages"`
 	Temperature    float64         `json:"temperature"`
+	TopK           int             `json:"top_k"`
+	Seed           int             `json:"seed"`
+	CachePrompt    bool            `json:"cache_prompt"`
 	MaxTokens      int             `json:"max_tokens"`
 	Stream         bool            `json:"stream"`
 	ResponseFormat json.RawMessage `json:"response_format"`
 }
+
+// The same command should get the same answer every time: greedy decoding and
+// a fixed seed. cache_prompt is off so every request runs the whole prompt;
+// whether a cached prompt changes answers is not measured.
+const (
+	decodeSeed = 1
+	decodeTopK = 1
+)
 
 type chatResponse struct {
 	Choices []struct {
@@ -65,21 +76,24 @@ type answer struct {
 // responseFormat is the json_schema response format around schema.
 var responseFormat = json.RawMessage(`{"type":"json_schema","json_schema":{"name":"command_verdict","strict":true,"schema":` + schema + `}}`)
 
-// Ask returns the model's verdict on command: allow true only when the model
-// answered "allow". Any failure (timeout, transport error, a status other
-// than 200, malformed JSON, an unknown verdict) returns allow false with a
-// reason for the owner and a non-nil error.
-func (c *Client) Ask(ctx context.Context, command string) (allow bool, reason string, err error) {
-	quoted, err := json.Marshal(command)
+// Ask returns the model's verdict on text (the command as the model may read
+// it, see modelText): allow true only when the model answered "allow". Any
+// failure (timeout, transport error, a status other than 200, malformed JSON,
+// an unknown verdict) returns allow false with a reason for the owner and a
+// non-nil error.
+func (c *Client) Ask(ctx context.Context, text string) (allow bool, reason string, err error) {
+	quoted, err := json.Marshal(text)
 	if err != nil {
 		return false, "the command could not be encoded for the classifier", err
 	}
+	messages := append([]chatMessage{{Role: "system", Content: systemPrompt}}, exampleMessages()...)
+	messages = append(messages, chatMessage{Role: "user", Content: userPrefix + string(quoted)})
 	body, err := json.Marshal(chatRequest{
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrefix + string(quoted)},
-		},
+		Messages:       messages,
 		Temperature:    0,
+		TopK:           decodeTopK,
+		Seed:           decodeSeed,
+		CachePrompt:    false,
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
 	})
