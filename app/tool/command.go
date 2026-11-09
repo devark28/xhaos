@@ -90,6 +90,9 @@ func classifyWords(words []string) string {
 	if !readCommands[name] {
 		return Exec
 	}
+	if readRefused(name, words[1:]) {
+		return Exec
+	}
 	if name == "find" {
 		for _, w := range words[1:] {
 			if findWriters[w] {
@@ -98,6 +101,61 @@ func classifyWords(words []string) string {
 		}
 	}
 	return Read
+}
+
+// readRefusals are the options that turn a read command into one that writes
+// a file or runs another program. A read command with one of them waits for
+// the owner, like any other command.
+var readRefusals = map[string]struct {
+	long  []string // option names; a prefix of one (--out for --output) counts too
+	short string   // letters that refuse inside a -cluster (-o, -ro)
+}{
+	"sort": {long: []string{"--output", "--compress-program"}, short: "o"},
+	"tree": {short: "oR"},
+	"file": {long: []string{"--compile", "--magic-file"}, short: "Cm"},
+	"rg":   {long: []string{"--pre", "--pre-glob", "--hostname-bin"}},
+}
+
+// readRefused reports whether a read command's arguments write a file or run
+// a program: a refused option, or uniq given an output file (uniq INPUT
+// OUTPUT writes OUTPUT).
+func readRefused(name string, args []string) bool {
+	if name == "uniq" {
+		positional, endOpts := 0, false
+		for _, w := range args {
+			if !endOpts && w == "--" {
+				endOpts = true
+				continue
+			}
+			if endOpts || !strings.HasPrefix(w, "-") || len(w) == 1 {
+				positional++
+			}
+		}
+		return positional > 1
+	}
+	r, ok := readRefusals[name]
+	if !ok {
+		return false
+	}
+	for _, w := range args {
+		if w == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(w, "--"):
+			opt, _, _ := strings.Cut(w, "=")
+			for _, long := range r.long {
+				if len(opt) >= 3 && strings.HasPrefix(long, opt) {
+					return true
+				}
+			}
+		case len(w) > 1 && strings.HasPrefix(w, "-"):
+			if strings.ContainsAny(w[1:], r.short) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func classifyGit(args []string) string {
@@ -109,7 +167,7 @@ func classifyGit(args []string) string {
 		return Exec // git -C, -c, --git-dir, ...: options that change where or how git runs
 	}
 	for _, a := range rest {
-		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" {
+		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" || a == "--textconv" {
 			return Exec
 		}
 	}
