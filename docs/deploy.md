@@ -20,7 +20,7 @@ Run it as root or as a user with `sudo` (questions come from the terminal even u
 - downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
 - creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
 - writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
-- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256, run as a warm service that keeps the model loaded; yes by default; see [The dictation service](#the-dictation-service)), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
 
 Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again.
 
@@ -28,7 +28,7 @@ Running it again updates: it says which version is installed and which is new, r
 |---|---|
 | `--yes` | answer yes to every question (unattended); it does not add the classifier model, which needs `--with classifier` |
 | `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier` |
-| `--without a,b` | skip these parts without asking |
+| `--without a,b` | skip these parts without asking. `--without dictation` turns off only the warm dictation service (takes then start the sidecar per take) and keeps everything else |
 | `--no-restart` | never restart a running Xhaos (restart it yourself later) |
 | `--version vX.Y.Z` | install that release instead of the latest |
 
@@ -109,6 +109,29 @@ Notes:
 - `-trusted-proxy` lists the proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are believed. With it, wrong passphrases are counted per visitor rather than for the proxy as a whole, and the sign-in cookie is marked `Secure`. Only list your proxy: anyone else could forge those headers.
 - Projects can be any folder the `xhaos` user can write. Add them in the Files tab (or `-root DIR` at startup); add each path you use to `ReadWritePaths`.
 - Don't add `SystemCallFilter=` to the unit without allowing `landlock_create_ruleset`, `landlock_add_rule`, `landlock_restrict_self` and `seccomp`: the sandbox needs them.
+
+## The dictation service
+
+Dictation's speech model takes several seconds to load. The installer runs it as a service, `xhaos-dictation.service`, so the model stays loaded and a take does not wait for it. It runs as the `xhaos` user, on `127.0.0.1:8190` only, with `Restart=always`, and Xhaos gets `-dictation-url http://127.0.0.1:8190`. Its unit has `Wants=` and `After=`, not `Requires=`, so Xhaos starts without it, and a take then runs the sidecar command (the fallback set by `-dictation-cmd`) until the service is back.
+
+It keeps the model in memory all the time: about 1,070 MB resident after a few takes and 1,363 MB at peak, measured with the reference sidecar and the pinned model on an 8-CPU machine. Turn it off if that memory is needed elsewhere.
+
+Check it:
+
+```sh
+systemctl status xhaos-dictation
+curl -s http://127.0.0.1:8190/health
+journalctl -u xhaos-dictation
+```
+
+`/health` answers `ok` once the model is loaded. Settings → Dictation shows the same, with a Check again button.
+
+Turn it off:
+
+- **For good**: `--without dictation` (or set `DICTATION_SERVICE='no'` in `/etc/xhaos/install.conf`) and re-run the installer. It removes `-dictation-url` and the `Wants=`/`After=` lines from Xhaos's unit (asking before restarting Xhaos), stops and removes `xhaos-dictation`. Dictation keeps working through the command, one process per take. Nothing is deleted: the sidecar, its virtualenv and the model stay. Turn it back on with `--with dictation`.
+- **By hand**: remove `-dictation-url` from Xhaos's `ExecStart` and restart Xhaos.
+
+By hand, without the installer: run `stt.py --serve --model <model dir> --port 8190` as its own unit or any process on the loopback, and add `-dictation-url http://127.0.0.1:8190` to Xhaos's `ExecStart`.
 
 ## The optional command classifier model
 
