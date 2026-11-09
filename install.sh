@@ -167,7 +167,7 @@ CLS_PORT=8189
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
 
 # Settings kept between runs (written back at the end).
-PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180
+PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180 NODE_URL=""
 DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
@@ -522,12 +522,15 @@ run install -d -m 755 "$CONF_DIR"
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
   printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER"
+  printf '# The public HTTPS address nodes connect to (docs/nodes.md); empty: https:// and PUBLIC_HOST.\n'
+  printf "NODE_URL='%s'\n" "$NODE_URL"
 } > "$TMP/install.conf"
 run install -m 644 "$TMP/install.conf" "$CONF"
 
 flags="-db $DATA/xhaos.db -sandbox on"
 [ -n "$PUBLIC_HOST" ] && flags="$flags -public-host $PUBLIC_HOST"
 [ -n "$TRUSTED_PROXY" ] && flags="$flags -trusted-proxy $TRUSTED_PROXY"
+[ -n "$NODE_URL" ] && flags="$flags -node-url $NODE_URL"
 if [ "$DICTATION" = yes ]; then
   flags="$flags -dictation-cmd $DICT/venv/bin/python -dictation-model $MODEL_DIR -dictation-args \"$DICT/stt.py {wav} --model {model} --language={language} --prompt={prompt}\""
 fi
