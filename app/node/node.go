@@ -416,6 +416,7 @@ func (s *Service) code(ws string, id int64, pi *PiSetup) (Added, error) {
 	out := Added{Node: v, Code: code, Expires: exp, Command: InstallCommand(s.URL, code, s.Version)}
 	if pi != nil {
 		out.Files = piFiles(*pi, s.URL, code, s.Version)
+		out.Command = FlashCommand
 		out.Warning = "These files hold your Wi-Fi password and this join code in plain text, on a partition any computer can read, and they stay on the card after the first boot. The code works once and expires in 1 hour, used or not."
 	}
 	return out, nil
@@ -438,6 +439,10 @@ func installArgs(url, code, version string) string {
 
 // InstallScriptURL is where install-node.sh is downloaded from.
 const InstallScriptURL = "https://raw.githubusercontent.com/devark28/xhaos/main/install-node.sh"
+
+// FlashCommand writes Raspberry Pi OS and a Pi's first-boot files (from the
+// downloads folder) to an SD card on a Linux computer, the Pi's Command.
+const FlashCommand = "curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/flash-node.sh | sudo sh -s -- --files ~/Downloads"
 
 type UpdateRequest struct {
 	WorkspaceID string   `json:"workspaceId"`

@@ -21,7 +21,8 @@ export interface NodeList { url: string; note?: string; nodes: NodeView[] }
 export interface NodeNotice { id: number; state: NodeState; lastSeen?: string; facts?: NodeFacts; jobs: NodeJob[] }
 export interface PiSetup { hostname: string; user: string; sshKey: string; wifiSsid: string; wifiPassword: string; country: string }
 export interface NodeFile { name: string; content: string }
-// A join code, shown once: the command to run, or the Pi's first-boot files.
+// A join code, shown once: the command to run, or the Pi's first-boot files
+// and the command that flashes a card with them.
 export interface NodeAdded { node: NodeView; code: string; expires: string; command: string; files?: NodeFile[]; warning?: string }
 
 export async function refreshNodes() {

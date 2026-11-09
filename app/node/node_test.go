@@ -190,7 +190,7 @@ func TestPiFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(added.Files) != 2 || added.Warning == "" || time.Until(added.Expires) < 59*time.Minute {
+	if len(added.Files) != 2 || added.Warning == "" || added.Command != node.FlashCommand || time.Until(added.Expires) < 59*time.Minute {
 		t.Fatalf("added = %+v", added)
 	}
 	user, net := added.Files[0].Content, added.Files[1].Content

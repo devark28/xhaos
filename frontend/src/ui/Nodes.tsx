@@ -267,6 +267,9 @@ function JoinCode({ out, onDone }: { out: NodeAdded; onDone(): void }) {
         <div {...stylex.props(s.chips)}>
           {out.files.map(f => <Button key={f.name} data-node-file={f.name} onClick={() => download(f.name, f.content)}>Download {f.name}</Button>)}
         </div>
+        <span>Or, on a Linux computer with the card in a reader, after downloading both files: this writes Raspberry Pi OS and the files in one go (you pick the card and type its name to erase it).</span>
+        <code data-node-flash-command {...stylex.props(s.command)}>{out.command}</code>
+        <div {...stylex.props(s.chips)}><Button data-node-copy onClick={() => copy(out.command)}>Copy command</Button></div>
         {out.warning && <span data-node-warning {...stylex.props(s.warn)}>{out.warning}</span>}
       </> : <>
         <span>Run this on the machine (Linux, amd64 or arm64). It installs xhaos-node as a service of its own user and joins as {out.node.name}.</span>
