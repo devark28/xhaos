@@ -18,6 +18,7 @@ import { Secrets } from './Secrets.tsx';
 import { Skills } from './Skills.tsx';
 import { WebSettings } from './WebSettings.tsx';
 import { ClassifierSettings } from './ClassifierSettings.tsx';
+import { PastSessionsSettings } from './PastSessionsSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { BoardList } from './Boards.tsx';
@@ -388,7 +389,7 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'usage' | 'tools' | 'skills' | 'secrets' | 'dictation' | 'appearance' | 'security' | 'developer';
+type SectionId = 'models' | 'usage' | 'tools' | 'skills' | 'secrets' | 'sessions' | 'dictation' | 'appearance' | 'security' | 'developer';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
@@ -446,6 +447,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         <Section id="secrets" title="Secrets" summary="tokens for agents' commands" open={open.has('secrets')} onToggle={() => toggle('secrets')}>
           <Secrets />
         </Section>
+        <Section id="sessions" title="Past sessions" summary="search imported transcripts" open={open.has('sessions')} onToggle={() => toggle('sessions')}>
+          <PastSessionsSettings />
+        </Section>
         <Section id="dictation" title="Dictation" summary="hints for the speech model" open={open.has('dictation')} onToggle={() => toggle('dictation')}>
           <DictationSettings />
         </Section>
@@ -498,6 +502,7 @@ const toolGroups: [string, string, string][] = [
   ['built-in', 'Files and commands', "Part of Xhaos itself, no MCP server needed. Every agent can call them inside its project's folder (see Files); each call passes the agent's policy first."],
   ['channels', 'Agents and channels', 'Opening a channel to agents outside its own family always waits for you, showing who they are and what they work on; within the family, and on channels already open, talking runs at once. Starting a subagent is gated like a write. Top-level agents reach each other across projects; subagents only their parent and siblings.'],
   ['memory', 'Memories', "Every agent sees the workspace's memories in its prompt; saving one is gated like a write."],
+  ['history', 'Past sessions', "Agents search the imported past sessions (the transcripts) for earlier decisions and context. Read-only: a search changes nothing. Each agent searches its own project unless you allow the whole workspace in Settings → Past sessions."],
   ['boards', 'Boards', 'Agents read your boards (the Draw tab) freely. Creating a board or adding to one is gated like a write, and the approval shows what will be added. What an agent adds is grouped, tagged "added by #N", and placed beside your drawing, never over it.'],
 ];
 const effectNotes: Record<string, string> = {
