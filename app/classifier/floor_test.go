@@ -57,6 +57,20 @@ func TestFloor(t *testing.T) {
 		"git gc --prune=now", "git gc --prune=all", "git reflog expire --expire=now --all", "git -C sub reflog expire --all",
 		// env with a program
 		"env sh", "env FOO=1 make", "env -i make", "env -u X x",
+		// look-alike characters in a word (Cyrillic о, a non-breaking space)
+		"gо test ./...", "go test ./…", "ls\u00a0-la",
+		// a shell given -c, with or without other flags
+		"sh -c 'go test ./...'", "bash -c 'go test ./...'", "zsh -c ls", "bash -lc 'ls'", "bash -o pipefail -c 'ls'", "/bin/sh -ec ls",
+		// sed -i and --in-place
+		"sed -i 's/a/b/' main.go", "sed -ni p x", "sed -i.bak s/a/b/ x", "sed --in-place s/a/b/ x", "sed --in-place=.bak s/a/b/ x",
+		// rg --pre and --pre-glob
+		"rg --pre cat TODO", "rg --pre=cat TODO", "rg --pre-glob '*.gz' x .",
+		// sort --compress-program
+		"sort --compress-program=gzip big.txt", "sort --compress-program gzip big.txt",
+		// git diff, log and show running a diff program
+		"git diff --ext-diff", "git log --textconv -p", "git -C sub show --ext-diff HEAD", "git diff --textconv x",
+		// git stash drop and clear
+		"git stash drop", "git stash clear", "git stash drop stash@{1}", "git -C sub stash drop",
 	}
 	hit := map[string]bool{}
 	for _, c := range refused {
@@ -83,6 +97,11 @@ func TestFloor(t *testing.T) {
 		// controls next to the new rows
 		"node --version", "python --version", "python -m pytest -k parser --maxfail=1", "env", "env FOO=1",
 		"mvn -o test", "npm test -- --outputFile=x.json", "git gc", "go test -run x ./...", "cargo test",
+		// the same tools without the refused flags, and the shells and git forms next to them
+		"sed -n 1,5p main.go", "sed 's/a/b/' main.go", "rg TODO", "rg -i todo .", "sort big.txt", "sort -r big.txt",
+		"git diff", "git log --oneline -5", "git show HEAD --stat", "git stash list", "git stash", "git stash pop",
+		"bash scripts/test.sh", "bash -x scripts/test.sh", "sh scripts/build.sh -c",
+		"cat go.mod | grep module", "gofmt -l .",
 	}
 	for _, c := range allowed {
 		if why := Floor(c); why != "" {

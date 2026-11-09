@@ -39,6 +39,10 @@ var floor = []rule{
 	{"it uses brace expansion, which can build any word", func(c parsed) bool { return anyWord(c, braceExpansion) }},
 	{"it uses eval", func(c parsed) bool { return anyWord(c, word("eval")) }},
 	{"it pipes text into a shell", func(c parsed) bool { return pipeToShell.MatchString(c.plain) }},
+	{"it has a non-ASCII character in a word, which can be a look-alike of a command name (a Cyrillic о in go)", func(c parsed) bool {
+		return anyWord(c, nonASCII)
+	}},
+	{"sh, bash or zsh with -c runs its text as a new command", func(c parsed) bool { return eachArgs(c, is(shellNames...), shellRunsText) }},
 	{"sudo runs commands as another user", func(c parsed) bool { return anyWord(c, is("sudo", "su", "doas")) }},
 	{"rm -r deletes whole folders", func(c parsed) bool { return after(c, is("rm"), recursiveFlag("r", "R")) }},
 	{"git clean deletes untracked files", func(c parsed) bool { return after(c, is("git"), word("clean")) }},
@@ -84,6 +88,12 @@ var floor = []rule{
 		return sub(c, is("go"), "fmt", "fix") || after(c, is("prettier", "gofmt", "goimports"), word("-w")) ||
 			anyWord(c, flagIs("--write", "--fix", "--outdir", "--output")) || outputFlag(c)
 	}},
+	{"sed -i and --in-place change files in place", func(c parsed) bool { return after(c, is("sed"), inPlace) }},
+	{"rg --pre and --pre-glob run a program on each file", func(c parsed) bool { return after(c, is("rg", "ripgrep"), flagIs("--pre", "--pre-glob")) }},
+	{"sort --compress-program runs a program", func(c parsed) bool { return after(c, is("sort"), flagIs("--compress-program")) }},
+	{"git --ext-diff and --textconv run a diff program named by the project's git config", func(c parsed) bool {
+		return after(c, is("git"), flagIs("--ext-diff", "--textconv"))
+	}},
 	{"it downloads packages from the network (npm view, pip download, cargo fetch, go mod download)", func(c parsed) bool {
 		return sub(c, is("npm", "pnpm", "yarn", "bun"), "view", "info", "show", "search", "outdated", "audit", "update", "up", "exec", "x", "dlx") ||
 			sub(c, is("pip", "pip3"), "download", "index") ||
@@ -93,6 +103,7 @@ var floor = []rule{
 	{"git gc --prune and git reflog expire delete history that git could restore", func(c parsed) bool {
 		return after(c, is("git"), word("gc")) && anyWord(c, flagPrefix("--prune")) || after2(c, is("git"), word("reflog"), word("expire"))
 	}},
+	{"git stash drop and git stash clear delete stashed work", gitStashDelete},
 	{"env with an argument runs a program in a changed environment", func(c parsed) bool { return eachArgs(c, is("env"), envRuns) }},
 	{"it names a deploy, publish or release step", func(c parsed) bool { return anyWord(c, releaseName) }},
 	{"it names a path outside the project and $TMPDIR", func(c parsed) bool { return anyWord(c, outside) || cdHome(c) }},
@@ -352,6 +363,58 @@ func envRuns(args []string) bool {
 	for _, a := range args {
 		if !strings.Contains(a, "=") {
 			return true
+		}
+	}
+	return false
+}
+
+// nonASCII matches a word with a character outside ASCII.
+func nonASCII(w string) bool { return strings.IndexFunc(w, func(r rune) bool { return r > 127 }) >= 0 }
+
+// shellNames are the shells whose -c flag runs a command given as text.
+var shellNames = []string{"sh", "bash", "zsh", "dash", "ksh", "fish"}
+
+// shellRunsText is true when a shell is given -c (also in a bundle such as
+// -lc) before any script file. -o and +o take a name, which is skipped.
+func shellRunsText(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-o" || a == "+o":
+			i++
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsRune(a[1:], 'c') {
+				return true
+			}
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// inPlace matches sed's -i (also -ni, -i.bak) and --in-place (also with =).
+func inPlace(w string) bool {
+	if w == "--in-place" || strings.HasPrefix(w, "--in-place=") {
+		return true
+	}
+	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.ContainsRune(w[1:], 'i')
+}
+
+// gitStashDelete is git stash followed, in the same command, by drop or clear
+// (git -C dir stash drop too).
+func gitStashDelete(c parsed) bool {
+	for _, seg := range c.segments {
+		for i, w := range seg {
+			if !is("git")(w) {
+				continue
+			}
+			for j, v := range seg[i+1:] {
+				if v == "stash" && hasWord(seg[i+1+j+1:], word("drop", "clear")) {
+					return true
+				}
+			}
 		}
 	}
 	return false
