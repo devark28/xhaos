@@ -176,6 +176,10 @@ DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
 SAVED_PARTS=""
 # SAVED_OFF lists the parts a saved no left out in this run (for the summary).
 SAVED_OFF=""
+# UNDECIDED lists the optional parts this run neither installed nor refused: an
+# unattended run skipped them, or the install failed. Their settings line is
+# written only when they are yes, or when a saved choice holds (conf_part).
+UNDECIDED=""
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -474,6 +478,7 @@ part() {
         say "$1: not installed (the saved setting is no; add it with --with $1)"; return 0 ;;
       esac
       if [ "$FIRST" = no ] && [ "$YES" = no ] && [ -z "$TTY" ]; then
+        UNDECIDED="$UNDECIDED $1 "
         say "$1: not installed (add it with --with $1)"; return 0
       fi
       want "$1" "$4" "$3" || return 0 ;;
@@ -487,6 +492,7 @@ part() {
   if [ "$rc" -eq 0 ]; then
     eval "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')=yes"
   else
+    UNDECIDED="$UNDECIDED $1 "
     say "  $1 failed (above); the rest of the installation goes on. Re-run with --with $1 to try again."
   fi
 }
@@ -527,10 +533,23 @@ fi
 
 step "The service"
 run install -d -m 755 "$CONF_DIR"
+# conf_part PART VALUE NAME: the settings line of an optional part. An undecided
+# part gets no line unless it is yes, so the next run asks about it again.
+conf_part() {
+  case $UNDECIDED in *" $1 "*)
+    case $SAVED_PARTS in *",$1,"*) ;; *) [ "$2" = yes ] || return 0 ;; esac ;;
+  esac
+  printf "%s='%s'\n" "$3" "$2"
+}
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER"
+  conf_part devtools "$DEVTOOLS" DEVTOOLS
+  conf_part flutter "$FLUTTER" FLUTTER
+  conf_part browsers "$BROWSERS" BROWSERS
+  conf_part podman "$PODMAN" PODMAN
+  conf_part dictation "$DICTATION" DICTATION
+  conf_part classifier "$CLASSIFIER" CLASSIFIER
 } > "$TMP/install.conf"
 run install -m 644 "$TMP/install.conf" "$CONF"
 
