@@ -48,6 +48,55 @@ step() { printf '\n== %s\n' "$*"; }
 die() { printf 'install-node.sh: %s\n' "$*" >&2; exit 1; }
 has() { command -v "$1" >/dev/null 2>&1; }
 
+# as_node runs a command as the node's user.
+as_node() { runuser -u "$USER_NAME" -- env HOME="$STATE" XHAOS_NODE_STATE="$STATE" "$@"; }
+
+# The node's user owns its state folder, and so does any command an agent
+# runs on an unsandboxed node: as root, this script never follows a link in
+# there, and never chowns or chmods a path the node's user could have
+# swapped for a link to a system file.
+
+# prepare_state makes /var/lib/xhaos-node, the node user's own (its parent is
+# root's, so the node cannot swap it).
+prepare_state() {
+  [ ! -L "$STATE" ] || die "$STATE is a symlink: refusing to touch it as root"
+  mkdir -p "$STATE"
+  chown -h "$USER_NAME:" "$STATE"
+  chmod 0700 "$STATE"
+}
+
+# prepare_root makes the folder agents work in. Inside the state folder it is
+# made by the node's user (a link planted there only reaches what that user
+# can); an existing one is left as it is. Elsewhere it is the owner's own
+# choice (--root): made by root and handed over without following a link.
+prepare_root() {
+  root=$1
+  case $root in
+    /*) ;;
+    *) die "--root must be an absolute path: $root" ;;
+  esac
+  case $root in
+    *[!A-Za-z0-9._/@+-]*) die "--root may hold only letters, digits and . _ / @ + -: $root" ;;
+    */|*//*|*/./*|*/.|*/../*|*/..) die "--root must be a plain path (no trailing /, no . or .. parts): $root" ;;
+    "$STATE") die "--root must not be $STATE itself (it holds the node's key)" ;;
+  esac
+  [ ! -L "$root" ] || die "$root is a symlink: refusing to touch it as root (remove it, or pass --root with a real folder)"
+  case $root/ in
+    "$STATE"/*/)
+      if [ ! -e "$root" ]; then as_node mkdir -p "$root" || die "could not make $root as $USER_NAME"; fi
+      [ -d "$root" ] || die "$root is not a folder" ;;
+    *)
+      if [ -e "$root" ] && [ ! -d "$root" ]; then die "$root is not a folder"; fi
+      mkdir -p "$root"
+      [ ! -L "$root" ] || die "$root is a symlink: refusing to touch it as root"
+      chown -h "$USER_NAME:" "$root" ;;
+  esac
+}
+
+# Tests source this file for the functions above.
+# shellcheck disable=SC2317 # exit is for a run, return for a source
+if [ "${XHAOS_INSTALL_NODE_FUNCTIONS:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
+
 usage() {
   cat <<'EOF'
 install-node.sh --server URL --code CODE [options]   (as root)
@@ -141,12 +190,14 @@ if ! id "$USER_NAME" >/dev/null 2>&1; then
   useradd --system --home-dir "$STATE" --create-home --shell "$NOLOGIN" "$USER_NAME"
   say "Created the system user $USER_NAME (no password, no sudo)."
 fi
-mkdir -p "$STATE"
-chown "$USER_NAME:" "$STATE"
-chmod 0700 "$STATE"
+prepare_state
+if [ -z "$ROOT" ] && [ -f "$UNIT" ]; then
+  # An update keeps the folder the service was given (the unit is root's;
+  # node.json is the node user's and is not read here).
+  ROOT=$(sed -n "s#^ReadWritePaths=$STATE ##p" "$UNIT" | head -n 1)
+fi
 [ -n "$ROOT" ] || ROOT=$STATE/xhaos-work
-mkdir -p "$ROOT"
-chown "$USER_NAME:" "$ROOT"
+prepare_root "$ROOT"
 
 # A device is opened by the user's group too (the sandbox allows it; the
 # file's permissions still decide).
@@ -162,7 +213,6 @@ done
 
 # ---- joining -------------------------------------------------------------------
 
-as_node() { runuser -u "$USER_NAME" -- env HOME="$STATE" XHAOS_NODE_STATE="$STATE" "$@"; }
 if [ "$JOINED" = yes ]; then
   [ -z "$CODE" ] || say "This machine has joined a server already; the code is not used (xhaos-node leave first to join another)."
 else
