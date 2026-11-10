@@ -15,9 +15,11 @@
 #   --yes              answer yes to every question (unattended), except
 #                      adding the classifier model (needs --with classifier)
 #   --with a,b,c       install these parts without asking: devtools, flutter,
-#                      browsers, podman, dictation, classifier (also to update
-#                      them). classifier is the optional command model, no by
-#                      default; the built-in command list needs no part.
+#                      browsers, podman, dictation, classifier, nodes (also to
+#                      update them). classifier is the optional command model,
+#                      no by default; the built-in command list needs no part.
+#                      nodes is Caddy in front of /xhaos/node for remote
+#                      machines (docs/nodes.md).
 #   --without a,b      skip these parts, without asking
 #   --no-restart       never restart a running Xhaos
 #   --version vX.Y.Z   install that release instead of the latest
@@ -52,7 +54,9 @@ Options:
   --with a,b,c       install or update these parts without asking:
                      devtools, flutter, browsers, podman, dictation,
                      classifier (the optional command model; no by
-                     default, the built-in command list needs no part)
+                     default, the built-in command list needs no part),
+                     nodes (Caddy in front of /xhaos/node, so remote
+                     machines can connect; see docs/nodes.md)
   --without a,b      skip these parts, without asking
   --no-restart       never restart a running Xhaos
   --version vX.Y.Z   install that release instead of the latest
@@ -165,10 +169,13 @@ CLS_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
 CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
 CLS_PORT=8189
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
+# The nodes part: Caddy serves one domain that passes only /xhaos/node here.
+CADDYFILE=/etc/caddy/Caddyfile
+NODES_CADDY=/etc/caddy/xhaos-nodes.caddy
 
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180 NODE_URL=""
-DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
+DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no NODES=no
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -181,6 +188,7 @@ else
   has podman && has docker-compose && PODMAN=yes
   xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes
   xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$CLS_MODEL" && CLASSIFIER=yes
+  [ -f "$NODES_CADDY" ] && NODES=yes
 fi
 
 # ---- the release -----------------------------------------------------------
@@ -444,6 +452,100 @@ classifier_remove() {
   say "    sudo rm -rf $CLS"
 }
 
+# node_host: the host in NODE_URL (https://host, no path), else nothing.
+node_host() {
+  h=${NODE_URL#https://}
+  [ "$h" != "$NODE_URL" ] && [ -n "$h" ] && valid_host "$h" && printf '%s' "$h"
+}
+valid_host() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; }
+
+# nodes_caddy HOST: write the Caddy site for HOST (only /xhaos/node, to this
+# server's port) and make the Caddyfile import it; reload Caddy when changed.
+nodes_caddy() {
+  if ! grep -qx "import $NODES_CADDY" "$CADDYFILE" 2>/dev/null &&
+    grep -Eq "^[[:space:]]*(https://)?$(printf '%s' "$1" | sed 's/\./\\./g')([[:space:]]|,|\{|$)" "$CADDYFILE" 2>/dev/null; then
+    # Set up by hand before: a second site for the same domain would not load.
+    say "  $CADDYFILE already serves $1: left as it is (it must pass /xhaos/node to this server's port, $PORT)."
+    return 0
+  fi
+  up=$LISTEN; case $up in 0.0.0.0|::|"") up=127.0.0.1 ;; esac
+  case $up in *:*) up="[$up]" ;; esac
+  printf '%s\n# Remote machines (xhaos-node) connect here: only /xhaos/node goes to Xhaos;\n# the page stays private. See docs/nodes.md.\n%s {\n\thandle /xhaos/node {\n\t\treverse_proxy %s:%s\n\t}\n\trespond 404\n}\n' \
+    "$MARK" "$1" "$up" "$PORT" > "$TMP/xhaos-nodes.caddy"
+  changed=no
+  if ! cmp -s "$TMP/xhaos-nodes.caddy" "$NODES_CADDY" 2>/dev/null; then
+    run install -m 644 "$TMP/xhaos-nodes.caddy" "$NODES_CADDY"; changed=yes
+  fi
+  rm -f "$TMP/Caddyfile.before"
+  if ! grep -qx "import $NODES_CADDY" "$CADDYFILE" 2>/dev/null; then
+    [ -f "$CADDYFILE" ] && { run cat "$CADDYFILE" > "$TMP/Caddyfile.before" || rm -f "$TMP/Caddyfile.before"; }
+    if [ ! -s "$CADDYFILE" ] || grep -qF "$MARK" "$CADDYFILE" || { grep -q '^:80 {' "$CADDYFILE" && grep -q 'root \* /usr/share/caddy' "$CADDYFILE"; }; then
+      # Missing, ours, or the package's placeholder site (a file server on :80).
+      [ -s "$CADDYFILE" ] && ! grep -qF "$MARK" "$CADDYFILE" && run cp "$CADDYFILE" "$CADDYFILE.bak" && say "  The package's placeholder Caddyfile is kept as $CADDYFILE.bak."
+      printf '%s\nimport %s\n' "$MARK" "$NODES_CADDY" > "$TMP/Caddyfile"
+      run install -m 644 "$TMP/Caddyfile" "$CADDYFILE"
+    elif ask "  $CADDYFILE has your own sites. Add 'import $NODES_CADDY' at its end?" y; then
+      printf '\nimport %s\n' "$NODES_CADDY" | run tee -a "$CADDYFILE" >/dev/null
+    else
+      say "  Not added: add 'import $NODES_CADDY' to $CADDYFILE yourself, then: sudo systemctl reload caddy"
+      return 0
+    fi
+    changed=yes
+  fi
+  if ! run caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1; then
+    # Put the Caddyfile back as it was, so a restart of Caddy still works.
+    [ -f "$TMP/Caddyfile.before" ] && run install -m 644 "$TMP/Caddyfile.before" "$CADDYFILE" && say "  Put $CADDYFILE back as it was."
+    die "Caddy does not accept the nodes site (see: sudo caddy validate --config $CADDYFILE after adding 'import $NODES_CADDY')"
+  fi
+  if [ "$SYSTEMD" = yes ]; then
+    if ! systemctl is-active caddy >/dev/null 2>&1; then run systemctl enable --now caddy
+    elif [ "$changed" = yes ]; then run systemctl reload caddy
+    fi
+  fi
+  [ "$changed" = yes ] && say "  Caddy serves https://$1/xhaos/node (and 404 for everything else on it)."
+  return 0
+}
+
+install_nodes() {
+  needs_apt || return 0
+  if [ -n "$PUBLIC_HOST" ]; then
+    say "  The page is already public at https://$PUBLIC_HOST: nodes use that address, through the same reverse proxy."
+    say "  Make sure it passes /xhaos/node with WebSockets (Caddy does by default; nginx: see docs/deploy.md)."
+    return 0
+  fi
+  host=$(node_host || true)
+  [ -n "$host" ] || host=$(prompt "  A domain for nodes (its DNS A/AAAA record must point to this server; e.g. nodes.example.com)?" "")
+  if [ -z "$host" ]; then
+    say "  Skipped: no domain. Set NODE_URL='https://<domain>' in $CONF, or re-run with --with nodes at the terminal."
+    : > "$TMP/nodes-skipped"; return 0
+  fi
+  valid_host "$host" || die "not a domain name: $host"
+  # DNS: warn, do not stop (behind 1:1 NAT the public address is not on an interface).
+  addrs=$(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/ $//')
+  if [ -z "$addrs" ]; then
+    say "  Warning: $host does not resolve yet. Add its DNS record; Caddy gets the certificate once it points here."
+  else
+    mine=" $(hostname -I 2>/dev/null) "
+    hit=no
+    for a in $addrs; do case $mine in *" $a "*) hit=yes ;; esac; done
+    [ "$hit" = yes ] || say "  Warning: $host points to $addrs, which is not an address of this machine (fine behind 1:1 NAT; otherwise fix the DNS record)."
+  fi
+  if ! has caddy && [ -n "$(ss -Hltn '( sport = :80 or sport = :443 )' 2>/dev/null)" ]; then
+    say "  Skipped: another web server already uses port 80 or 443. Add the /xhaos/node block from docs/deploy.md to it,"
+    say "  then set NODE_URL='https://$host' in $CONF and re-run this installer."
+    : > "$TMP/nodes-skipped"; return 0
+  fi
+  say "  Caddy (Ubuntu's apt): an HTTPS reverse proxy that gets and renews its certificate (Let's Encrypt) by itself"
+  apt_update; apt_install caddy
+  nodes_caddy "$host"
+  if has ufw && run ufw status 2>/dev/null | grep -q '^Status: active'; then
+    run ufw allow 80/tcp >/dev/null; run ufw allow 443/tcp >/dev/null
+    say "  Opened ports 80 and 443 in ufw (Caddy needs both for the certificate)."
+  fi
+  say "  If your provider has a firewall of its own, open ports 80 and 443 there too."
+  printf 'https://%s' "$host" > "$TMP/node-url"
+}
+
 # part NAME INSTALLED DEFAULT DESCRIPTION: install or update an optional part.
 # --with NAME installs or updates it without asking; --without NAME skips it;
 # an installed part is otherwise left alone. A part not installed yet is
@@ -509,6 +611,26 @@ case $WITHOUT in *",classifier,"*)
     classifier_remove "Delete it: turn it off with CLASSIFIER='no' and a re-run as above, then:"
   fi ;;
 esac
+# --yes answers yes to the other parts, but nodes needs a domain from you.
+if [ "$YES" = yes ] && [ "$NODES" != yes ] && [ -z "$NODE_URL" ] && case $WITH in *",nodes,"*) false ;; *) true ;; esac; then
+  say "nodes: not set up (it needs a domain: re-run with --with nodes at the terminal, or set NODE_URL in $CONF first)"
+else
+part nodes "$NODES" n "Nodes: other machines (a build PC, Raspberry Pis) run commands for your agents and connect out to this server.
+  They need a public HTTPS address for one path, /xhaos/node; the page itself stays private (SSH tunnel).
+  Installs Caddy (Ubuntu's apt) for a domain you give, whose DNS record points here, and opens ports 80 and 443 in ufw.
+  Without it, Add node on the Nodes tab stays off. See docs/nodes.md."
+fi
+[ -f "$TMP/nodes-skipped" ] && NODES=no
+[ -f "$TMP/node-url" ] && NODE_URL=$(cat "$TMP/node-url")
+# Set up before, and the domain in NODE_URL changed since: follow it.
+if [ "$NODES" = yes ] && [ ! -f "$TMP/node-url" ] && [ -z "$PUBLIC_HOST" ] && has caddy && h=$(node_host); then
+  set +e
+  (set -e; nodes_caddy "$h")
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || say "  nodes: Caddy was not changed (above); the rest of the installation goes on."
+fi
+
 # An installed sidecar follows the release it came with.
 if [ "$DICTATION" = yes ] && [ -f "$NEW/dictation/stt.py" ] && ! run cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py"; then
   run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
@@ -526,7 +648,7 @@ run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER"
+  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nNODES='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$NODES"
   printf '# The public HTTPS address nodes connect to (docs/nodes.md); empty: https:// and PUBLIC_HOST.\n'
   printf "NODE_URL='%s'\n" "$NODE_URL"
 } > "$TMP/install.conf"
@@ -625,5 +747,19 @@ say "Xhaos $NEW_VERSION is installed; it listens on $LISTEN:$PORT."
 if [ -z "$PUBLIC_HOST" ]; then
   say "Reach it from your computer with an SSH tunnel:  ssh -N -L $PORT:127.0.0.1:$PORT <you>@<this server>"
   say "then open http://localhost:$PORT. (With a domain, put an HTTPS reverse proxy in front: see docs/deploy.md.)"
+fi
+if [ "$NODES" = yes ] && h=$(node_host) && has caddy; then
+  # 426 (Upgrade Required): Caddy has its certificate and reached Xhaos.
+  code=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "https://$h/xhaos/node" 2>/dev/null || true)
+    [ "$code" = 426 ] && break
+    sleep 3
+  done
+  if [ "$code" = 426 ]; then say "Nodes connect to https://$h (checked: Caddy has its certificate and reaches Xhaos)."
+  else
+    say "Nodes will connect to https://$h, but it does not answer yet (got ${code:-no answer}; expected 426)."
+    say "  Check: the DNS record (dig +short $h), ports 80 and 443 (ufw and your provider), and: journalctl -u caddy -n 30"
+  fi
 fi
 say "Settings: $CONF. Re-run this installer to update, or to add parts (--with devtools,dictation…)."

@@ -20,14 +20,14 @@ Run it as root or as a user with `sudo` (questions come from the terminal even u
 - downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
 - creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
 - writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
-- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)), and **nodes** (Caddy for a domain of its own that passes only `/xhaos/node`, so remote machines can connect; no by default, see [Nodes](#nodes-remote-machines)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
 
 Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again.
 
 | Option | |
 |---|---|
-| `--yes` | answer yes to every question (unattended); it does not add the classifier model, which needs `--with classifier` |
-| `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier` |
+| `--yes` | answer yes to every question (unattended); it does not add the classifier model, which needs `--with classifier`, nor nodes without a `NODE_URL` (it needs a domain) |
+| `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier`, `nodes` |
 | `--without a,b` | skip these parts without asking |
 | `--no-restart` | never restart a running Xhaos (restart it yourself later) |
 | `--version vX.Y.Z` | install that release instead of the latest |
@@ -225,9 +225,20 @@ nodes.example.com {
 }
 ```
 
-and start Xhaos with `-node-url https://nodes.example.com -trusted-proxy 127.0.0.1,::1` (with `install.sh`: set `NODE_URL='https://nodes.example.com'` in `/etc/xhaos/install.conf` and re-run it, so the setting survives updates; it sets `TRUSTED_PROXY='127.0.0.1,::1'` when that is empty). Xhaos accepts the node address's name as a `Host`, as it does a `-public-host`; the page and its API stay unreachable from that domain, since the proxy passes nothing else. A node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
+and start Xhaos with `-node-url https://nodes.example.com -trusted-proxy 127.0.0.1,::1`. Xhaos accepts the node address's name as a `Host`, as it does a `-public-host`; the page and its API stay unreachable from that domain, since the proxy passes nothing else. A node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
 
 `-trusted-proxy` matters here too: without it every node, and anyone probing the domain, reaches Xhaos as the proxy's address (127.0.0.1), so the per-address limits on nodes (at most 4 unproven connections, 10 seconds to sign in) count them all as one, and a scanner could keep your Pis from connecting.
+
+With `install.sh`, the **nodes** part does this (`--with nodes`, or yes at the terminal):
+
+- asks for the domain (or takes it from `NODE_URL` in `/etc/xhaos/install.conf`), and warns when its DNS record does not resolve or points elsewhere (fine behind 1:1 NAT);
+- installs Caddy from Ubuntu's apt and writes `/etc/caddy/xhaos-nodes.caddy`, the site above; `/etc/caddy/Caddyfile` imports it. The package's placeholder Caddyfile is replaced (kept as `Caddyfile.bak`); a Caddyfile with your own sites gets the `import` line at its end only after asking, and one that already serves the domain is left as it is. If Caddy does not accept the result, the Caddyfile is put back;
+- skips the part, with what to do by hand, when another web server already holds port 80 or 443;
+- opens ports 80 and 443 in ufw when ufw is active (Caddy needs both for its certificate) and reminds you of your provider's firewall;
+- saves `NODE_URL` and starts Xhaos with `-node-url`; whenever `NODE_URL` or `PUBLIC_HOST` is set and `TRUSTED_PROXY` is empty, it sets `TRUSTED_PROXY='127.0.0.1,::1'`;
+- at the end, checks that `https://<domain>/xhaos/node` answers 426 (Caddy has its certificate and reaches Xhaos), or says what to check.
+
+When the page is already public (`PUBLIC_HOST` is set), the part installs nothing: nodes use that address. Changing `NODE_URL` in `install.conf` and re-running the installer moves Caddy to the new domain.
 
 On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (for kernels without Landlock).
 

@@ -43,7 +43,7 @@ nodes.example.com {
 }
 ```
 
-Xhaos learns this address from `-node-url https://nodes.example.com` (with `-public-host nodes.example.com`, so the WebSocket's `Host` is accepted). The join command and the Raspberry Pi files carry that URL; **Add node** is disabled, with the reason, until it is set. The page itself stays unreachable from that domain.
+Xhaos learns this address from `-node-url https://nodes.example.com` and accepts its name as a `Host`, as it does a `-public-host` (on a localhost bind, any other name gets 403). Give it `-trusted-proxy 127.0.0.1,::1` too, so the per-address limits see each node's own address rather than the proxy's. `install.sh --with nodes` sets all of this up, Caddy included ([deploy.md](deploy.md#nodes-remote-machines)). The join command and the Raspberry Pi files carry that URL; **Add node** is disabled, with the reason, until it is set. The page itself stays unreachable from that domain.
 
 ## Joining
 
