@@ -257,6 +257,65 @@ func TestNoNetBlocksUDP(t *testing.T) {
 	}
 }
 
+// Landlock's TCP rules do not cover other protocols on an IPv4 socket, so
+// SCTP (132) and MPTCP (262) connected out of a NoNet command and carried
+// data. The filter must refuse their socket() call (TCP still opens: it
+// only fails at connect, where Landlock applies).
+func TestNoNetBlocksOtherProtocols(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	probe := func(family string, proto int) string {
+		return fmt.Sprintf("python3 -c \"\nimport socket\ntry:\n    socket.socket(socket.%s, socket.SOCK_STREAM, %d)\n    print('opened')\nexcept PermissionError:\n    print('denied')\n\"", family, proto)
+	}
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	ran := func(cmd *exec.Cmd) string {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("probe: %v: %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, family := range []string{"AF_INET", "AF_INET6"} {
+		for _, proto := range []int{132, 262} {
+			plain, err := c.Command(context.Background(), dir, probe(family, proto), Extra{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ran(plain) != "opened" {
+				t.Skipf("%s protocol %d cannot be opened even without NoNet: the test cannot tell", family, proto)
+			}
+			cmd, err := c.Command(context.Background(), dir, probe(family, proto), Extra{NoNet: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ran(cmd); got != "denied" {
+				t.Errorf("NoNet: %s protocol %d socket %q, want denied", family, proto, got)
+			}
+			// The proxy-only path (secrets) must refuse the same socket.
+			sealed, cleanup, err := c.CommandSealed(context.Background(), dir, probe(family, proto), Sealed{ProxyPort: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ran(sealed)
+			cleanup()
+			if got != "denied" {
+				t.Errorf("sealed: %s protocol %d socket %q, want denied", family, proto, got)
+			}
+		}
+	}
+	// TCP keeps working: NoNet only blocks connects, and the test must not
+	// have passed by breaking every socket.
+	tcp, err := c.Command(context.Background(), dir, probe("AF_INET", 6), Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ran(tcp); got != "opened" {
+		t.Errorf("NoNet: TCP socket %q, want opened", got)
+	}
+}
+
 // A submodule's (and a worktree's) .git is a file pointing into the parent
 // repository: git must work in the sandbox, the parent's files must not.
 func TestGitSubmodulesAndWorktrees(t *testing.T) {

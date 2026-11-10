@@ -14,8 +14,10 @@ import (
 // command could reach the user's SSH agent (and push), the keyring, D-Bus
 // or the Docker socket by path. socketpair(2), which pipes between a
 // process and its children use, still works. With udp, IPv4 and IPv6
-// datagram sockets fail too (sealed commands: a DNS lookup could carry a
-// secret out; their proxy resolves names for them).
+// sockets fail too unless they are TCP (SOCK_STREAM with protocol 0 or
+// IPPROTO_TCP): a datagram, raw, SCTP or MPTCP socket could carry a secret
+// out, and Landlock's TCP rules do not cover them (sealed commands: a DNS
+// lookup could; their proxy resolves names for them).
 func denySockets(udp bool) error {
 	if sysSocket < 0 {
 		return fmt.Errorf("no seccomp filter for %s", runtime.GOARCH)
@@ -33,12 +35,15 @@ func denySockets(udp bool) error {
 	a.ld(16) // domain (low half of the first argument)
 	a.jeq(unix.AF_UNIX, "deny", "")
 	if udp {
-		a.jeq(unix.AF_INET, "type", "")
-		a.jeq(unix.AF_INET6, "type", "allow")
-		a.label("type")
+		a.jeq(unix.AF_INET, "inet", "")
+		a.jeq(unix.AF_INET6, "inet", "allow")
+		a.label("inet")
 		a.ld(24)   // type (low half of the second argument)
 		a.and(0xf) // without SOCK_NONBLOCK / SOCK_CLOEXEC
-		a.jeq(unix.SOCK_DGRAM, "deny", "allow")
+		a.jeq(unix.SOCK_STREAM, "", "deny")
+		a.ld(32) // protocol (low half of the third argument)
+		a.jeq(0, "allow", "")
+		a.jeq(unix.IPPROTO_TCP, "allow", "deny")
 	}
 	a.label("allow")
 	a.ret(allow)
