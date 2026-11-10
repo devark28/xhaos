@@ -17,7 +17,7 @@ import { openPanel, selectPanel } from './panels.ts';
 import { flatten } from '../../model.ts';
 import { agentPath } from '../../attention.ts';
 
-const panels: PanelKind[] = ['questions', 'files', 'channels', 'boards', 'memories', 'settings', 'history', 'status', 'help'];
+const panels: PanelKind[] = ['questions', 'files', 'channels', 'boards', 'nodes', 'memories', 'settings', 'history', 'status', 'help'];
 
 export interface Place { panel?: PanelKind; section?: string; channel?: string; agents?: number[] }
 
