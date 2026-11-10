@@ -250,6 +250,8 @@ nodes.example.com {
 
 and start Xhaos with `-node-url https://nodes.example.com` (with `install.sh`: set `NODE_URL='https://nodes.example.com'` in `/etc/xhaos/install.conf` and re-run it, so the setting survives updates). The page and its API stay unreachable from that domain; a node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
 
+On Debian or Ubuntu, `scripts/expose-nodes.sh <domain>` does all of this after `install.sh` (Caddy, the site, ufw, `PUBLIC_HOST`, and a check); see [nodes.md](nodes.md#scriptsexpose-nodessh-debianubuntu-after-installsh).
+
 On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (for kernels without Landlock).
 
 ## In a container

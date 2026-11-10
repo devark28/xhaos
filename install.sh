@@ -694,5 +694,8 @@ say "Xhaos $NEW_VERSION is installed; it listens on $LISTEN:$PORT."
 if [ -z "$PUBLIC_HOST" ]; then
   say "Reach it from your computer with an SSH tunnel:  ssh -N -L $PORT:127.0.0.1:$PORT <you>@<this server>"
   say "then open http://localhost:$PORT. (With a domain, put an HTTPS reverse proxy in front: see docs/deploy.md.)"
+  say "To let nodes (remote machines) connect from the internet, point a domain's DNS here, then run once:"
+  say "  curl -fsSL -o expose-nodes.sh https://raw.githubusercontent.com/$REPO/main/scripts/expose-nodes.sh && sudo sh expose-nodes.sh <domain>"
+  say "(it installs Caddy and makes only /xhaos/node public; see docs/nodes.md)."
 fi
 say "Settings: $CONF. Re-run this installer to update, or to add parts (--with devtools,dictation…)."
