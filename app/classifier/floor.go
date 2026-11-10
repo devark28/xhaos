@@ -126,6 +126,9 @@ var floor = []rule{
 	{"git --ext-diff and --textconv run a diff program named by the project's git config", func(c parsed) bool {
 		return after(c, is("git"), flagIs("--ext-diff", "--textconv"))
 	}},
+	{"git init or clone --template copies hooks and config from a template folder into the repo (into .git/hooks of an existing one)", func(c parsed) bool {
+		return after(c, is("git"), flagPrefix("--template"))
+	}},
 	{gitDriverWhy, func(c parsed) bool {
 		return c.root != "" && tool.GitDriverRisk(c.root, c.line)
 	}},

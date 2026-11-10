@@ -227,6 +227,7 @@ var runKeys = map[string]bool{
 	"core.sshcommand": true, "core.askpass": true, "core.gitproxy": true,
 	"credential.helper": true, "gpg.program": true, "sequence.editor": true,
 	"remote.uploadpack": true, "remote.receivepack": true, "remote.vcs": true,
+	"init.templatedir": true, // git init copies the folder's hooks and config into the repo
 }
 
 // configRuns reports whether a git config file could make git run a program:

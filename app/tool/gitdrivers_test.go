@@ -58,6 +58,8 @@ func TestConfigRunsDrivers(t *testing.T) {
 		{"pager section", "[pager]\n\tdiff = cat\n", true},
 		{"a key that is not a driver", "[filter \"x\"]\n\trequired = true\n", false},
 		{"legacy dotted subsection", "[diff.x]\n\ttextconv = ./t\n", true},
+		// git init copies the template dir named by init.templateDir into the repo.
+		{"init.templateDir", "[init]\n\ttemplateDir = ./tpl\n", true},
 		// git skips a UTF-8 BOM at the start of a config and reads a
 		// subsection name up to its closing quote, so ] can be inside it.
 		{"a BOM before the first header", "\xef\xbb\xbf[diff]\n\texternal = x\n", true},

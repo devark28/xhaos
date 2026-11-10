@@ -89,6 +89,8 @@ func TestFloor(t *testing.T) {
 		"git diff --ext-diff", "git log --textconv -p", "git -C sub show --ext-diff HEAD", "git diff --textconv x",
 		// git stash drop and clear
 		"git stash drop", "git stash clear", "git stash drop stash@{1}", "git -C sub stash drop",
+		// git init and clone --template copy hooks and config from a folder
+		"git init --template=./tpl .", "git -C sub init --template ./tpl", "git clone --template=t https://x/y",
 		// git -c and --config-env set config for one run
 		"git -c core.pager='sh -c id' log", "git -c diff.external=x diff", "git -cdiff.external=x diff",
 		"git -C sub -c alias.x=!id status", "git --config-env=core.pager=PAGER log", "git status --config-env=diff.external=X",
@@ -272,6 +274,29 @@ func TestFloorGitWrappersAndNestedRepos(t *testing.T) {
 		}
 	}
 }
+
+// git init --template copies hooks and config from a folder into the repo
+// (into .git/hooks of an existing one), so any --template is refused, and so is
+// a template dir set in the environment.
+func TestFloorGitTemplateCopies(t *testing.T) {
+	clean := t.TempDir()
+	os.MkdirAll(filepath.Join(clean, ".git"), 0o755)
+	os.WriteFile(filepath.Join(clean, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+	for _, line := range []string{
+		"git init --template=./tpl .",
+		"git init --template ./tpl sub",
+		"git -C x init --template=./t",
+		"GIT_TEMPLATE_DIR=./tpl git init .",
+	} {
+		if why := FloorIn(clean, line); why == "" {
+			t.Errorf("FloorIn(clean, %q) = \"\", want a refusal", line)
+		}
+	}
+	if why := FloorIn(clean, "git init ."); why != "" {
+		t.Errorf("FloorIn(clean, \"git init .\") = %q, want \"\"", why)
+	}
+}
+
 // HOME and XDG_CONFIG_HOME point git at config outside the project: refused by
 // the git driver rule, whatever the project's config says. A --git-dir, cd or
 // -C outside the project is refused by the path rule (and by GitDriverRisk).
