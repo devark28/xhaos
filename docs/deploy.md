@@ -20,13 +20,13 @@ Run it as root or as a user with `sudo` (questions come from the terminal even u
 - downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
 - creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
 - writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
-- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; no by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; yes by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
 
 Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again.
 
 | Option | |
 |---|---|
-| `--yes` | answer yes to every question (unattended); it does not add the classifier model, which needs `--with classifier` |
+| `--yes` | answer yes to every question (unattended), including adding the classifier model (about 2.1 GB) |
 | `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier` |
 | `--without a,b` | skip these parts without asking |
 | `--no-restart` | never restart a running Xhaos (restart it yourself later) |
@@ -112,11 +112,11 @@ Notes:
 
 ## The optional command classifier model
 
-Agents on auto review wait for you before most commands. Xhaos has a built-in list of ordinary build, test and lint commands that run without asking: it needs no model and nothing from the installer, and it is on by default. The switch in Settings → Tools → Commands turns it off, with the model. The classifier model is an optional extra step for the long tail, the commands the list does not match: a small model on the server answers "may this command run without asking?" for a read-write agent on auto review, and a yes runs the command at once (inside the sandbox, as usual). Most servers do not need it, so the installer does not install it unless you ask: `--with classifier`, or yes at the terminal. `--yes` alone never adds it (about 2.1 GB to download, and about 3.7 GB of memory while it runs).
+Agents on auto review wait for you before most commands. Xhaos has a built-in list of ordinary build, test and lint commands that run without asking: it needs no model and nothing from the installer, and it is on by default. The switch in Settings → Tools → Commands turns it off, with the model. The classifier model is an optional extra step for the long tail, the commands the list does not match: a small model on the server answers "may this command run without asking?" for a read-write agent on auto review, and a yes runs the command at once (inside the sandbox, as usual). The installer adds it by default, so an unattended run (`--yes`, or no terminal) downloads it too: about 2.1 GB, and about 3.7 GB of memory while it runs. Answer no at the terminal, or use `--without classifier`, to skip it.
 
-Commands with secrets, network tools, installs, publishes, deletes and paths outside the project are never sent to the model and still ask; so does every command when the model is slow, down or unsure. It can only make a command run, never block one. Nothing leaves the server: it is a service on `127.0.0.1:8189` only, and Xhaos reaches it through one flag, `-classifier-url`. The user guide (What auto review runs without asking) says what runs without asking.
+Commands with secrets, network tools, installs, publishes, deletes and paths outside the project are never sent to the model and still ask; so does every command when the model is slow, down or unsure. Commands longer than 1,500 characters are not sent either (they ask). A shell or interpreter that reads its program from stdin (a heredoc, a pipe, `python -`), and a redirect into `.git`, `node_modules` or a tool config file, also ask. So do code given on the command line (`perl -e`, `ruby -e`, `eval`, `source` of a file other than `.venv/bin/activate`), `env` that runs a program, `go env -w` or `-u`, `file -C` (compiles a magic file), `cargo --config`, `xargs` as a wrapper, and `brew install`. A command the model allows runs with no network access (a failing one says so in its output and asks the owner to run it with network); a command the built-in list allows keeps the network. It can only make a command run, never block one. Nothing leaves the server: it is a service on `127.0.0.1:8189` only, and Xhaos reaches it through one flag, `-classifier-url`. The user guide (What auto review runs without asking) says what runs without asking.
 
-The installer's **classifier** part (no by default; add it with `--with classifier`) sets it up:
+The installer's **classifier** part (on by default; `--without classifier` skips it) sets it up:
 
 | | |
 |---|---|
@@ -151,7 +151,7 @@ sudo systemctl daemon-reload
 sudo rm -rf /var/lib/xhaos/classifier
 ```
 
-By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (15 s by default) limits each answer; past it the command asks.
+By hand, without the installer: run `llama-server` as above (its own unit, or any process on the loopback) and add `-classifier-url http://127.0.0.1:8189` to Xhaos's `ExecStart`; remove the flag to turn it off. `-classifier-timeout` (15 s by default) limits each answer; past it the command asks. At start Xhaos sends the model one fixed command, in the background, and waits up to 120 s for the model to load (a first answer can be slow while it loads); this is logged as "classifier: warm-up failed" if it does not answer.
 
 ## Reverse proxy (HTTPS)
 

@@ -12,12 +12,13 @@
 # restarting.
 #
 # Options:
-#   --yes              answer yes to every question (unattended), except
-#                      adding the classifier model (needs --with classifier)
+#   --yes              answer yes to every question (unattended), including
+#                      adding the classifier model (2.1 GB)
 #   --with a,b,c       install these parts without asking: devtools, flutter,
 #                      browsers, podman, dictation, classifier (also to update
-#                      them). classifier is the optional command model, no by
-#                      default; the built-in command list needs no part.
+#                      them). classifier is the command model (2.1 GB), on by
+#                      default (--without classifier skips it); the built-in
+#                      command list needs no part.
 #   --without a,b      skip these parts, without asking
 #   --no-restart       never restart a running Xhaos
 #   --version vX.Y.Z   install that release instead of the latest
@@ -47,12 +48,13 @@ usage() {
 Xhaos installer and updater.
   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install.sh | sh
 Options:
-  --yes              answer yes to every question (unattended), except
-                     adding the classifier model (needs --with classifier)
+  --yes              answer yes to every question (unattended), including
+                     adding the classifier model (2.1 GB)
   --with a,b,c       install or update these parts without asking:
                      devtools, flutter, browsers, podman, dictation,
-                     classifier (the optional command model; no by
-                     default, the built-in command list needs no part)
+                     classifier (the command model, 2.1 GB; on by
+                     default, --without skips it; the built-in command
+                     list needs no part)
   --without a,b      skip these parts, without asking
   --no-restart       never restart a running Xhaos
   --version vX.Y.Z   install that release instead of the latest
@@ -153,7 +155,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 DICT=$HOME_DIR/dictation
 MODEL_DIR=$DICT/models/whisper-large-v3-turbo
-# The command classifier model (optional, no by default): llama.cpp's
+# The command classifier model (on by default; --without classifier skips it): llama.cpp's
 # llama-server and a small model, as a service of its own on the loopback
 # (nothing else here uses port 8189). Xhaos's built-in list of build, test and
 # lint commands needs none of it.
@@ -485,22 +487,14 @@ part podman "$PODMAN" n "Rootless Podman with Docker Compose.
   To run compose.yaml / docker-compose.yml stacks as your user (not for agents). From Ubuntu's apt and GitHub (checksum verified)."
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
-# --yes answers yes to the other parts, but never adds the classifier model
-# (2.1 GB, and about 3.7 GB of RAM while it runs): only --with classifier or the terminal does.
-cls_yes_only() {
-  [ "$YES" = yes ] && [ "$CLASSIFIER" != yes ] || return 1
-  case $WITH$WITHOUT in *",classifier,"*) return 1 ;; esac
-}
-if cls_yes_only; then
-  say "classifier: not installed (--yes does not add it; add it with --with classifier)"
-else
-part classifier "$CLASSIFIER" n "Command classifier model (optional; most servers do not need it).
+# The classifier model is on by default, and --yes adds it too (2.1 GB, and
+# about 3.7 GB of RAM while it runs); --without classifier skips it.
+part classifier "$CLASSIFIER" y "Command classifier model (on by default; answer n or use --without classifier to skip it).
   Xhaos's built-in list of build, test and lint commands already runs those without asking, with no model (on by default; Settings → Tools → Commands turns it off).
   This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
   Dangerous commands still ask, and nothing leaves the server.
   Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 3B Instruct Q4_K_M (Hugging Face, 2.1 GB, Apache-2.0),
   both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
-fi
 case $WITHOUT in *",classifier,"*)
   if [ "$CLASSIFIER" = yes ]; then
     say "  It stays installed and on: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1)), service xhaos-classifier."
