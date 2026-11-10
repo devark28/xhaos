@@ -58,6 +58,13 @@ func TestConfigRunsDrivers(t *testing.T) {
 		{"pager section", "[pager]\n\tdiff = cat\n", true},
 		{"a key that is not a driver", "[filter \"x\"]\n\trequired = true\n", false},
 		{"legacy dotted subsection", "[diff.x]\n\ttextconv = ./t\n", true},
+		// git skips a UTF-8 BOM at the start of a config and reads a
+		// subsection name up to its closing quote, so ] can be inside it.
+		{"a BOM before the first header", "\xef\xbb\xbf[diff]\n\texternal = x\n", true},
+		{"a clean config with a BOM", "\xef\xbb\xbf[core]\n\tbare = false\n", false},
+		{"a ] in a subsection, same-line key", "[diff \"a]b\"] external = x\n", true},
+		{"an escaped quote and ] in a subsection", "[diff \"a\\\"]\"] external = x\n", true},
+		{"a clean subsection with a ]", "[diff \"a]b\"]\n\tbinary = true\n", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

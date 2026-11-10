@@ -167,26 +167,28 @@ var runKeys = map[string]bool{
 func configRuns(r io.Reader) bool {
 	sc := bufio.NewScanner(r)
 	section := ""
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		text := sc.Text()
+		if first {
+			text = strings.TrimPrefix(text, "\uFEFF") // git skips a UTF-8 BOM
+			first = false
+		}
+		line := strings.TrimSpace(text)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
 		if line[0] == '[' {
-			end := strings.IndexByte(line, ']')
-			if end < 0 {
+			var rest string
+			var ok bool
+			section, rest, ok = parseHeader(line)
+			if !ok {
 				return true // a header git may read another way
-			}
-			name := strings.ToLower(line[1:end])
-			if f := strings.FieldsFunc(name, func(r rune) bool { return r == ' ' || r == '\t' || r == '"' || r == '.' }); len(f) > 0 {
-				section = f[0]
-			} else {
-				section = ""
 			}
 			if runSections[section] {
 				return true
 			}
-			line = strings.TrimSpace(line[end+1:])
+			line = strings.TrimSpace(rest)
 			if line == "" {
 				continue
 			}
@@ -198,4 +200,40 @@ func configRuns(r io.Reader) bool {
 		}
 	}
 	return sc.Err() != nil // an unreadable part: risky
+}
+
+// parseHeader reads a section header that starts at line[0] == '[': the
+// section name (lower case, up to its first dot, as the legacy
+// [section.subsection] form reads) and the text after the closing ']'. A
+// quoted subsection may hold any character, a ] included, with \ escapes. ok
+// is false for a header that does not close.
+func parseHeader(line string) (section, rest string, ok bool) {
+	i := 1
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	start := i
+	for i < len(line) && !strings.ContainsRune(" \t\"]", rune(line[i])) {
+		i++
+	}
+	name := strings.ToLower(line[start:i])
+	section, _, _ = strings.Cut(name, ".")
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	if i < len(line) && line[i] == '"' {
+		for i++; i < len(line) && line[i] != '"'; i++ {
+			if line[i] == '\\' {
+				i++ // the next character is part of the name
+			}
+		}
+		if i >= len(line) {
+			return "", "", false // the subsection's quote does not close
+		}
+		i++
+	}
+	if i >= len(line) || line[i] != ']' {
+		return "", "", false
+	}
+	return section, line[i+1:], true
 }
