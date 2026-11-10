@@ -162,6 +162,9 @@ var floor = []rule{
 	{"a copy, move, install, link or touch writes into .git, node_modules, or a tool config file", func(c parsed) bool {
 		return commandEach(c, is("cp", "mv", "install", "ln"), copyToProtected) || commandEach(c, is("touch"), anyProtected)
 	}},
+	{"an archive or patch writes files whose names it does not show (tar extracts, unzip, patch)", func(c parsed) bool {
+		return commandEach(c, is("tar"), tarExtracts) || anyWord(c, is("unzip", "patch"))
+	}},
 	{"gh talks to GitHub (any command but --version, help)", func(c parsed) bool {
 		return commandEach(c, is("gh"), ghReaches)
 	}},
@@ -563,6 +566,23 @@ func anyProtected(args []string) bool {
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") && protectedFile.MatchString(a) {
 			return true
+		}
+	}
+	return false
+}
+
+// tarExtracts is true when tar is given an extract option, with or without a
+// dash (tar -xf, tar xzf, tar --extract): the archive names the files it writes.
+func tarExtracts(args []string) bool {
+	for i, a := range args {
+		switch {
+		case a == "--extract" || a == "--get":
+			return true
+		case strings.HasPrefix(a, "--"):
+		case i == 0 || strings.HasPrefix(a, "-"):
+			if strings.ContainsRune(strings.TrimPrefix(a, "-"), 'x') && strings.Trim(strings.TrimPrefix(a, "-"), "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" {
+				return true
+			}
 		}
 	}
 	return false

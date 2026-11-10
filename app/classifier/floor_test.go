@@ -110,6 +110,8 @@ func TestFloor(t *testing.T) {
 		"cp -t .git/hooks x", "cp --target-directory=.git/hooks x", "cp -tnode_modules x", "cp x Makefile", "mv a.txt .npmrc",
 		"touch .git/config", "touch notes.txt .gitattributes",
 		"echo ok && cp x .git/hooks/post-commit", "true; mv x node_modules/.bin/tsc",
+		// archives and patches write files whose names they do not show
+		"tar -xf x.tar", "tar xzf x.tgz", "tar --extract -f x.tar", "tar -C out -xzf x.tgz", "unzip x.zip", "patch -p1 < fix.diff",
 		// gh and openssl s_client reach other machines
 		"gh pr create --title x", "gh api repos/x", "gh auth status", "time gh issue list", "openssl s_client -connect example.com:443",
 		// package installs by brew, code on the command line of perl and ruby, perl -i, cargo --config, tee into protected files
