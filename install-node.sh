@@ -12,12 +12,19 @@
 # folder /var/lib/xhaos-node, joins the server with the one-time code, and
 # runs the node as a systemd service. Run again without --code to update.
 #
+# --no-join installs all of that without joining: for a machine that joins
+# later, or for baking into an image (in a chroot, where systemd does not
+# run: the service is enabled and waits for the node to join). It joins
+# later with an XHAOS USB stick holding server= and code= (needs
+# --usb-config), or by running this again with --server and --code.
+#
 # Commands run under Landlock, or under bubblewrap on kernels without it
 # (Raspberry Pi OS): there, it installs bubblewrap with apt when missing.
 #
 # Options:
 #   --server URL       the server's public address (from the Nodes tab)
 #   --code CODE        the one-time join code (from the Nodes tab)
+#   --no-join          install now, join later (see above)
 #   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
 #   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
 #   --unsandboxed      run commands unconfined: only where neither Landlock nor
@@ -45,7 +52,7 @@ USER_NAME=xhaos-node
 STATE=/var/lib/xhaos-node
 UNIT=/etc/systemd/system/xhaos-node.service
 BASE_URL=${XHAOS_BASE_URL:-https://github.com/$REPO/releases/download}
-VERSION=latest SERVER="" CODE="" ROOT="" DEVICES="" UNSANDBOXED=no USB_CONFIG=""
+VERSION=latest SERVER="" CODE="" ROOT="" DEVICES="" UNSANDBOXED=no USB_CONFIG="" NO_JOIN=no
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -126,9 +133,13 @@ if [ "${XHAOS_INSTALL_NODE_FUNCTIONS:-}" = 1 ]; then return 0 2>/dev/null || exi
 usage() {
   cat <<'EOF'
 install-node.sh --server URL --code CODE [options]   (as root)
+install-node.sh --no-join [options]                  (install now, join later)
 
   --server URL       the server's public address (from the Nodes tab)
   --code CODE        the one-time join code (from the Nodes tab)
+  --no-join          install without joining: for a machine or an image (built in
+                     a chroot) that joins later, with an XHAOS USB stick
+                     (--usb-config) or by running this again with --server and --code
   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
   --unsandboxed      run commands unconfined (only where neither Landlock nor
@@ -153,6 +164,7 @@ while [ $# -gt 0 ]; do
     --device) shift; DEVICES="$DEVICES ${1:-}" ;;
     --device=*) DEVICES="$DEVICES ${1#--device=}" ;;
     --unsandboxed) UNSANDBOXED=yes ;;
+    --no-join) NO_JOIN=yes ;;
     --usb-config) USB_CONFIG=yes ;;
     --no-usb-config) USB_CONFIG=no ;;
     --version) shift; VERSION=${1:-latest} ;;
@@ -177,11 +189,17 @@ curl --help all 2>/dev/null | grep -q -- --retry-all-errors && RETRY="$RETRY --r
 dl() { curl $RETRY "$@"; }
 SYSTEMD=no
 [ -d /run/systemd/system ] && has systemctl && SYSTEMD=yes
+# IMAGE: an image being built (--no-join where systemd is installed but not
+# running, as in a chroot): the units are written and enabled, nothing is
+# started, and the sandbox is not checked (this kernel is the build host's).
+IMAGE=no
+[ "$NO_JOIN" = yes ] && [ "$SYSTEMD" = no ] && has systemctl && IMAGE=yes
 
+[ "$NO_JOIN" = no ] || [ -z "$CODE" ] || die "--no-join and --code do not go together"
 JOINED=no
 [ -f "$STATE/node.json" ] && JOINED=yes
-if [ "$JOINED" = no ] && { [ -z "$SERVER" ] || [ -z "$CODE" ]; }; then
-  die "this machine has not joined a server yet: pass --server and --code (the Nodes tab shows the whole command)"
+if [ "$JOINED" = no ] && [ "$NO_JOIN" = no ] && { [ -z "$SERVER" ] || [ -z "$CODE" ]; }; then
+  die "this machine has not joined a server yet: pass --server and --code (the Nodes tab shows the whole command), or --no-join to install now and join later"
 fi
 
 TMP=$(mktemp -d)
@@ -243,7 +261,21 @@ done
 # Landlock when the kernel has it, else bubblewrap (installed here when
 # missing). Never fatal: without either, the node joins and refuses commands.
 # (Releases before the bubblewrap fallback have no sandbox-check.)
-if [ "$UNSANDBOXED" = no ] && "$BIN" help 2>/dev/null | grep -q sandbox-check; then
+if [ "$UNSANDBOXED" = no ] && [ "$IMAGE" = yes ]; then
+  # The image's own kernel is not running here; Raspberry Pi kernels have no
+  # Landlock, so the image gets bubblewrap (about 150 kB).
+  step "The sandbox"
+  if ! has bwrap && has apt-get; then
+    say "Building an image: installing bubblewrap (for kernels without Landlock, such as Raspberry Pi OS's)."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1 ||
+      { apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1; } ||
+      say "warning: apt-get install bubblewrap failed; add the bubblewrap package to the image"
+  elif ! has bwrap; then
+    say "Building an image without apt: add bubblewrap to it (kernels without Landlock need it to run commands)."
+  fi
+  say "The sandbox is picked when the node starts on its own kernel (Landlock, else bubblewrap)."
+elif [ "$UNSANDBOXED" = no ] && "$BIN" help 2>/dev/null | grep -q sandbox-check; then
   step "The sandbox"
   if ! as_node "$BIN" sandbox-check --sandbox landlock >/dev/null 2>&1 && ! has bwrap; then
     if has apt-get; then
@@ -268,6 +300,8 @@ fi
 
 if [ "$JOINED" = yes ]; then
   [ -z "$CODE" ] || say "This machine has joined a server already; the code is not used (xhaos-node leave first to join another)."
+elif [ "$NO_JOIN" = yes ] && [ -z "$CODE" ]; then
+  say "Not joining now (--no-join)."
 else
   step "Joining $SERVER"
   set -- join --server "$SERVER" --code "$CODE" --root "$ROOT"
@@ -279,7 +313,8 @@ fi
 # ---- the service -----------------------------------------------------------------
 
 step "The service"
-if [ "$SYSTEMD" = no ]; then
+if [ "$SYSTEMD" = no ] && [ "$IMAGE" = no ]; then
+  [ "$JOINED" = yes ] || [ "$NO_JOIN" = no ] || { say "No systemd here. Join with: runuser -u $USER_NAME -- env HOME=$STATE $BIN join --server URL --code CODE --root $ROOT, then start it as below."; }
   say "No systemd here: start the node yourself, as $USER_NAME:"
   say "  runuser -u $USER_NAME -- env HOME=$STATE $BIN run"
   exit 0
@@ -290,6 +325,8 @@ cat >"$TMP/unit" <<UNIT
 Description=Xhaos node (docs/nodes.md)
 Wants=network-online.target
 After=network-online.target
+# Not joined yet (--no-join): the service waits until the node joins.
+ConditionPathExists=$STATE/node.json
 
 [Service]
 User=$USER_NAME
@@ -304,9 +341,15 @@ $(confinement)
 [Install]
 WantedBy=multi-user.target
 UNIT
+# reload: tell a running systemd its units changed (not in an image).
+reload() {
+  [ "$SYSTEMD" = yes ] || return 0
+  systemctl daemon-reload
+  [ "${1:-}" != udev ] || udevadm control --reload-rules 2>/dev/null || true
+}
 if ! cmp -s "$TMP/unit" "$UNIT" 2>/dev/null; then
   install -m 0644 "$TMP/unit" "$UNIT"
-  systemctl daemon-reload
+  reload
 fi
 systemctl enable xhaos-node >/dev/null 2>&1 || true
 
@@ -338,18 +381,24 @@ USBUNIT
   changed=no
   cmp -s "$TMP/rule" "$USB_RULE" 2>/dev/null || { install -m 0644 "$TMP/rule" "$USB_RULE"; changed=yes; }
   cmp -s "$TMP/usbunit" "$USB_UNIT" 2>/dev/null || { install -m 0644 "$TMP/usbunit" "$USB_UNIT"; changed=yes; }
-  if [ "$changed" = yes ]; then
-    systemctl daemon-reload
-    udevadm control --reload-rules 2>/dev/null || true
-  fi
+  [ "$changed" = no ] || reload udev
   say "A USB stick labelled XHAOS with xhaos-node.conf now applies its settings (--no-usb-config turns this off)."
 elif [ -e "$USB_RULE" ] || [ -e "$USB_UNIT" ]; then
   rm -f "$USB_RULE" "$USB_UNIT"
-  systemctl daemon-reload
-  udevadm control --reload-rules 2>/dev/null || true
+  reload udev
   say "USB stick settings are off (--no-usb-config)."
 else
   say "USB stick settings are off (--usb-config turns them on)."
+fi
+if [ "$JOINED" = no ] && [ "$NO_JOIN" = yes ]; then
+  # node.json is not there: the service starts once the node joins.
+  if [ "$USB_CONFIG" = yes ]; then
+    say "Not joined yet. To join, plug in a USB stick labelled XHAOS whose xhaos-node.conf has server= and code= (the Nodes tab's USB stick file), or run this again with --server and --code."
+  else
+    say "Not joined yet. To join, run this again with --server and --code (add --usb-config here to join with an XHAOS USB stick instead)."
+  fi
+  [ "$IMAGE" = no ] || say "Enabled in the image: xhaos-node starts on the first boot after it joins."
+  exit 0
 fi
 systemctl restart xhaos-node
 sleep 2
