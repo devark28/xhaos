@@ -64,6 +64,14 @@ type Status struct {
 	Note   string `json:"note"`
 }
 
+// NoNetPossible reports whether commands the classifier allows can be given
+// no network connections: the sandbox is on, and the kernel's Landlock can
+// restrict TCP. Where it cannot, such commands must not run on the model's
+// say-so alone.
+func (c Config) NoNetPossible() bool {
+	return c.Mode != Off && c.Mode != "" && ABI() >= NetABI
+}
+
 // ABI is the kernel's Landlock ABI version, 0 when Landlock is unavailable.
 func ABI() int {
 	v, err := llsys.LandlockGetABIVersion()
@@ -76,7 +84,7 @@ func ABI() int {
 func (c Config) Status() Status {
 	abi := ABI()
 	s := Status{Mode: c.Mode, ABI: abi, Active: c.Mode != Off && abi > 0}
-	s.NoNet = s.Active && abi >= NetABI
+	s.NoNet = c.NoNetPossible()
 	switch {
 	case c.Mode == Off:
 		s.Note = "Off: agents' commands run with the server user's full access."
@@ -104,7 +112,7 @@ type policy struct {
 	// proxy), and no UDP (DNS lookups could carry a secret out).
 	Port    int  `json:"port,omitempty"`
 	DenyUDP bool `json:"denyUdp,omitempty"`
-	// NoNet: no TCP connections at all (commands the classifier allows).
+	// NoNet: no TCP connections and no UDP (commands the classifier allows).
 	NoNet bool `json:"noNet,omitempty"`
 }
 
@@ -122,7 +130,10 @@ type Extra struct {
 
 func (x Extra) apply(env []string, p *policy) []string {
 	p.Read = append(p.Read, x.Read...)
-	p.NoNet = p.NoNet || (x.NoNet && ABI() >= NetABI)
+	if x.NoNet && ABI() >= NetABI {
+		// No TCP, and no UDP either: a datagram (a DNS lookup) could carry data out.
+		p.NoNet, p.DenyUDP = true, true
+	}
 	return append(env, x.Env...)
 }
 

@@ -194,6 +194,69 @@ func TestNoNetBlocksConnections(t *testing.T) {
 	}
 }
 
+// The no-network rule needs the sandbox on and Landlock ABI 4: with the
+// sandbox off (or unset) it is never possible, and the status says so.
+func TestNoNetPossibleNeedsSandboxAndABI(t *testing.T) {
+	for _, m := range []string{Off, ""} {
+		if (Config{Mode: m}).NoNetPossible() || (Config{Mode: m}).Status().NoNet {
+			t.Errorf("mode %q: no-network possible without the sandbox", m)
+		}
+	}
+	on := Config{Mode: Auto}
+	if on.NoNetPossible() != (ABI() >= NetABI) || on.Status().NoNet != on.NoNetPossible() {
+		t.Errorf("auto: NoNetPossible %v, status %v; want the kernel's ABI %d to decide", on.NoNetPossible(), on.Status().NoNet, ABI())
+	}
+}
+
+// Commands the classifier allows also get no UDP: a datagram to a local
+// listener (a DNS-style leak) must not arrive. The same command without
+// NoNet still sends it, so the listener works.
+func TestNoNetBlocksUDP(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	script := fmt.Sprintf("echo leak > /dev/udp/127.0.0.1/%d", port)
+	// received runs cmd, then reports whether a datagram arrived. Anything
+	// left from an earlier run is drained first, so it cannot count.
+	received := func(cmd *exec.Cmd) bool {
+		buf := make([]byte, 64)
+		// A deadline in the past fails before reading queued data, so drain
+		// with a short future one.
+		_ = pc.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		for {
+			if _, _, err := pc.ReadFrom(buf); err != nil {
+				break
+			}
+		}
+		_, _ = cmd.CombinedOutput()
+		_ = pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _, err := pc.ReadFrom(buf)
+		return err == nil && n > 0
+	}
+	plain, err := c.Command(context.Background(), dir, script, Extra{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !received(plain) {
+		t.Skip("the UDP listener got nothing even without NoNet: the test cannot tell")
+	}
+	cmd, err := c.Command(context.Background(), dir, script, Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received(cmd) {
+		t.Fatal("with NoNet a UDP datagram reached a local listener")
+	}
+}
+
 // A submodule's (and a worktree's) .git is a file pointing into the parent
 // repository: git must work in the sandbox, the parent's files must not.
 func TestGitSubmodulesAndWorktrees(t *testing.T) {
