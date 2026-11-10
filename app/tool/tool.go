@@ -166,6 +166,9 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		call.Summary = in.Command
 		call.Commit = commitsOrPushes(in.Command, 0)
 		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
+		if call.Effect == Read && GitDriverRisk(root, in.Command) {
+			call.Effect = Exec // git diff/log/show would run a driver the project's config names
+		}
 		for _, s := range in.Secrets {
 			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Secrets, s) {
 				call.Secrets = append(call.Secrets, s)

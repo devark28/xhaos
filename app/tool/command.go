@@ -174,7 +174,7 @@ func classifyGit(args []string) string {
 		return Exec // git -C, -c, --git-dir, ...: options that change where or how git runs
 	}
 	for _, a := range rest {
-		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" || a == "--textconv" {
+		if strings.HasPrefix(a, "--output") || strings.HasPrefix(a, "--exec") || a == "--ext-diff" || a == "--textconv" || strings.HasPrefix(a, "--config-env") {
 			return Exec
 		}
 	}
