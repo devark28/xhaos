@@ -55,6 +55,28 @@ has() { command -v "$1" >/dev/null 2>&1; }
 # as_node runs a command as the node's user.
 as_node() { runuser -u "$USER_NAME" -- env HOME="$STATE" XHAOS_NODE_STATE="$STATE" "$@"; }
 
+# confinement is the service's systemd confinement, one property per line:
+# the unit and the sandbox check both use it, so the check sees what the
+# service will (bubblewrap runs inside it).
+confinement() {
+  printf '%s\n' NoNewPrivileges=yes ProtectSystem=strict ProtectHome=read-only "ReadWritePaths=$STATE $ROOT" PrivateTmp=yes
+}
+
+# as_service runs a command as the service would: the node's user, its
+# environment and confinement (systemd-run); as_node without systemd.
+as_service() {
+  if [ "$SYSTEMD" != yes ] || ! has systemd-run; then as_node "$@"; return; fi
+  n=$#
+  set -- "$@" --wait --pipe --quiet --collect -p "User=$USER_NAME" -E "HOME=$STATE" -E "XHAOS_NODE_STATE=$STATE"
+  while IFS= read -r prop; do set -- "$@" -p "$prop"; done <<PROPS
+$(confinement)
+PROPS
+  set -- "$@" --
+  i=0
+  while [ "$i" -lt "$n" ]; do set -- "$@" "$1"; shift; i=$((i + 1)); done # the command after the options
+  systemd-run "$@" </dev/null
+}
+
 # The node's user owns its state folder, and so does any command an agent
 # runs on an unsandboxed node: as root, this script never follows a link in
 # there, and never chowns or chmods a path the node's user could have
@@ -234,7 +256,8 @@ if [ "$UNSANDBOXED" = no ] && "$BIN" help 2>/dev/null | grep -q sandbox-check; t
       say "This kernel has no Landlock and bwrap is missing: install bubblewrap with your package manager, then re-run this."
     fi
   fi
-  if line=$(as_node "$BIN" sandbox-check 2>&1); then
+  # As the service runs it (its confinement could stop bubblewrap).
+  if line=$(as_service "$BIN" sandbox-check 2>&1); then
     say "Commands run under: $line"
   else
     say "warning: $line"
@@ -276,11 +299,7 @@ Restart=always
 RestartSec=10
 # 3: the server refused this node (it was removed); retrying will not help.
 RestartPreventExitStatus=3
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=$STATE $ROOT
-PrivateTmp=yes
+$(confinement)
 
 [Install]
 WantedBy=multi-user.target
