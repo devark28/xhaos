@@ -97,3 +97,24 @@ func TestBindingsNameTheirWorkspace(t *testing.T) {
 		}
 	}
 }
+
+// The node address's host is trusted as a Host header: without it, Wails
+// refuses nodes coming through the proxy (403 on a localhost bind).
+func TestNodeHost(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://nodes.example.com":      "nodes.example.com",
+		"https://nodes.example.com/":     "nodes.example.com",
+		"https://Nodes.Example.com:8443": "Nodes.Example.com",
+		"http://localhost:5180":          "localhost",
+		"https://[2001:db8::1]:443":      "2001:db8::1",
+	} {
+		if got, err := nodeHost(raw); err != nil || got != want {
+			t.Errorf("nodeHost(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"nodes.example.com", "wss://nodes.example.com", "https://", "ftp://x.example.com", "https://%zz"} {
+		if got, err := nodeHost(raw); err == nil {
+			t.Errorf("nodeHost(%q) = %q, want an error", raw, got)
+		}
+	}
+}

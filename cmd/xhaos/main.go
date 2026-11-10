@@ -17,9 +17,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -118,6 +120,18 @@ func main() {
 	}
 	if *nodeURL == "" && len(hosts) > 0 {
 		*nodeURL = "https://" + hosts[0]
+	}
+	// Nodes come through the proxy with the node address as their Host. On a
+	// localhost bind Wails answers 403 to a Host it does not know, so trust
+	// that name as it trusts -public-host (the proxy passes only /xhaos/node).
+	if *nodeURL != "" {
+		h, err := nodeHost(*nodeURL)
+		if err != nil {
+			log.Fatalf("-node-url: %v", err)
+		}
+		if !slices.ContainsFunc(hosts, func(x string) bool { return strings.EqualFold(x, h) }) {
+			hosts = append(hosts, h)
+		}
 	}
 	if m := *sandboxMode; m != sandbox.Auto && m != sandbox.On && m != sandbox.Off {
 		log.Fatalf("-sandbox must be auto, on or off")
@@ -225,6 +239,16 @@ func runNode(args []string) {
 	err := syscall.Exec(path, append([]string{path}, args...), os.Environ())
 	fmt.Fprintf(os.Stderr, "xhaos node: %v\n", err)
 	os.Exit(1)
+}
+
+// nodeHost is the host name in -node-url (https://, or http:// for a node on
+// this machine), which the server must accept as a Host.
+func nodeHost(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", fmt.Errorf("%q is not an address like https://nodes.example.com", raw)
+	}
+	return u.Hostname(), nil
 }
 
 func fileExists(p string) bool {
