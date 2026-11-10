@@ -93,6 +93,13 @@ func (h *holding) Write(b []byte) (int, error) {
 // test ends.
 func (e *env) join(t *testing.T, name string) (node.View, string) {
 	t.Helper()
+	return e.joinWith(t, name, true, "")
+}
+
+// joinWith joins a node that is unsandboxed, or sandboxed with want
+// (client.Node.Sandbox).
+func (e *env) joinWith(t *testing.T, name string, unsandboxed bool, want string) (node.View, string) {
+	t.Helper()
 	added, err := e.s.Nodes.Add(node.AddRequest{WorkspaceID: ws, Name: name, Labels: []string{"Pi5", "pi5", " cam "}})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +109,7 @@ func (e *env) join(t *testing.T, name string) (node.View, string) {
 	}
 	state, nodeRoot := t.TempDir(), t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	c, err := client.Join(ctx, state, client.Config{Server: e.url, Root: nodeRoot, Unsandboxed: true}, strings.ToLower(added.Code), "test")
+	c, err := client.Join(ctx, state, client.Config{Server: e.url, Root: nodeRoot, Unsandboxed: unsandboxed}, strings.ToLower(added.Code), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +117,7 @@ func (e *env) join(t *testing.T, name string) (node.View, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &client.Node{Config: c, Key: key, Version: "test", State: state}
+	n := &client.Node{Config: c, Key: key, Version: "test", State: state, Sandbox: want}
 	ended := make(chan error, 1)
 	e.ended[name] = ended
 	go func() { ended <- n.Run(ctx) }()
@@ -299,6 +306,38 @@ func TestToolsNeedAGrant(t *testing.T) {
 	_, out, err = e.call(t, "nodes_list", map[string]any{})
 	if err != nil || !strings.Contains(out, "pi5 (#") || !strings.Contains(out, "you: granted") {
 		t.Fatalf("list = %q, %v", out, err)
+	}
+}
+
+// A node that picked bubblewrap says so, and its commands run through bwrap
+// in the folder asked for (a stand-in bwrap here: the real one needs user
+// namespaces, which this machine may not allow; app/sandbox tests it where
+// it can).
+func TestBwrapNode(t *testing.T) {
+	bin := t.TempDir()
+	argsLog := filepath.Join(bin, "args")
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsLog + "\nwhile [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "bwrap"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	e := setup(t)
+	v, nodeRoot := e.joinWith(t, "pi", false, sandbox.Bwrap)
+	if f := v.Facts; f == nil || f.Sandbox != wire.SandboxBwrap || !f.Sandboxed {
+		t.Fatalf("facts = %+v", v.Facts)
+	}
+	e.s.Nodes.Grant(node.GrantRequest{WorkspaceID: ws, NodeID: v.ID, AgentID: e.agent.ID, Granted: true})
+	if _, out, err := e.call(t, "nodes_list", map[string]any{}); err != nil || !strings.Contains(out, "bubblewrap") {
+		t.Errorf("nodes_list = %q %v", out, err)
+	}
+	os.MkdirAll(filepath.Join(nodeRoot, "sub"), 0o755)
+	_, out, err := e.call(t, "node_run", map[string]any{"node": "pi", "command": "pwd; echo sandbox=$XHAOS_SANDBOX node=$XHAOS_NODE", "dir": "sub"})
+	if err != nil || !strings.Contains(out, filepath.Join(nodeRoot, "sub")) || !strings.Contains(out, "sandbox=1 node=1") {
+		t.Fatalf("node_run = %q %v", out, err)
+	}
+	raw, _ := os.ReadFile(argsLog)
+	if !strings.Contains(string(raw), "--chdir\n"+filepath.Join(nodeRoot, "sub")+"\n") || !strings.Contains(string(raw), "--bind-try\n"+nodeRoot+"\n") {
+		t.Errorf("bwrap args = %q", raw)
 	}
 }
 
