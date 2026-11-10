@@ -144,6 +144,9 @@ type ToolData struct {
 	By      string `json:"by,omitempty"`     // "owner", "policy", "danger" or "classifier" for allowed/denied
 	Reason  string `json:"reason,omitempty"` // why it asks or was denied
 	Output  string `json:"output,omitempty"`
+	// ViaModel is set when the local model, not the built-in list, allowed the
+	// call: it then runs with no TCP connections.
+	ViaModel bool `json:"viaModel,omitempty"`
 }
 
 // StatusData is the payload of an agent.status event.

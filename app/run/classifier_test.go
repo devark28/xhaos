@@ -96,6 +96,9 @@ func TestClassifierAllowsOrdinaryCommands(t *testing.T) {
 	if st["ok"].State != agent.ToolAllowed && st["ok"].State != agent.ToolDone || st["ok"].By != classifier.By {
 		t.Errorf("eligible call = %+v", st["ok"])
 	}
+	if !st["ok"].ViaModel {
+		t.Errorf("a call the model allowed is not marked ViaModel: %+v", st["ok"])
+	}
 	if st["floor"].State != agent.ToolPending || st["commit"].State != agent.ToolPending {
 		t.Errorf("floor = %+v, commit = %+v; want both pending", st["floor"], st["commit"])
 	}
@@ -173,6 +176,9 @@ func TestClassifierListAllowsWithoutModel(t *testing.T) {
 	if s := st["listed"]; s.State != agent.ToolAllowed && s.State != agent.ToolDone || s.By != classifier.By || s.Reason != want {
 		t.Errorf("listed = %+v", s)
 	}
+	if st["listed"].ViaModel {
+		t.Errorf("a call the built-in list allowed is marked ViaModel (it keeps the network): %+v", st["listed"])
+	}
 	if st["other"].State != agent.ToolPending || st["floor"].State != agent.ToolPending {
 		t.Errorf("other = %+v, floor = %+v; want both pending", st["other"], st["floor"])
 	}
@@ -196,5 +202,31 @@ func TestClassifierListAllowsWithoutModel(t *testing.T) {
 	h.waitStatus(t, c.ID, agent.StatusAttention)
 	if s := h.tools(t, c.ID)["listed"]; s.State != agent.ToolPending || s.By != "" {
 		t.Errorf("manual review: listed = %+v", s)
+	}
+}
+
+// A command the model allowed runs with no network. When it fails, its output
+// says so, so the agent can ask the owner to run it with the network.
+func TestClassifierModelAllowedFailureSaysNoNetwork(t *testing.T) {
+	var asked atomic.Int32
+	model := fakeLlama(&asked, "Runs a script that is not there.", 0)
+	defer model.Close()
+	root := t.TempDir()
+	h := setupIn(t, root, toolModel([]llm.ToolCall{
+		tc("fail", "bash", map[string]any{"command": "./missing-script.sh"}),
+	}), func(o *backend.Options) {
+		o.Classifier = classifier.Config{URL: model.URL, Timeout: 5 * time.Second}
+	})
+	h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	auto := policy.Policy{Access: "rw", Review: "auto", Commit: "review"}
+	a, _ := h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Prompt: "go", Provider: "f", Model: "m1", Policy: &auto})
+	h.waitStatus(t, a.ID, agent.StatusComplete)
+	st := h.tools(t, a.ID)["fail"]
+	if !st.ViaModel || st.State != agent.ToolFailed {
+		t.Fatalf("fail = %+v; want a model-allowed call that failed", st)
+	}
+	const note = "ran without network (allowed by the local model); ask the owner to run it with network"
+	if !strings.Contains(st.Output, note) {
+		t.Errorf("output = %q; want the no-network note", st.Output)
 	}
 }

@@ -307,12 +307,19 @@ func (r *Runner) explainLater(ws string, agentID int64, callID string, req class
 	}
 }
 
-func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+// noNetNote is added to the output of a command the local model allowed when
+// it fails: the failure may be for want of the network, which that command
+// does not get (the owner can run it with the network).
+const noNetNote = "(ran without network (allowed by the local model); ask the owner to run it with network)"
+
+// execute runs an allowed call. noNet is true when the local model allowed it
+// (ToolData.ViaModel): a bash command then runs with no TCP connections.
+func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	// While dangerously allowed, git is checked around each command: what it
 	// did to protected branches or the project's checkout is undone.
 	if call.Name == "bash" && r.Guard != nil && a.DangerActive(time.Now()) {
 		before, err := r.Guard.Capture(root)
-		out, runErr := r.run(ctx, root, ws, a, call)
+		out, runErr := r.run(ctx, root, ws, a, call, noNet)
 		if err == nil {
 			if note := r.Guard.Repair(root, before); note != "" {
 				out = strings.TrimRight(out, "\n") + "\n\n" + note
@@ -320,12 +327,12 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 		}
 		return out, runErr
 	}
-	return r.run(ctx, root, ws, a, call)
+	return r.run(ctx, root, ws, a, call, noNet)
 }
 
 // run runs a call: an extra tool, a sealed command (with secrets), or a
 // built-in tool.
-func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}
@@ -336,6 +343,7 @@ func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call t
 	if err != nil {
 		return "", err
 	}
+	extra.NoNet = noNet
 	return tool.ExecuteWith(ctx, root, r.Sandbox, extra, call)
 }
 
@@ -709,6 +717,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				if ok, why := r.Classifier.Decide(ctx, creq); ok {
 					verdict, reason, by = policy.Allow, why, classifier.By
 					explain = why == ""
+					d.ViaModel = true
 				} else if why != "" {
 					reason = "the local classifier asks: " + why
 				}
@@ -749,7 +758,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				call, err := r.prepare(root, ws, a, c)
 				out := ""
 				if err == nil {
-					out, err = r.execute(ctx, root, ws, a, call)
+					out, err = r.execute(ctx, root, ws, a, call, d.ViaModel)
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {
@@ -757,6 +766,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					d.State, d.Output = agent.ToolFailed, "Stopped before it finished.\n"+out
 				case err != nil:
 					d.State, d.Output = agent.ToolFailed, err.Error()
+					if d.ViaModel { // it may have failed for want of the network
+						d.Output += "\n" + noNetNote
+					}
 				}
 			}
 			record(d)

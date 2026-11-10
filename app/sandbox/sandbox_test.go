@@ -156,6 +156,44 @@ func TestModes(t *testing.T) {
 	}
 }
 
+// Commands the classifier allows run with no TCP connections; the same
+// command connects without that flag.
+func TestNoNetBlocksConnections(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	script := fmt.Sprintf("exec 3<>/dev/tcp/127.0.0.1/%d", ln.Addr().(*net.TCPAddr).Port)
+	if out, err := run(t, c, dir, script); err != nil {
+		t.Fatalf("without NoNet the connection failed: %q %v", out, err)
+	}
+	cmd, err := c.Command(context.Background(), dir, script, Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("with NoNet the connection worked: %q", out)
+	}
+	if s := c.Status(); !s.NoNet {
+		t.Errorf("status without NoNet: %+v", s)
+	}
+}
+
 // A submodule's (and a worktree's) .git is a file pointing into the parent
 // repository: git must work in the sandbox, the parent's files must not.
 func TestGitSubmodulesAndWorktrees(t *testing.T) {

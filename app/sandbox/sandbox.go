@@ -60,6 +60,7 @@ type Status struct {
 	Mode   string `json:"mode"`
 	Active bool   `json:"active"` // commands actually run sandboxed
 	ABI    int    `json:"abi"`    // Landlock ABI version; 0 when unavailable
+	NoNet  bool   `json:"noNet"`  // commands the classifier allows cannot connect over TCP
 	Note   string `json:"note"`
 }
 
@@ -75,6 +76,7 @@ func ABI() int {
 func (c Config) Status() Status {
 	abi := ABI()
 	s := Status{Mode: c.Mode, ABI: abi, Active: c.Mode != Off && abi > 0}
+	s.NoNet = s.Active && abi >= NetABI
 	switch {
 	case c.Mode == Off:
 		s.Note = "Off: agents' commands run with the server user's full access."
@@ -84,6 +86,11 @@ func (c Config) Status() Status {
 		s.Note = "This kernel has no Landlock: commands run with the server user's full access."
 	default:
 		s.Note = "Commands can read and write only their project folder (plus a shared cache), read system files and toolchains, and cannot see the rest of the home folder or Xhaos's data."
+		if s.NoNet {
+			s.Note += " Commands the classifier allows cannot open network connections."
+		} else {
+			s.Note += " This kernel's Landlock cannot block network connections (ABI 4 or newer is needed), so commands the classifier allows keep network access."
+		}
 	}
 	return s
 }
@@ -97,6 +104,8 @@ type policy struct {
 	// proxy), and no UDP (DNS lookups could carry a secret out).
 	Port    int  `json:"port,omitempty"`
 	DenyUDP bool `json:"denyUdp,omitempty"`
+	// NoNet: no TCP connections at all (commands the classifier allows).
+	NoNet bool `json:"noNet,omitempty"`
 }
 
 // Command builds the command that runs `bash -c command` in root, inside
@@ -106,10 +115,14 @@ type policy struct {
 type Extra struct {
 	Read []string
 	Env  []string
+	// NoNet: the command may not connect over TCP. Ignored where Landlock
+	// cannot restrict the network (ABI below NetABI): it runs as before.
+	NoNet bool
 }
 
 func (x Extra) apply(env []string, p *policy) []string {
 	p.Read = append(p.Read, x.Read...)
+	p.NoNet = p.NoNet || (x.NoNet && ABI() >= NetABI)
 	return append(env, x.Env...)
 }
 
@@ -387,6 +400,17 @@ func restrict(p policy) error {
 			return errors.New("landlock cannot restrict the network on this kernel")
 		}
 		if err := landlock.V6.RestrictNet(landlock.ConnectTCP(uint16(p.Port))); err != nil {
+			return fmt.Errorf("landlock network: %w", err)
+		}
+	}
+	if p.NoNet {
+		// Connect only: no rule for any port, so no TCP connection (this
+		// includes the server's own port on loopback). Binding stays allowed.
+		if ABI() < NetABI {
+			return errors.New("landlock cannot restrict the network on this kernel")
+		}
+		none := landlock.Config{HandledAccessNet: landlock.AccessNetSet(llsys.AccessNetConnectTCP)}
+		if err := none.RestrictNet(); err != nil {
 			return fmt.Errorf("landlock network: %w", err)
 		}
 	}
