@@ -120,11 +120,24 @@ type Facts struct {
 	MemoryMB  int64    `json:"memoryMB,omitempty"`
 	Root      string   `json:"root"`
 	Landlock  int      `json:"landlock"`              // ABI, 0 when missing
-	Sandboxed bool     `json:"sandboxed"`             // commands run under Landlock
+	Sandboxed bool     `json:"sandboxed"`             // commands run confined (Landlock or bubblewrap)
 	Devices   []string `json:"devices,omitempty"`     // opened to commands (--device)
 	Hardware  []string `json:"hardware,omitempty"`    // seen in /dev: video*, ttyUSB*, ttyACM*, dri
 	Unsandbox bool     `json:"unsandboxed,omitempty"` // the owner ran it with --unsandboxed
+	// Sandbox is what confines commands: SandboxLandlock, SandboxBwrap,
+	// SandboxOff (--unsandboxed) or SandboxNone (commands are refused).
+	// Older nodes leave it empty: Landlock and Unsandbox say it then.
+	Sandbox     string `json:"sandbox,omitempty"`
+	SandboxNote string `json:"sandboxNote,omitempty"` // what is used, or why there is none
 }
+
+// Facts.Sandbox values.
+const (
+	SandboxLandlock = "landlock"
+	SandboxBwrap    = "bwrap"
+	SandboxOff      = "off"
+	SandboxNone     = "none"
+)
 
 // Job is a command running (or finished) on a node.
 type Job struct {
