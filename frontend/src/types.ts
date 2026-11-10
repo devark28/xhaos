@@ -111,6 +111,7 @@ export interface Channel {
   loaded?: boolean; // false: messages holds only the last one; open it to load the rest
   closed?: boolean; // the user closed it; nothing more can be sent
   published?: boolean; // on its link: readable and writable from outside with its passphrase
+  expiresAt?: string; // when the link stops working; none: it never does. Past it, the channel stays published until published again or unpublished
 }
 
 // A channel as the backend sends it (channel.Service.Channels).
@@ -123,6 +124,7 @@ export interface BackendChannel {
   createdAt: string;
   closed?: boolean;
   published?: boolean;
+  expiresAt?: string;
   // senderId 0: sent from outside through the link, by senderName.
   count?: number; // messages in all (the list carries only the last)
   messages: { id: number; channelId: number; senderId: number; senderName?: string; body: string; createdAt: string }[];

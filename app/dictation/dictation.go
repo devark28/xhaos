@@ -9,8 +9,14 @@
 // stdout, and deletes the audio before returning. The audio is kept only when
 // the server's "keep recordings" setting is on (see Keeping).
 //
+// A warm service (warm.go) keeps the model loaded: scripts/dictation/stt.py
+// --serve, on the loopback. With -dictation-url set, each take goes to it; when
+// it is down or fails, the take goes to the command, if -dictation-cmd is also
+// set. Without the command, the error is reported.
+//
 // Configuration (cmd/xhaos flags, passed as Options.Dictation):
 //
+//	-dictation-url     the warm service's base URL, e.g. http://127.0.0.1:8190. Empty: none.
 //	-dictation-cmd     the sidecar program. Empty turns dictation off.
 //	-dictation-args    the argument template, split on spaces. {wav} is the WAV
 //	                   path, {model} is -dictation-model, {language} is the
@@ -27,11 +33,12 @@
 // (faster-whisper). It reads a 16 kHz WAV and prints the transcript on stdout.
 // Nothing in this package downloads a model.
 //
-// The sidecar's limit is 60 s plus one and a half times the utterance length
-// (8.5 minutes for a five-minute take, inside the page's 10-minute call
-// limit), unless -dictation-timeout is set. It is generous on purpose: the
-// sidecar loads the model for every take, and a small server's CPU can take
-// longer than the speech itself. On timeout its whole
+// The limit, for the warm service's answer or the sidecar's run, is 60 s plus
+// one and a half times the utterance length (8.5 minutes for a five-minute
+// take, inside the page's 10-minute call limit), unless -dictation-timeout is
+// set. It is generous on purpose: a small server's CPU can take longer than
+// the speech itself, and a command loads the model for every take. A timeout
+// is reported, not retried with the command. On timeout a command's whole
 // process group is killed.
 package dictation
 
@@ -44,6 +51,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,7 +95,8 @@ var ErrNotConfigured = errors.New("dictation is not configured: start the server
 
 // Config says how to run the sidecar. See the package comment.
 type Config struct {
-	Program    string        // sidecar executable; "" turns dictation off
+	URL        string        // warm service base URL (-dictation-url); "" for none
+	Program    string        // sidecar executable; "" turns dictation off unless URL is set
 	Args       string        // argument template: fields split on spaces; {wav}, {model}, {language}, {prompt}
 	Model      string        // model directory, for {model}
 	Timeout    time.Duration // fixed sidecar time limit; 0 scales with the audio
@@ -96,14 +105,15 @@ type Config struct {
 
 // Service is the client-facing API.
 type Service struct {
-	db  *sql.DB
-	cfg Config
+	db   *sql.DB
+	cfg  Config
+	http *http.Client // to the warm service; each request is bounded by its context
 }
 
 // NewService returns the dictation service. It needs the database for the
 // workspace checks and the settings.
 func NewService(db *sql.DB, cfg Config) *Service {
-	return &Service{db: db, cfg: cfg}
+	return &Service{db: db, cfg: cfg, http: &http.Client{}}
 }
 
 // Migrate creates the settings table. Settings are scoped: scope "" holds the
@@ -118,13 +128,13 @@ func Migrate(db *sql.DB) error {
 	return err
 }
 
-// Enabled reports whether a sidecar is configured. The page calls it to show
-// or hide the microphone.
-func (s *Service) Enabled() bool { return s.cfg.Program != "" }
+// Enabled reports whether a sidecar or a warm service is configured. The page
+// calls it to show or hide the microphone.
+func (s *Service) Enabled() bool { return s.cfg.Program != "" || s.cfg.URL != "" }
 
 // Transcribe returns the transcript of one utterance: 16 kHz mono signed
 // 16-bit little-endian PCM (pcm16le, base64 on the wire). It returns
-// ErrNotConfigured when no sidecar is set.
+// ErrNotConfigured when neither a warm service nor a sidecar is set.
 func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error) {
 	if _, err := workspace.Get(s.db, workspaceID); err != nil {
 		return "", err
@@ -147,21 +157,11 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 	if err != nil {
 		return "", err
 	}
-	// The temp directory is private (0700) and holds only this utterance.
-	dir, err := os.MkdirTemp("", "xhaos-dictation-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(dir) // the audio goes as soon as the transcript is read
-	wav := filepath.Join(dir, "utterance.wav")
-	if err := writeWAV(wav, pcm16le); err != nil {
-		return "", err
-	}
 	timeout := s.timeout(len(pcm16le))
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	started := time.Now()
-	out, err := s.run(ctx, dir, wav, language, hints)
+	out, warm, err := s.transcribe(ctx, pcm16le, language, hints)
 	took := time.Since(started)
 	if ctx.Err() == context.DeadlineExceeded {
 		err = fmt.Errorf("dictation timed out after %s", timeout)
@@ -171,13 +171,13 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 	// failures are quick and say nothing about it).
 	if cut := ctx.Err() == context.DeadlineExceeded; err == nil || cut {
 		length := float64(len(pcm16le)) / float64(SampleRate*bytesPerSample)
-		if serr := s.recordSpeed(length, took.Seconds(), cut); serr != nil {
+		if serr := s.recordSpeed(length, took.Seconds(), cut, warm); serr != nil {
 			log.Printf("WARN dictation: could not record the speed: %v", serr)
 		}
 	}
 	if keep {
 		// A failed save only goes to the server log: the transcript still returns.
-		if kerr := s.keepRecording(pcm16le, text, err, started, took); kerr != nil {
+		if kerr := s.keepRecording(pcm16le, text, err, started, took, warm); kerr != nil {
 			log.Printf("WARN dictation: could not keep the recording: %v", kerr)
 		}
 	}
@@ -185,6 +185,38 @@ func (s *Service) Transcribe(workspaceID string, pcm16le []byte) (string, error)
 		return "", err
 	}
 	return text, nil
+}
+
+// transcribe takes one utterance through the warm service when one is set,
+// else through the command. The command also takes a take the service failed
+// on (down, or an error status), when -dictation-cmd is set; a timeout is not
+// retried. warm reports whether the service handled the take.
+func (s *Service) transcribe(ctx context.Context, pcm []byte, language, prompt string) (text string, warm bool, err error) {
+	if s.cfg.URL != "" {
+		text, err = s.serve(ctx, pcm, language, prompt)
+		if err == nil || ctx.Err() != nil || s.cfg.Program == "" {
+			return text, true, err
+		}
+		log.Printf("WARN dictation: the warm service failed, running the command instead: %v", err)
+	}
+	text, err = s.command(ctx, pcm, language, prompt)
+	return text, false, err
+}
+
+// command runs the sidecar on the utterance as a WAV file in a private temp
+// directory, which is removed before it returns.
+func (s *Service) command(ctx context.Context, pcm []byte, language, prompt string) (string, error) {
+	// The temp directory is private (0700) and holds only this utterance.
+	dir, err := os.MkdirTemp("", "xhaos-dictation-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir) // the audio goes as soon as the transcript is read
+	wav := filepath.Join(dir, "utterance.wav")
+	if err := writeWAV(wav, pcm); err != nil {
+		return "", err
+	}
+	return s.run(ctx, dir, wav, language, prompt)
 }
 
 // checkAudio rejects audio that is empty, odd-sized, or longer than MaxDuration.
@@ -285,8 +317,9 @@ func (s *Service) DeleteRecordings() error {
 
 // keepRecording writes the utterance's WAV into the recordings folder and
 // appends one line to its log: the time, the file, the length, the loudness,
-// the sidecar's time, the outcome, and the transcript's start.
-func (s *Service) keepRecording(pcm []byte, text string, outcome error, at time.Time, took time.Duration) error {
+// the time taken, the outcome, the transcript's start, and whether the warm
+// service or the command transcribed it.
+func (s *Service) keepRecording(pcm []byte, text string, outcome error, at time.Time, took time.Duration, warm bool) error {
 	if s.cfg.Recordings == "" {
 		return nil
 	}
@@ -307,8 +340,12 @@ func (s *Service) keepRecording(pcm []byte, text string, outcome error, at time.
 		start = string([]rune(start)[:startChars]) + "…"
 	}
 	seconds := float64(len(pcm)) / float64(SampleRate*bytesPerSample)
-	line := fmt.Sprintf("%s  %s  length %.1f s  rms %.4f  peak %.4f  transcribed in %.1f s  %s  %q\n",
-		at.Format(time.RFC3339), name, seconds, rms, peak, took.Seconds(), result, start)
+	via := "command"
+	if warm {
+		via = "service"
+	}
+	line := fmt.Sprintf("%s  %s  length %.1f s  rms %.4f  peak %.4f  transcribed in %.1f s  %s  %s  %q\n",
+		at.Format(time.RFC3339), name, seconds, rms, peak, took.Seconds(), via, result, start)
 	f, err := os.OpenFile(filepath.Join(s.cfg.Recordings, logFile), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -429,9 +466,26 @@ func writeWAV(path string, pcm []byte) error {
 	if err != nil {
 		return err
 	}
+	_, werr := f.Write(wavHeader(len(pcm)))
+	if werr == nil {
+		_, werr = f.Write(pcm)
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
+}
+
+// wavBytes is the whole WAV file for pcm, in memory (the warm service's body).
+func wavBytes(pcm []byte) []byte {
+	return append(wavHeader(len(pcm)), pcm...)
+}
+
+// wavHeader is the 44-byte header of a WAV file holding n bytes of PCM.
+func wavHeader(n int) []byte {
 	hdr := make([]byte, 44)
 	copy(hdr[0:], "RIFF")
-	binary.LittleEndian.PutUint32(hdr[4:], uint32(36+len(pcm)))
+	binary.LittleEndian.PutUint32(hdr[4:], uint32(36+n))
 	copy(hdr[8:], "WAVE")
 	copy(hdr[12:], "fmt ")
 	binary.LittleEndian.PutUint32(hdr[16:], 16)                        // fmt chunk size
@@ -442,13 +496,6 @@ func writeWAV(path string, pcm []byte) error {
 	binary.LittleEndian.PutUint16(hdr[32:], bytesPerSample)            // block align
 	binary.LittleEndian.PutUint16(hdr[34:], 8*bytesPerSample)          // bits per sample
 	copy(hdr[36:], "data")
-	binary.LittleEndian.PutUint32(hdr[40:], uint32(len(pcm)))
-	_, werr := f.Write(hdr)
-	if werr == nil {
-		_, werr = f.Write(pcm)
-	}
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	return werr
+	binary.LittleEndian.PutUint32(hdr[40:], uint32(n))
+	return hdr
 }

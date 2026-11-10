@@ -60,6 +60,43 @@ func TestCheckCommand(t *testing.T) {
 	}
 }
 
+// Quoted, escaped and nested forms of git push and git branch are read as
+// the same commands: the shell runs them, so the check must too.
+func TestCheckCommandReadsQuotedForms(t *testing.T) {
+	refused := []string{
+		"gi''t push --force origin main",
+		"g'i't push --force origin main",
+		`"git" push --force origin main`,
+		`git "push" --force origin main`,
+		`g\it push -f origin feat/x`,
+		"'git' push origin main",
+		"/usr/bin/git push origin main",
+		`"git" branch -D x`,
+		"g''it branch -d x",
+		`git "branch" -D x`,
+		`git -C . "push" origin HEAD:main`,
+		`sh -c 'git push --force origin main'`,
+		`bash -c "gi''t push origin main"`,
+		"echo ok && 'git' push origin release-1",
+	}
+	for _, c := range refused {
+		if why := CheckCommand(c); why == "" {
+			t.Errorf("%q allowed", c)
+		}
+	}
+	// Feature-branch work in quoted forms still passes.
+	ok := []string{
+		`git push -u origin "feat/x"`,
+		"g'i't status",
+		`git commit -m "branch -D is refused, not run"`,
+	}
+	for _, c := range ok {
+		if why := CheckCommand(c); why != "" {
+			t.Errorf("%q refused: %s", c, why)
+		}
+	}
+}
+
 // Around a dangerous command, protected branches and the project's checkout
 // are put back; the agent's own branches are left as they are.
 func TestGuardRepairsProtectedState(t *testing.T) {
@@ -161,5 +198,25 @@ func TestParseDuration(t *testing.T) {
 		if got, err := ParseDuration(bad); err == nil {
 			t.Errorf("%q accepted as %v", bad, got)
 		}
+	}
+}
+
+func TestParseDurationBetween(t *testing.T) {
+	min, max := 10*time.Minute, 30*24*time.Hour
+	for text, want := range map[string]time.Duration{"10m": min, "1h": time.Hour, "30d": max, "1d12h": 36 * time.Hour} {
+		if got, err := ParseDurationBetween(text, min, max); err != nil || got != want {
+			t.Errorf("%q = %v %v, want %v", text, got, err, want)
+		}
+	}
+	for _, bad := range []string{"9m", "599s", "31d", "720h1s", "", "soon"} {
+		if got, err := ParseDurationBetween(bad, min, max); err == nil {
+			t.Errorf("%q accepted as %v", bad, got)
+		}
+	}
+	if _, err := ParseDurationBetween("5m", min, max); err == nil || !strings.Contains(err.Error(), "10 minutes and 30 days") {
+		t.Errorf("error = %v, want it to name the range", err)
+	}
+	if _, err := ParseDuration("8d"); err == nil || !strings.Contains(err.Error(), "10 seconds and 7 days") {
+		t.Errorf("error = %v, want the original wording", err)
 	}
 }

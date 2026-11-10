@@ -10,11 +10,13 @@ import { Icon } from './Icon.tsx';
 import { Transcript } from './Transcript.tsx';
 import { DecisionButtons, useNeedsDecision } from './Decisions.tsx';
 import { clearClick, onAttachKey, onToggleClick } from './clicks.ts';
-import { useApp } from './state/store.ts';
-import { toggleAgent, toggleRecipient, revealAgent, terminateAgent, stopAgent } from './state/agents.ts';
+import { useApp, findAgentIn } from './state/store.ts';
+import { toggleAgent, toggleRecipient, revealAgent, terminateAsk, stopAgent } from './state/agents.ts';
 import { showQuestions } from './state/panels.ts';
 import type { Agent } from '../types.ts';
 import { DangerBadge, dangerLeft, dangerOff, openDanger } from './Danger.tsx';
+import { ConfirmDialog } from './Confirm.tsx';
+import { terminatePrompt } from '../terminate-confirm.ts';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 
@@ -89,10 +91,21 @@ function AgentMenu({ agent, attached }: { agent: Agent; attached: boolean }) {
         {backend && !agent.sample && agent.status !== 'terminated' && (dangerLeft(agent) > 0
           ? <Button variant="menu" data-danger-off={agent.id} onClick={event => { close(event); void dangerOff(agent.id); }}>Turn off dangerously allow</Button>
           : <Button variant="menu" data-danger={agent.id} onClick={event => { close(event); openDanger(agent.id); }}>Dangerously allow…</Button>)}
-        <Button variant="menu" data-terminate={agent.id} onClick={event => { close(event); terminateAgent(agent.id); }}>Terminate agent</Button>
+        {/* Set apart from Dangerously allow… above it, and it asks first. */}
+        <div role="separator" {...stylex.props(menu.divider)} />
+        <Button variant="menu" data-terminate={agent.id} onClick={event => { close(event); terminateAsk.ask(agent.id); }}>Terminate agent…</Button>
       </div>
     </details>
   );
+}
+
+// The dialog behind the menu's Terminate agent…: Cancel has focus, so a
+// stray Enter does nothing; Escape and a click outside cancel too.
+export function TerminateDialog() {
+  const agent = useApp(s => (s.terminateAsk === null ? undefined : findAgentIn(s, s.terminateAsk)));
+  const prompt = agent ? terminatePrompt(agent) : { title: '', text: '' };
+  return <ConfirmDialog open={agent !== undefined} title={prompt.title} text={prompt.text} action="Terminate" focusCancel
+    onConfirm={terminateAsk.confirm} onCancel={terminateAsk.cancel} />;
 }
 
 function QuestionSummary({ agent }: { agent: Agent }) {
@@ -271,6 +284,7 @@ const menu = stylex.create({
     boxShadow: `0 6px 20px ${colors.shadow}`,
     zIndex: 40,
   },
+  divider: { height: 1, marginBlock: 4, marginInline: 6, backgroundColor: colors.line },
 });
 
 const body = stylex.create({

@@ -23,6 +23,17 @@ func isRunner(w string) bool {
 	return false
 }
 
+// anyRunner reports whether a listed name (such as "npx eslint") starts with a
+// runner's name.
+func anyRunner(names []string) bool {
+	for _, n := range names {
+		if i := strings.IndexByte(n, ' '); i > 0 && isRunner(n[:i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // hasRunner reports whether any word of command is a runner, by program name
 // (as the floor reads it: a path ending in npx counts).
 func hasRunner(command string) bool {

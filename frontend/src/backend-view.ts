@@ -263,7 +263,7 @@ const toMessage = (c: { members: number[] }, m: BackendChannel['messages'][numbe
 
 // channelsFromBackend maps channel.Service.Channels into the view's channels.
 export const channelsFromBackend = (list: BackendChannel[]): Channel[] => list.map(c => ({
-  id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)), closed: c.closed, published: c.published,
+  id: String(c.id), subject: c.subject, creatorId: c.creatorId, participants: c.members, messages: c.messages.map(m => toMessage(c, m)), closed: c.closed, published: c.published, expiresAt: c.expiresAt,
   count: c.count ?? c.messages.length, loaded: (c.count ?? c.messages.length) <= c.messages.length,
 }));
 
@@ -290,7 +290,7 @@ export function applyChannelEvent(view: Workspace, event: BackendEvent): boolean
   }
   if (event.kind === 'channel.link') {
     const d = event.data as BackendChannel, c = view.channels.find(x => x.id === String(d.id));
-    if (c) c.published = Boolean(d.published);
+    if (c) { c.published = Boolean(d.published); c.expiresAt = d.published ? d.expiresAt : undefined; }
     return true;
   }
   if (event.kind === 'channel.closed') {

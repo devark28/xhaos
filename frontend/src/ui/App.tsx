@@ -6,7 +6,7 @@ import { watchStickyColumns } from '../sticky-columns.ts';
 import { colors, breakpoints } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { Icon } from './Icon.tsx';
-import { AgentCard } from './AgentCard.tsx';
+import { AgentCard, TerminateDialog } from './AgentCard.tsx';
 import { ComposerArea } from './Composer.tsx';
 import { useApp, workspaceOf, flushAfterCommit } from './state/store.ts';
 import { toggleCollapseAll, notifyAttention } from './state/agents.ts';
@@ -106,6 +106,7 @@ export function App() {
       {/* The workspace's name, in the middle of the page at the logo's height. */}
       {workspaceName && <span id="workspace-name" title="This workspace" {...stylex.props(page.workspace)}>{workspaceName}</span>}
       <DangerDialog />
+      <TerminateDialog />
       <Toast />
     </main>
   );

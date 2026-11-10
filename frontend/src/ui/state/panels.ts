@@ -54,10 +54,13 @@ export async function closeChannel(id: string) {
   catch (error) { toast(`Could not close the channel: ${errorText(error)}`); }
 }
 
-// publishChannel puts a channel on its link with a new passphrase (on a
-// published channel: a reset). The passphrase comes back this once.
-export async function publishChannel(id: string): Promise<{ passphrase: string; path: string } | null> {
-  try { return await call('channel', 'Publish', { workspaceId: get().active, channelId: Number(id) }); }
+// publishChannel puts a channel on its link with a new passphrase and expiry
+// (on a published channel, expired or not: the same action again, and the old
+// passphrase stops at once). duration is text like "1d"; null: no expiry,
+// which the owner chose explicitly. The passphrase comes back this once.
+export async function publishChannel(id: string, duration: string | null): Promise<{ passphrase: string; path: string; channel: { expiresAt?: string } } | null> {
+  const expiry = duration === null ? { noExpiry: true } : { duration };
+  try { return await call('channel', 'Publish', { workspaceId: get().active, channelId: Number(id), ...expiry }); }
   catch (error) { toast(`Could not publish the channel: ${errorText(error)}`); return null; }
 }
 export async function unpublishChannel(id: string) {

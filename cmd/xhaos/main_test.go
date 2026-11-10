@@ -45,11 +45,14 @@ func TestBindingsExposeNoAgentSideMethods(t *testing.T) {
 // workspace, so the sign-in middleware can hold a session to its own.
 var serverWide = map[string]bool{
 	"health.Service.Status":        true,
-	"workspace.Service.Workspaces": true,                                        // names only, as the picker shows them
-	"tool.Service.Catalog":         true,                                        // tool descriptions
-	"dictation.Service.Estimate":   true,                                        // the server's own transcription speed
-	"dictation.Service.Enabled":    true,                                        // whether a speech sidecar is configured
-	"dictation.Service.Language":   true, "dictation.Service.SetLanguage": true, // the dictation language, shared by the server
+	"workspace.Service.Workspaces": true, // names only, as the picker shows them
+	"tool.Service.Catalog":         true, // tool descriptions
+	"dictation.Service.Estimate":   true, // the server's own transcription speed
+	"dictation.Service.Enabled":    true, // whether a speech sidecar is configured
+
+	"dictation.Service.ServiceEnabled": true, "dictation.Service.Health": true, // whether a warm dictation service is set, and whether it answers
+
+	"dictation.Service.Language": true, "dictation.Service.SetLanguage": true, // the dictation language, shared by the server
 	"dictation.Service.Keeping": true, "dictation.Service.SetKeeping": true, "dictation.Service.DeleteRecordings": true, // the Developer setting: keep recordings
 	"classifier.Service.Enabled": true, "classifier.Service.Health": true, // whether a local classifier is configured, and its model server's state
 	"classifier.Service.On": true, "classifier.Service.SetOn": true, // the server-wide classifier switch

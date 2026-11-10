@@ -28,10 +28,10 @@ const (
 )
 
 // NewClient returns a client for the llama-server at url (for example
-// http://127.0.0.1:8081). Each request is cut off after timeout (0: 10 s).
+// http://127.0.0.1:8081). Each request is cut off after timeout (0: 15 s).
 func NewClient(url string, timeout time.Duration) *Client {
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = 15 * time.Second
 	}
 	return &Client{url: strings.TrimRight(url, "/"), timeout: timeout, http: &http.Client{}}
 }
@@ -44,10 +44,25 @@ type chatMessage struct {
 type chatRequest struct {
 	Messages       []chatMessage   `json:"messages"`
 	Temperature    float64         `json:"temperature"`
+	TopK           int             `json:"top_k"`
+	Seed           int             `json:"seed"`
+	CachePrompt    bool            `json:"cache_prompt"`
 	MaxTokens      int             `json:"max_tokens"`
 	Stream         bool            `json:"stream"`
 	ResponseFormat json.RawMessage `json:"response_format"`
 }
+
+// The same command should get the same answer every time: greedy decoding and
+// a fixed seed. cache_prompt lets the server reuse the prompt's processing
+// between requests (it is the same for every command). Measured on the
+// 98-command held-out set, cache on: no verdict changed between two passes
+// for the 1.5B model, and none for the 3B and 7B models except where pass 1
+// hit a 30 s timeout (a timeout is an ask). Answers with the cache off were
+// not measured on that set.
+const (
+	decodeSeed = 1
+	decodeTopK = 1
+)
 
 type chatResponse struct {
 	Choices []struct {
@@ -65,21 +80,24 @@ type answer struct {
 // responseFormat is the json_schema response format around schema.
 var responseFormat = json.RawMessage(`{"type":"json_schema","json_schema":{"name":"command_verdict","strict":true,"schema":` + schema + `}}`)
 
-// Ask returns the model's verdict on command: allow true only when the model
-// answered "allow". Any failure (timeout, transport error, a status other
-// than 200, malformed JSON, an unknown verdict) returns allow false with a
-// reason for the owner and a non-nil error.
-func (c *Client) Ask(ctx context.Context, command string) (allow bool, reason string, err error) {
-	quoted, err := json.Marshal(command)
+// Ask returns the model's verdict on text (the command as the model may read
+// it, see modelText): allow true only when the model answered "allow". Any
+// failure (timeout, transport error, a status other than 200, malformed JSON,
+// an unknown verdict) returns allow false with a reason for the owner and a
+// non-nil error.
+func (c *Client) Ask(ctx context.Context, text string) (allow bool, reason string, err error) {
+	quoted, err := json.Marshal(text)
 	if err != nil {
 		return false, "the command could not be encoded for the classifier", err
 	}
+	messages := append([]chatMessage{{Role: "system", Content: systemPrompt}}, exampleMessages()...)
+	messages = append(messages, chatMessage{Role: "user", Content: userPrefix + string(quoted)})
 	body, err := json.Marshal(chatRequest{
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrefix + string(quoted)},
-		},
+		Messages:       messages,
 		Temperature:    0,
+		TopK:           decodeTopK,
+		Seed:           decodeSeed,
+		CachePrompt:    true,
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
 	})

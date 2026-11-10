@@ -20,7 +20,9 @@
 #                      no by default; the built-in command list needs no part.
 #                      nodes is Caddy in front of /xhaos/node for remote
 #                      machines (docs/nodes.md).
-#   --without a,b      skip these parts, without asking
+#   --without a,b      skip these parts, without asking. --without dictation
+#                      turns off the warm dictation service only (takes then
+#                      start the sidecar per take, as before); nothing is deleted.
 #   --no-restart       never restart a running Xhaos
 #   --version vX.Y.Z   install that release instead of the latest
 #   --help
@@ -29,6 +31,8 @@
 # release archives are downloaded from), XHAOS_MODEL_BASE (the dictation
 # model's folder), XHAOS_LLAMA_BASE (where the llama.cpp release tarball is
 # downloaded from), XHAOS_CLASSIFIER_MODEL_BASE (the classifier model's folder).
+# The dictation part also runs the speech model as a warm service on the
+# loopback (xhaos-dictation.service, port 8190); Xhaos sends takes there.
 # Checksums are pinned in this file: a download from elsewhere must match them.
 set -eu
 
@@ -57,7 +61,9 @@ Options:
                      default, the built-in command list needs no part),
                      nodes (Caddy in front of /xhaos/node, so remote
                      machines can connect; see docs/nodes.md)
-  --without a,b      skip these parts, without asking
+  --without a,b      skip these parts, without asking. --without dictation
+                     turns off the warm dictation service only (takes then
+                     start the sidecar per take, as before); nothing is deleted
   --no-restart       never restart a running Xhaos
   --version vX.Y.Z   install that release instead of the latest
 USAGE
@@ -165,20 +171,27 @@ CLS=$HOME_DIR/classifier
 LLAMA_TAG=b12110
 LLAMA_DIR=$CLS/llama-$LLAMA_TAG
 LLAMA_SUMS=$CLS/llama-$LLAMA_TAG.sha256sums
-CLS_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+CLS_MODEL_FILE=qwen2.5-coder-3b-instruct-q4_k_m.gguf
 CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
 CLS_PORT=8189
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
+# The warm dictation service: the speech model loaded once, on the loopback.
+DICT_PORT=8190
+DICT_UNIT=/etc/systemd/system/xhaos-dictation.service
 # The nodes part: Caddy serves one domain that passes only /xhaos/node here.
 CADDYFILE=/etc/caddy/Caddyfile
 NODES_CADDY=/etc/caddy/xhaos-nodes.caddy
 
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180 NODE_URL=""
-DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no NODES=no
+DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no DICTATION_SERVICE="" NODES=no
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
+  # Settings from before the warm service: installed dictation keeps it on (as
+  # the classifier does). Only --without dictation stores 'no', so dictation
+  # declined earlier and installed now still gets the service.
+  [ -n "$DICTATION_SERVICE" ] || [ "$DICTATION" != yes ] || DICTATION_SERVICE=yes
 else
   # No settings yet (a first install, or a server set up by hand): what is
   # already here counts as installed, so the service keeps using it.
@@ -186,7 +199,7 @@ else
   xtest -d "$DATA/sandbox/flutter/.git" && FLUTTER=yes
   has google-chrome && has firefox && BROWSERS=yes
   has podman && has docker-compose && PODMAN=yes
-  xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes
+  xtest -x "$DICT/venv/bin/python" && xtest -f "$MODEL_DIR/model.bin" && DICTATION=yes && DICTATION_SERVICE=yes
   xtest -x "$LLAMA_DIR/llama-server" && xtest -f "$CLS_MODEL" && CLASSIFIER=yes
   [ -f "$NODES_CADDY" ] && NODES=yes
 fi
@@ -363,6 +376,16 @@ fetch_model() {
   done
 }
 
+# sync_stt: the sidecar in the xhaos folder is this release's. A change is
+# noted, so the warm service restarts with the new code.
+sync_stt() {
+  [ -f "$NEW/dictation/stt.py" ] || return 0
+  if ! run cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py" 2>/dev/null; then
+    run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
+    touch "$TMP/dictation-changed"
+  fi
+}
+
 install_dictation() {
   needs_apt || return 0
   apt_update; apt_install python3 python3-venv
@@ -371,7 +394,7 @@ install_dictation() {
   say "  faster-whisper (PyPI) in a virtualenv, $DICT/venv"
   xtest -x "$DICT/venv/bin/python" || as_user xhaos python3 -m venv "$DICT/venv"
   as_user xhaos "$DICT/venv/bin/pip" install -q --disable-pip-version-check --retries 8 --timeout 60 "faster-whisper==1.2.1"
-  run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
+  sync_stt
   say "  Whisper large-v3-turbo (Hugging Face, 823 MB, checked file by file)"
   fetch_model
 }
@@ -379,12 +402,12 @@ install_dictation() {
 # The command classifier's pins: llama.cpp's prebuilt CPU build for Ubuntu
 # (MIT license), tag b12110 (a nightly, commit cd959bae99ff4bed22bef2604f45241c09bbb8c8),
 # one tarball per CPU, checked before it is unpacked; and the Qwen2.5-Coder
-# 1.5B Instruct model, Q4_K_M GGUF (Apache-2.0), pinned to a commit.
+# 3B Instruct model, Q4_K_M GGUF (Apache-2.0), pinned to a commit.
 LLAMA_BASE=${XHAOS_LLAMA_BASE:-https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG}
 LLAMA_X64_SUM=368227edcc229be5f9bed16a2223d79b5e41d0ac2e19bcf5825e82291c060e55
 LLAMA_ARM64_SUM=4758b51335e37b4346251f2687d64841ff1c07ecb27fc46323945bb2ec9c44d2
-CLS_MODEL_BASE=${XHAOS_CLASSIFIER_MODEL_BASE:-https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/f86cb2c1fa58255f8052cc32aeede1b7482d4361}
-CLS_MODEL_SUM=cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046
+CLS_MODEL_BASE=${XHAOS_CLASSIFIER_MODEL_BASE:-https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/f74adce6aa16316c625447af059dbebe4983757c}
+CLS_MODEL_SUM=724fb256bec1ff062b2f65e4569e871ad2e95ab2a3989723d1769c54294730b7
 
 # llama_ok "SUM NAME": the unpacked llama.cpp folder came from that tarball and
 # every file in it still matches the list written when it was unpacked.
@@ -431,7 +454,7 @@ install_classifier() {
     if [ "$APT" = yes ]; then apt_update; apt_install libgomp1 openssl; fi
     out=$(as_user xhaos "$LLAMA_DIR/llama-server" --version 2>&1) || die "llama-server does not run here: $(printf '%s' "$out" | tail -n 3)"
   fi
-  say "  Qwen2.5-Coder 1.5B Instruct, Q4_K_M (Hugging Face, 1.1 GB, checked) in $CLS/models"
+  say "  Qwen2.5-Coder 3B Instruct, Q4_K_M (Hugging Face, 2.1 GB, checked) in $CLS/models"
   if xtest -f "$CLS_MODEL" && [ "$(xsum "$CLS_MODEL")" = "$CLS_MODEL_SUM" ]; then
     say "  already downloaded and checked"
   else
@@ -586,9 +609,19 @@ part browsers "$BROWSERS" n "Google Chrome and Firefox (not snaps), their WebDri
 part podman "$PODMAN" n "Rootless Podman with Docker Compose.
   To run compose.yaml / docker-compose.yml stacks as your user (not for agents). From Ubuntu's apt and GitHub (checksum verified)."
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
+  The speech model stays loaded in a service on 127.0.0.1:$DICT_PORT (xhaos-dictation), so a take does not wait for it to load.
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
+# The warm service follows the part: on when dictation is installed, unless
+# --without dictation turned it off (kept in $CONF, so a re-run keeps it off).
+case $WITHOUT in *",dictation,"*) DICTATION_SERVICE=no ;; esac
+if [ "$DICTATION" = yes ]; then
+  case $WITH in *",dictation,"*) DICTATION_SERVICE=yes ;; esac
+  [ -n "$DICTATION_SERVICE" ] || DICTATION_SERVICE=yes  # a dictation part just installed
+fi
+WARM=no
+if [ "$DICTATION" = yes ] && [ "$DICTATION_SERVICE" = yes ]; then WARM=yes; fi
 # --yes answers yes to the other parts, but never adds the classifier model
-# (1.1 GB, and RAM while it runs): only --with classifier or the terminal does.
+# (2.1 GB, and about 3.7 GB of RAM while it runs): only --with classifier or the terminal does.
 cls_yes_only() {
   [ "$YES" = yes ] && [ "$CLASSIFIER" != yes ] || return 1
   case $WITH$WITHOUT in *",classifier,"*) return 1 ;; esac
@@ -600,7 +633,7 @@ part classifier "$CLASSIFIER" n "Command classifier model (optional; most server
   Xhaos's built-in list of build, test and lint commands already runs those without asking, with no model (on by default; Settings → Tools → Commands turns it off).
   This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
   Dangerous commands still ask, and nothing leaves the server.
-  Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 1.5B Instruct Q4_K_M (Hugging Face, 1.1 GB, Apache-2.0),
+  Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 3B Instruct Q4_K_M (Hugging Face, 2.1 GB, Apache-2.0),
   both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
 fi
 case $WITHOUT in *",classifier,"*)
@@ -632,9 +665,7 @@ if [ "$NODES" = yes ] && [ ! -f "$TMP/node-url" ] && [ -z "$PUBLIC_HOST" ] && ha
 fi
 
 # An installed sidecar follows the release it came with.
-if [ "$DICTATION" = yes ] && [ -f "$NEW/dictation/stt.py" ] && ! run cmp -s "$NEW/dictation/stt.py" "$DICT/stt.py"; then
-  run install -m 644 -o xhaos -g xhaos "$NEW/dictation/stt.py" "$DICT/stt.py"
-fi
+if [ "$DICTATION" = yes ]; then sync_stt; fi
 
 # ---- the service ---------------------------------------------------------------
 
@@ -648,7 +679,7 @@ run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nNODES='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$NODES"
+  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nDICTATION_SERVICE='%s'\nNODES='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$DICTATION_SERVICE" "$NODES"
   printf '# The public HTTPS address nodes connect to (docs/nodes.md); empty: https:// and PUBLIC_HOST.\n'
   printf "NODE_URL='%s'\n" "$NODE_URL"
 } > "$TMP/install.conf"
@@ -661,6 +692,7 @@ flags="-db $DATA/xhaos.db -sandbox on"
 if [ "$DICTATION" = yes ]; then
   flags="$flags -dictation-cmd $DICT/venv/bin/python -dictation-model $MODEL_DIR -dictation-args \"$DICT/stt.py {wav} --model {model} --language={language} --prompt={prompt}\""
 fi
+[ "$WARM" = yes ] && flags="$flags -dictation-url http://127.0.0.1:$DICT_PORT"
 [ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url http://127.0.0.1:$CLS_PORT"
 path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [ "$FLUTTER" = yes ] && path="$path:$DATA/sandbox/flutter/bin"
@@ -669,6 +701,7 @@ path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n'
   # Wanted, not required: Xhaos starts even if the classifier fails (commands then ask).
   [ "$CLASSIFIER" = yes ] && printf 'Wants=xhaos-classifier.service\nAfter=xhaos-classifier.service\n'
+  [ "$WARM" = yes ] && printf 'Wants=xhaos-dictation.service\nAfter=xhaos-dictation.service\n'
   printf '\n'
   printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\nUMask=0002\n' "$HOME_DIR"
   printf 'Environment=WAILS_SERVER_HOST=%s\nEnvironment=WAILS_SERVER_PORT=%s\nEnvironment=PATH=%s\n' "$LISTEN" "$PORT" "$path"
@@ -714,6 +747,47 @@ elif [ -f "$CLS_UNIT" ] || [ -n "$(run find "$CLS" -mindepth 1 ! -path "$CLS/mod
   fi
   say "The classifier is not on, but its files are here: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1))."
   classifier_remove "Delete them (nothing is deleted on its own):"
+fi
+
+# The dictation service, set up before Xhaos's (which wants it). Its model
+# loads in a few seconds; takes wait for it only the first time.
+if [ "$WARM" = yes ]; then
+  {
+    printf '%s\n' "$MARK"
+    printf '[Unit]\nDescription=Xhaos dictation (speech model loaded once, loopback only)\n\n'
+    printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\n' "$DICT"
+    printf '# Restart=always: if it stops, takes fall back to the command until it is back.\n'
+    printf 'ExecStart=%s %s --serve --model %s --host 127.0.0.1 --port %s\nRestart=always\nRestartSec=5\n' "$DICT/venv/bin/python" "$DICT/stt.py" "$MODEL_DIR" "$DICT_PORT"
+    printf 'ProtectSystem=strict\nPrivateTmp=yes\nNoNewPrivileges=yes\n'
+    printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
+  } > "$TMP/xhaos-dictation.service"
+  if [ "$SYSTEMD" = no ]; then
+    run install -m 644 "$TMP/xhaos-dictation.service" "$CONF_DIR/xhaos-dictation.service.example"
+    say "No systemd here: start the dictation service yourself, as the xhaos user, before Xhaos:"
+    say "  sudo -u xhaos $DICT/venv/bin/python $DICT/stt.py --serve --model $MODEL_DIR --host 127.0.0.1 --port $DICT_PORT"
+  else
+    dict_changed=no
+    [ -f "$TMP/dictation-changed" ] && dict_changed=yes
+    if ! cmp -s "$TMP/xhaos-dictation.service" "$DICT_UNIT" 2>/dev/null; then
+      run install -m 644 "$TMP/xhaos-dictation.service" "$DICT_UNIT"; run systemctl daemon-reload; dict_changed=yes
+    fi
+    if ! systemctl is-enabled xhaos-dictation >/dev/null 2>&1 || ! systemctl is-active xhaos-dictation >/dev/null 2>&1; then
+      run systemctl enable --now xhaos-dictation; say "Dictation service started (127.0.0.1:$DICT_PORT; it loads the speech model in a few seconds)."
+    elif [ "$dict_changed" = yes ]; then
+      run systemctl restart xhaos-dictation; say "Dictation service restarted."
+    fi
+  fi
+elif [ -f "$DICT_UNIT" ] && grep -qF "$MARK" "$DICT_UNIT" 2>/dev/null; then
+  # Off (--without dictation, or dictation not installed): stopped and its unit
+  # removed. The sidecar, its venv and the model stay, and takes use the command.
+  if [ "$SYSTEMD" = yes ]; then
+    run systemctl disable --now xhaos-dictation >/dev/null 2>&1 || true
+    run rm -f "$DICT_UNIT"; run systemctl daemon-reload
+  fi
+  say "Stopped and removed the dictation service (xhaos-dictation). Takes now start the sidecar per take, as before."
+fi
+if [ "$DICTATION" = yes ] && [ "$WARM" = no ] && [ "$DICTATION_SERVICE" = no ]; then
+  say "dictation: the warm service is off (DICTATION_SERVICE='no' in $CONF). Turn it on with --with dictation."
 fi
 
 if [ "$SYSTEMD" = no ]; then
