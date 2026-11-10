@@ -653,6 +653,10 @@ func public(path string) bool {
 // own passphrase instead of a session, and need that workspace unlocked.
 const LinkPrefix = "/xhaos/channel/"
 
+// NodePath is where nodes connect (a WebSocket; they sign a challenge with
+// their key, or join with a one-time code). Same as node/wire.Path.
+const NodePath = "/xhaos/node"
+
 type ctxKey struct{}
 
 // WorkspaceOf is the signed-in workspace of a request that passed
@@ -667,8 +671,9 @@ func WorkspaceOf(ctx context.Context) string {
 // call is checked (checkCall) before Wails runs it, and the request carries
 // the workspace (WorkspaceOf) for the event stream. guarded handles /xhaos/
 // paths behind the session check; links handles LinkPrefix, which checks
-// its own passphrases.
-func (v *Vault) Middleware(guarded, links http.Handler) func(http.Handler) http.Handler {
+// its own passphrases; nodes handles NodePath, where machines joined to a
+// workspace connect with their own keys (package node).
+func (v *Vault) Middleware(guarded, links, nodes http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -683,6 +688,10 @@ func (v *Vault) Middleware(guarded, links http.Handler) func(http.Handler) http.
 					return
 				}
 				links.ServeHTTP(w, r)
+				return
+			}
+			if nodes != nil && path == NodePath {
+				nodes.ServeHTTP(w, r)
 				return
 			}
 			if public(path) {

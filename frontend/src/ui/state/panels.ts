@@ -5,6 +5,7 @@ import { call, connected, refreshProviders, pushAppearance } from './backend.ts'
 import { loadAppearance, saveAppearance } from '../appearance.ts';
 import { focusComposer } from './composer.ts';
 import { refreshProjects } from './projects.ts';
+import { refreshNodes } from './nodes.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
 import { newId } from '../../ids.ts';
 import { isNarrow } from '../narrow.ts';
@@ -23,6 +24,7 @@ export function selectPanel(kind: PanelKind) {
   else if (kind === 'files') showFiles();
   else if (kind === 'settings') { openPanel('settings'); if (connected()) refreshMcp(); }
   else if (kind === 'providers') showProviders();
+  else if (kind === 'nodes') { openPanel('nodes'); void refreshNodes(); }
   else openPanel(kind);
 }
 export function showQuestions(id: number | null) {

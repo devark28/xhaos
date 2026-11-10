@@ -190,7 +190,7 @@ func TestMiddlewareKeepsSessionsInTheirWorkspace(t *testing.T) {
 	var ran atomic.Int32
 	app := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ran.Add(1); w.Write([]byte("app")) })
 	events := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("events:" + WorkspaceOf(r.Context()))) })
-	srv := httptest.NewServer(v.Middleware(events, nil)(app))
+	srv := httptest.NewServer(v.Middleware(events, nil, nil)(app))
 	defer srv.Close()
 	do := func(method, path, body string, hdr map[string]string) (*http.Response, string) {
 		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))

@@ -27,6 +27,7 @@ const services = {
   web: 'github.com/devark28/xhaos/app/web.Service',
   board: 'github.com/devark28/xhaos/app/board.Service',
   dictation: 'github.com/devark28/xhaos/app/dictation.Service',
+  node: 'github.com/devark28/xhaos/app/node.Service',
   classifier: 'github.com/devark28/xhaos/app/classifier.Service',
 } as const;
 export type ServiceName = keyof typeof services;
@@ -59,13 +60,14 @@ export interface Backend { status: { version: string }; call: Call; events: Wail
 export const DELTA_EVENT_NAME = 'xhaos:delta';
 export const EVENT_NAME = 'xhaos:event';
 export const BOARD_EVENT_NAME = 'xhaos:board'; // live board saves, not stored
+export const NODE_EVENT_NAME = 'xhaos:node'; // nodes going online and offline, and their jobs; not stored
 
 export async function connectBackend(
   load: () => Promise<unknown> = () => import('/wails/runtime.js' as string),
   scope: { wails?: WailsRuntime } = globalThis as { wails?: WailsRuntime },
   // One stream per browser, shared by its tabs (shared-stream.ts); a tab of
   // its own where BroadcastChannel or storage is missing.
-  events: () => WailsEvents | undefined = () => (typeof EventSource === 'undefined' ? undefined : browserStream('/xhaos/events', [EVENT_NAME, DELTA_EVENT_NAME, BOARD_EVENT_NAME], newId()) ?? streamEvents()),
+  events: () => WailsEvents | undefined = () => (typeof EventSource === 'undefined' ? undefined : browserStream('/xhaos/events', [EVENT_NAME, DELTA_EVENT_NAME, BOARD_EVENT_NAME, NODE_EVENT_NAME], newId()) ?? streamEvents()),
   required = false, // served by Xhaos: a missing runtime is an error, not prototype mode
 ): Promise<Backend | null> {
   try { await load(); } catch (error) {

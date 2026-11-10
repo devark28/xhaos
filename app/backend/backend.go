@@ -17,6 +17,7 @@ import (
 	"github.com/devark28/xhaos/app/llm/sim"
 	"github.com/devark28/xhaos/app/mcp"
 	"github.com/devark28/xhaos/app/memory"
+	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/project"
 	"github.com/devark28/xhaos/app/tool"
 	"github.com/devark28/xhaos/app/usage"
@@ -63,6 +64,10 @@ type Options struct {
 	Sandbox string
 	// Dictation is the speech-to-text sidecar (zero Program: dictation off).
 	Dictation dictation.Config
+	// NodeURL is the public HTTPS address nodes connect to ("" : nodes
+	// cannot be added); NodeLive gets nodes' live changes (package node).
+	NodeURL  string
+	NodeLive node.Notifier
 	// Classifier is the local command classifier (zero URL: no model; the built-in list still applies).
 	Classifier classifier.Config
 }
@@ -90,6 +95,9 @@ type Services struct {
 	Skills     *skill.Service
 	Web        *web.Service
 	Dictation  *dictation.Service
+	Nodes      *node.Service
+	// NodeHub serves the nodes' connections (wire.Path, before sign-in).
+	NodeHub *node.Hub
 	// Classifier decides ordinary commands for the runner; the page binds
 	// its Owner view.
 	Classifier *classifier.Classifier
@@ -176,6 +184,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if err := web.Migrate(db); err != nil {
 		return nil, fmt.Errorf("migrate web: %w", err)
 	}
+	if err := node.Migrate(db); err != nil { // its grants refer to agents
+		return nil, fmt.Errorf("migrate node: %w", err)
+	}
 	// Root, when given, is registered as a project. Nothing is registered
 	// implicitly: a server started from a home folder or an empty VPS must
 	// not turn that folder into a project.
@@ -228,6 +239,10 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	runner.Extras = append(runner.Extras, skill.NewTools(skills))
 	webs := web.NewService(db, box)
 	runner.Extras = append(runner.Extras, web.NewTools(webs))
+	nodes, nodeHub := node.New(db, opts.Publish, opts.NodeLive, opts.NodeURL)
+	nodes.Version = opts.Version
+	nodeTools := node.NewTools(nodes, func(ws string, id int64) (string, error) { return runner.ProjectRoot(ws, id) })
+	runner.Extras = append(runner.Extras, nodeTools)
 	boards := board.NewService(db, opts.Publish, opts.BoardLive, filepath.Join(dataDir, "boards"))
 	// Agents read images for boards from their project (or its $TMPDIR).
 	boardTools := board.NewTools(boards, func(a agent.Agent) (string, error) {
@@ -253,7 +268,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {
-		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...)...)
+		return append(append(append(append(runner.Catalog(), secret.NewTools(secrets).Catalog()...), skill.NewTools(skills).Catalog()...), append(web.NewTools(webs).Catalog(), channels.Tools().Catalog()...)...), append(append(memory.NewTools(memories).Catalog(), boardTools.Catalog()...), nodeTools.Catalog()...)...)
 	}
 	runner.OnFinal = channels.OnFinal
 	spend := usage.NewService(db)
@@ -322,6 +337,8 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		Skills:     skills,
 		Web:        webs,
 		Dictation:  dictation.NewService(db, opts.Dictation),
+		Nodes:      nodes,
+		NodeHub:    nodeHub,
 		Classifier: runner.Classifier,
 		mcp:        tools,
 		egress:     out,
@@ -332,6 +349,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 // Close stops running turns, then closes the database.
 func (s *Services) Close() error {
 	s.runner.Close()
+	s.NodeHub.Close()
 	s.mcp.Close()
 	s.egress.Close()
 	eventlog.Close(s.db)

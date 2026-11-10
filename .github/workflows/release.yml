@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a version tag (v0.2.0) builds the release archives (linux/amd64 and
-# linux/arm64, the page built in) and publishes them with SHA256SUMS, which
-# install.sh downloads and checks.
+# linux/arm64, the page built in) and the xhaos-node archives (docs/nodes.md),
+# and publishes them with SHA256SUMS, which install.sh and install-node.sh
+# download and check.
 on:
   push:
     tags: ['v*']

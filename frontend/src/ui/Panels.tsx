@@ -24,6 +24,7 @@ import { ClassifierSettings } from './ClassifierSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { BoardList } from './Boards.tsx';
+import { Nodes, AddNodeButton } from './Nodes.tsx';
 import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
@@ -599,6 +600,7 @@ export function Panel() {
   else if (panel.kind === 'memories') body = <Memories editId={panel.editId} />;
   else if (panel.kind === 'channels') body = <Channels channelId={panel.channelId} />;
   else if (panel.kind === 'boards') body = <Shell title="Boards" action={<Button id="new-board" onClick={() => void newBoard()}>New board</Button>}><BoardList /></Shell>;
+  else if (panel.kind === 'nodes') body = <Shell title="Nodes" action={<AddNodeButton />}><Nodes adding={panel.editId === 'new'} /></Shell>;
   else if (panel.kind === 'providers') body = <Settings focus="models" message={panel.message} testing={panel.testing} />;
   else if (panel.kind === 'history') body = <History />;
   else if (panel.kind === 'status') body = <Status />;
