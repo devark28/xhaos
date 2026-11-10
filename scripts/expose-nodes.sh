@@ -280,7 +280,7 @@ if [ "$SITE_NEW" = yes ]; then
 fi
 [ "$CONF_NEW" = yes ] && plan "set PUBLIC_HOST='$DOMAIN' in $CONF"
 if [ "$CONF_NEW" = yes ] || [ "$UNIT_NEW" = yes ]; then
-  plan "re-run install.sh --version $VERSION --no-restart, to write that into Xhaos's service (it downloads the same release, checked, and changes nothing else)"
+  plan "re-run install.sh --version $VERSION --no-restart, to write that into Xhaos's service (that release's installer; it downloads the same release, checked, and changes nothing else)"
 fi
 if [ "$CHANGES" = no ]; then
   say "Nothing to change: $DOMAIN is set up."
@@ -361,7 +361,7 @@ if [ "$CONF_NEW" = yes ] || [ "$UNIT_NEW" = yes ]; then
   INSTALL_SH=${XHAOS_INSTALL_SH:-}
   if [ -z "$INSTALL_SH" ]; then
     INSTALL_SH=$TMP/install.sh
-    run curl -fsSL -o "$INSTALL_SH" "https://raw.githubusercontent.com/$REPO/main/install.sh"
+    run curl -fsSL -o "$INSTALL_SH" "https://raw.githubusercontent.com/$REPO/$VERSION/install.sh"
   fi
   if has setsid; then run setsid -w sh "$INSTALL_SH" --version "$VERSION" --no-restart </dev/null
   else run sh "$INSTALL_SH" --version "$VERSION" --no-restart </dev/null
