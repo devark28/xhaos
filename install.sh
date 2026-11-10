@@ -517,6 +517,11 @@ fi
 # ---- the service ---------------------------------------------------------------
 
 step "The service"
+# Behind a reverse proxy (the page's, or the nodes' Caddy), believe its
+# X-Forwarded-For: else every node and visitor is 127.0.0.1 to the limits.
+{ [ -n "$PUBLIC_HOST" ] || [ -n "$NODE_URL" ]; } && [ -z "$TRUSTED_PROXY" ] && TRUSTED_PROXY="127.0.0.1,::1"
+# Xhaos does not start with a node address it cannot use: catch it here.
+case $NODE_URL in ""|https://?*|http://localhost*|http://127.0.0.1*) ;; *) die "NODE_URL='$NODE_URL' in $CONF: use https://<domain>" ;; esac
 run install -d -m 755 "$CONF_DIR"
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'

@@ -225,7 +225,9 @@ nodes.example.com {
 }
 ```
 
-and start Xhaos with `-node-url https://nodes.example.com` (with `install.sh`: set `NODE_URL='https://nodes.example.com'` in `/etc/xhaos/install.conf` and re-run it, so the setting survives updates). The page and its API stay unreachable from that domain; a node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
+and start Xhaos with `-node-url https://nodes.example.com -trusted-proxy 127.0.0.1,::1` (with `install.sh`: set `NODE_URL='https://nodes.example.com'` in `/etc/xhaos/install.conf` and re-run it, so the setting survives updates; it sets `TRUSTED_PROXY='127.0.0.1,::1'` when that is empty). Xhaos accepts the node address's name as a `Host`, as it does a `-public-host`; the page and its API stay unreachable from that domain, since the proxy passes nothing else. A node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
+
+`-trusted-proxy` matters here too: without it every node, and anyone probing the domain, reaches Xhaos as the proxy's address (127.0.0.1), so the per-address limits on nodes (at most 4 unproven connections, 10 seconds to sign in) count them all as one, and a scanner could keep your Pis from connecting.
 
 On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (for kernels without Landlock).
 
