@@ -52,6 +52,20 @@ func TestDecideDoesNotShowTheModelACommentedCommand(t *testing.T) {
 	}
 }
 
+// Decide alone does not ask about a command longer than ModelMaxChars: it asks
+// the owner without the model, as Eligible does.
+func TestDecideDoesNotAskAboutALongCommand(t *testing.T) {
+	f := &fakeModel{content: "allow"}
+	c := open(t, serve(t, f))
+	long := "echo " + strings.Repeat("a", ModelMaxChars)
+	if allow, _ := c.Decide(context.Background(), Request{Project: "/p", Command: long}); allow {
+		t.Fatal("Decide allowed a command over ModelMaxChars")
+	}
+	if n := f.calls.Load(); n != 0 {
+		t.Fatalf("the model was called %d times", n)
+	}
+}
+
 // Every answer is judged with the same settings, and the examples come first.
 func TestAskSendsTheFixedDecodeAndExamples(t *testing.T) {
 	f := &fakeModel{content: "allow"}

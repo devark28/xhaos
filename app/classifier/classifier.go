@@ -188,7 +188,9 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, text st
 	if on, err := c.on(); err != nil || !on {
 		return false, ""
 	}
-	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) { // Eligible checked it; checked again so Decide alone never passes the floor or sees a runner
+	// Eligible checked these; checked again so Decide alone never passes the
+	// floor, sees a runner, or asks about a command too long to answer in time.
+	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) || utf8.RuneCountInString(r.Command) > ModelMaxChars {
 		return false, ""
 	}
 	model, ok := modelText(r.Command)
