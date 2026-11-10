@@ -180,6 +180,8 @@ func TestCurrentBranchInASubmodule(t *testing.T) {
 	os.MkdirAll(gitdir, 0o755)
 	os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../.git/modules/sub\n"), 0o644)
 	os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/uvc\n"), 0o644)
+	// As git writes it: the submodule's folder names its worktree back.
+	os.WriteFile(filepath.Join(gitdir, "config"), []byte("[core]\n\tworktree = ../../../sub\n"), 0o644)
 	if b, err := CurrentBranch(sub); b != "feature/uvc" || err != nil {
 		t.Fatalf("branch = %q %v", b, err)
 	}
