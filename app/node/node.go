@@ -279,6 +279,7 @@ type PiSetup struct {
 	WifiPassword string `json:"wifiPassword"`
 	Country      string `json:"country"`   // ISO 3166 code, e.g. GB, RW
 	UsbConfig    bool   `json:"usbConfig"` // install-node.sh --usb-config: XHAOS sticks may change Wi-Fi and server
+	UsbGadget    bool   `json:"usbGadget"` // the Pi's USB data port becomes a network link to the computer it is plugged into
 }
 
 type AddRequest struct {

@@ -80,10 +80,10 @@ function AddForm({ names, onAdded, onCancel }: { names: NodeView[]; onAdded(out:
   );
 }
 
-const blankPi: PiSetup = { hostname: '', user: 'pi', sshKey: '', wifiSsid: '', wifiPassword: '', country: '', usbConfig: false };
+const blankPi: PiSetup = { hostname: '', user: 'pi', sshKey: '', wifiSsid: '', wifiPassword: '', country: '', usbConfig: false, usbGadget: false };
 
 function PiFields({ setup, onChange }: { setup: PiSetup; onChange(next: PiSetup): void }) {
-  const set = (key: Exclude<keyof PiSetup, 'usbConfig'>) => (e: { target: { value: string } }) => onChange({ ...setup, [key]: e.target.value });
+  const set = (key: Exclude<keyof PiSetup, 'usbConfig' | 'usbGadget'>) => (e: { target: { value: string } }) => onChange({ ...setup, [key]: e.target.value });
   return <>
     <Field label="Hostname"><input value={setup.hostname} onChange={set('hostname')} placeholder="pi5" data-pi-hostname {...stylex.props(s.input, s.mono)} /></Field>
     <Field label="User" hint="Your login on the Pi. It has no password: sign in with the SSH key below."><input value={setup.user} onChange={set('user')} data-pi-user {...stylex.props(s.input, s.mono)} /></Field>
@@ -97,6 +97,8 @@ function PiFields({ setup, onChange }: { setup: PiSetup; onChange(next: PiSetup)
     </>}
     <Toggle name="pi-usb-config" label="USB stick settings" on={setup.usbConfig} onChange={on => onChange({ ...setup, usbConfig: on })}
       hint="Lets a USB stick labelled XHAOS give the Pi a new Wi-Fi network or join code later, with no screen or SSH. Anyone who can plug a stick labelled XHAOS into the Pi can then change its Wi-Fi and move it to another server. Off: change them over SSH." />
+    <Toggle name="pi-usb-gadget" label="USB gadget mode" on={setup.usbGadget} onChange={on => onChange({ ...setup, usbGadget: on })}
+      hint="Plugged into a computer, the Pi shows up there as a network adapter: sign in with ssh user@hostname.local (or 10.12.194.1), with no Wi-Fi. One cable powers it too. Zero 2 W: the micro-USB port marked USB, not PWR IN; that is its only data port, so USB sticks no longer work on it. Pi 4 and 5: the USB-C power port. A laptop port may not power a Pi 5 under load. Windows needs Raspberry Pi's driver. Needs the SSH key above to sign in." />
   </>;
 }
 

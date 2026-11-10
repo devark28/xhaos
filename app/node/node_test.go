@@ -246,6 +246,18 @@ func TestPiFiles(t *testing.T) {
 	if strings.Contains(user, "--usb-config") || !strings.Contains(wired.Files[0].Content, "--usb-config") {
 		t.Error("--usb-config should follow the Pi form's checkbox")
 	}
+	if strings.Contains(user, "enable_usb_gadget") || strings.Contains(user, "rpi-usb-gadget") {
+		t.Error("USB gadget mode is opt-in")
+	}
+	gadget, err := e.s.Nodes.Add(node.AddRequest{WorkspaceID: ws, Name: "zero", Pi: &node.PiSetup{Hostname: "zero", UsbGadget: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\nrpi:\n  enable_usb_gadget: true\n", `[ -e /sys/class/net/usb0 ] && exit 0; if command -v rpi-usb-gadget >/dev/null && rpi-usb-gadget on -f; then`, `shutdown -r +1`} {
+		if !strings.Contains(gadget.Files[0].Content, want) {
+			t.Errorf("gadget user-data lacks %q:\n%s", want, gadget.Files[0].Content)
+		}
+	}
 	if len(wired.Files) != 2 || wired.Files[1].Name != "network-config" || strings.Contains(wired.Files[1].Content, "wifis") || !strings.Contains(wired.Files[1].Content, "ethernets:") {
 		t.Errorf("wired files = %+v", wired.Files)
 	}

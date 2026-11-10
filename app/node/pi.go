@@ -117,6 +117,17 @@ ExecStart=/bin/sh ` + piCleanupScript + `
 const piCleanupStart = `systemctl daemon-reload && systemctl enable --now ` + piCleanupUnit + `.path; ` +
 	`[ -f /var/lib/xhaos-node/connected ] || logger -t xhaos-node "user-data and network-config (the Wi-Fi password and the join code) stay on the card's boot partition until the node connects; to remove them by hand: sudo rm -f /boot/firmware/user-data /boot/firmware/network-config" || true`
 
+// piGadgetCheck is the last runcmd step with USB gadget mode on. cloud-init
+// turns gadget mode on and reboots before runcmd, but gives rpi-usb-gadget
+// only 15 s in older releases (30 s since cloud-init#6823), which a Pi Zero
+// 2 W's busy first boot can exceed: then usb0 is missing here, so this turns
+// it on and reboots once, a minute later so runcmd finishes first (runcmd
+// would run again after a reboot in the middle, with a used join code).
+const piGadgetCheck = `[ -e /sys/class/net/usb0 ] && exit 0; ` +
+	`if command -v rpi-usb-gadget >/dev/null && rpi-usb-gadget on -f; then ` +
+	`logger -t xhaos-node "USB gadget mode was not on after the first boot: turned it on, rebooting in a minute"; shutdown -r +1 "xhaos-node: rebooting once to turn on USB gadget mode"; ` +
+	`else logger -t xhaos-node "could not turn on USB gadget mode (rpi-usb-gadget needs a Raspberry Pi OS Trixie image from 2025-10-20 or later)"; fi`
+
 // block indents a file for a YAML literal block.
 func block(content, indent string) string {
 	var b strings.Builder
@@ -147,6 +158,10 @@ func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File
 		fmt.Fprintf(&u, "    ssh_authorized_keys:\n      - %s\n", q(p.SSHKey))
 		u.WriteString("\nenable_ssh: true\nssh_pwauth: false\n")
 	}
+	if p.UsbGadget {
+		// Raspberry Pi OS's cloud-init runs rpi-usb-gadget (docs/nodes.md).
+		u.WriteString("\nrpi:\n  enable_usb_gadget: true\n")
+	}
 	// The network may come up after runcmd starts: retry for ten minutes.
 	args := installArgs(url, code, version)
 	if p.UsbConfig {
@@ -156,6 +171,9 @@ func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File
 	u.WriteString("\nruncmd:\n")
 	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(install))
 	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(piCleanupStart))
+	if p.UsbGadget {
+		fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(piGadgetCheck))
+	}
 	u.WriteString("\nwrite_files:\n")
 	for _, f := range []struct{ path, perm, content string }{
 		{piCleanupScript, "0700", piCleanup},

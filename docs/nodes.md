@@ -62,7 +62,7 @@ Removing a node in Xhaos forgets its key: its next connection is refused. `xhaos
 
 Raspberry Pi OS based on Debian Trixie (images from November 2025 on) configures itself on first boot with cloud-init, from two files on the card's boot partition: `user-data` and `network-config`. That partition is the FAT one any computer mounts when the card is inserted, so it is the "flash disk with a setup file" we want, with nothing extra to plug in.
 
-**Add node** → **Raspberry Pi first boot** asks for the hostname, the Wi-Fi network, its password and country code, and optionally an SSH public key for yourself, and whether XHAOS USB sticks may change its settings later (**USB stick settings**, off by default; see [USB stick config](#2-usb-stick-config-on-a-running-node-built)). It downloads `user-data` and `network-config`:
+**Add node** → **Raspberry Pi first boot** asks for the hostname, the Wi-Fi network, its password and country code, and optionally an SSH public key for yourself, whether XHAOS USB sticks may change its settings later (**USB stick settings**, off by default; see [USB stick config](#2-usb-stick-config-on-a-running-node-built)), and whether its USB port becomes a network link to a computer (**USB gadget mode**, off by default; see [USB gadget mode](#4-usb-gadget-mode-built)). It downloads `user-data` and `network-config`:
 
 - `user-data` creates a user (password login locked; your SSH key if given), sets the hostname, and in `runcmd` runs `install-node.sh` with the server's URL and the join code (and `--usb-config` when the switch is on). A second `runcmd` step deletes the secrets once the node is connected (below).
 - `network-config` is always written: wired Ethernet (DHCP), plus the Wi-Fi network when one is given. With no Wi-Fi name the Pi is wired only.
@@ -82,7 +82,7 @@ Older images (Bookworm, `firstrun.sh`) are not supported: use a Trixie image. A 
 
 ## Easier blind setup (phase 2)
 
-The two-file path above needs a computer that can flash a card and copy files onto it. Three additions, in the order they would be built. None of them changes the protocol: each ends with the same `install-node.sh` join.
+The two-file path above needs a computer that can flash a card and copy files onto it. Three additions, in the order they would be built, and a fourth for getting into a Pi that will not join. None of them changes the protocol: the first three end with the same `install-node.sh` join.
 
 What the Raspberry Pi documentation says (read for this design, not tried on our Pis):
 
@@ -142,6 +142,20 @@ This is for setting up a Pi from nothing without a second computer to flash card
 - Feedback without a screen: the activity LED (steady while writing, slow blink when done, fast blink on error) and the result file.
 - Cost: the image has to be built (pi-gen, or a buildroot initramfs like usbboot's `mass-storage-gadget`) and published with each release. It is about the size of Raspberry Pi OS Lite (about 500 MB compressed).
 - Limit: because the SD card boots first, the stick cannot replace a card that already boots. Making such a card unbootable from the running system, so the next boot falls through to the stick, is possible in principle but is left out until it has been tried on both Pis.
+
+### 4. USB gadget mode (built)
+
+One cable between the Pi and a laptop powers the Pi and gives the laptop a network link to it, so you can sign in over SSH with no Wi-Fi, screen or keyboard: to see why a node does not join, or to fix its Wi-Fi. It is off by default; the **USB gadget mode** switch in the Pi form turns it on.
+
+- It uses Raspberry Pi's own `rpi-usb-gadget` package, part of Raspberry Pi OS Trixie images from 2025-10-20 on. With the switch on, `user-data` has `rpi: enable_usb_gadget: true`: cloud-init runs `rpi-usb-gadget on` on first boot and reboots once, before `runcmd`. The package adds `dtoverlay=dwc2,dr_mode=peripheral` to `config.txt`, loads `g_ether` (interface `usb0`), and adds two NetworkManager connections on `usb0` with a small service that switches between them.
+- On the laptop the Pi shows up as a USB network adapter (CDC-ECM on Linux and macOS, RNDIS on Windows, which needs Raspberry Pi's driver from the rpi-usb-gadget releases). By default the Pi hands the laptop an address and is itself `10.12.194.1`: `ssh pi@10.12.194.1`, or `ssh pi@<hostname>.local`. When the laptop shares its internet connection on that adapter (Internet Connection Sharing), the Pi takes an address from the laptop instead and can reach the internet, and so the server, through it.
+- Which port: on a Zero 2 W, the micro-USB port marked USB (the data port nearer the mini-HDMI), not PWR IN; it powers the Pi too. On a Pi 4 or Pi 5, the USB-C power port. A laptop port may not power a Pi 5 under load (Raspberry Pi recommend a direct port, or a powered hub); a Zero 2 W is fine.
+- The port is a device port from then on. On a Zero 2 W that is its only data port, so **USB stick settings** cannot be used together with gadget mode there (no stick can be plugged in). A Pi 4 or 5 keeps its USB-A ports for sticks.
+- An SSH key is needed to sign in (the user has no password). Anyone who plugs the Pi into their computer can reach its SSH port, as on its Wi-Fi network.
+- On older cloud-init releases, `rpi-usb-gadget` gets 15 seconds, which a Pi Zero 2 W's first boot can exceed (raspberrypi/rpi-imager#1403; cloud-init 30 s since #6823). So the last `runcmd` step checks that `usb0` exists; if not, it runs `rpi-usb-gadget on -f` itself and reboots a minute later (not at once: `runcmd` would then run again with a used join code). `journalctl -t xhaos-node` says when it did.
+- Turn it off on a running node with `sudo rpi-usb-gadget off` and a reboot.
+
+Not tried on our Pis yet: the owner tries it first on a Zero 2 W. The Pi 5 over USB-C is in Raspberry Pi's supported list; if it does not work on ours, the USB-A stick stays the way to set up a Pi 5.
 
 ## On the node
 
@@ -207,7 +221,7 @@ Before a node has proven itself (join or signed hello), the server reads at most
 ## Phases
 
 1. **Run and copy, and join a Pi without a screen.** `xhaos-node` (join, run as a service, exec, jobs, put/get, sandbox, devices); `app/node` with join codes, keys, sessions and grants; the four tools; the Nodes tab (add with a join command or the Raspberry Pi first-boot files, list, grant, remove, jobs); `install-node.sh`; release builds. Enough to build on a strong machine and test on Pis.
-2. **Easier blind setup**, in this order: `flash-node.sh` (with `--rpiboot`) and the USB stick config (both built), then the USB installer stick (see [Easier blind setup](#easier-blind-setup-phase-2)).
+2. **Easier blind setup**, in this order: `flash-node.sh` (with `--rpiboot`), the USB stick config and USB gadget mode (built), then the USB installer stick (see [Easier blind setup](#easier-blind-setup-phase-2)).
 3. **Hardware.** Hardware facts (cameras, GPUs, USB devices) on node cards; picking a node by label ("any `pi5`").
 4. **Projects on nodes.** A project can live on a node (node + folder), so an agent's ordinary tools (`read_file`, `edit_file`, `bash`…) run there. Incremental sync of a project to a node. Nodes update themselves when the server is updated.
 
@@ -216,6 +230,7 @@ Before a node has proven itself (join or signed hello), the server reads at most
 - Does Raspberry Pi OS's kernel enable Landlock? If not, the Pis need `--unsandboxed` (or a kernel with it) before they run anything. Check on a real Pi first.
 - First boot now deletes `user-data` and `network-config` and disables cloud-init once the node is connected (see [Raspberry Pi first boot](#raspberry-pi-first-boot-no-screen-no-keyboard)). Still to check on a real Pi: the hostname, the SSH host keys and the network stay the same on the second boot.
 - USB boot on our hardware: which of our sticks the Zero 2 W boots from, and whether the Pi 5's bootloader on our units has USB in `BOOT_ORDER` (it is in the default). Check this before building the installer stick.
+- USB gadget mode on our Pis: the Zero 2 W over its USB port (first boot, the reboot, SSH from a laptop), and the Pi 5 over USB-C, with the power a laptop port gives.
 - Should a node be shareable between workspaces? This design says no: one node, one workspace.
 
 ## Later (known, not fixed yet)
