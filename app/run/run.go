@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/devark28/xhaos/app/agent"
@@ -54,9 +55,10 @@ type key struct {
 }
 
 type Runner struct {
-	agents    *agent.Store
-	providers *provider.Store
-	notify    Notifier
+	explaining atomic.Bool // a classifier reason is being written (see explainSoon)
+	agents     *agent.Store
+	providers  *provider.Store
+	notify     Notifier
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
@@ -306,6 +308,23 @@ func (r *Runner) explainLater(ws string, agentID int64, callID string, req class
 		slog.Error("run: record the classifier's reason", "agent", agentID, "err", err)
 	}
 }
+
+// explainSoon starts explainLater unless one is still running: the classifier
+// answers one request at a time, so a reason that would queue behind another
+// is dropped (its card then says only that the model allowed the call).
+func (r *Runner) explainSoon(ws string, agentID int64, callID string, req classifier.Request) {
+	if !r.explaining.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer r.explaining.Store(false)
+		r.explainLater(ws, agentID, callID, req)
+	}()
+}
+
+// noNetReason is the card's reason when the model is not asked because its
+// allow could not be given the no-network rule.
+const noNetReason = "the local classifier does not decide it: a command it allows must run with no network, which needs the sandbox on a kernel with Landlock ABI 4 or newer"
 
 // noNetNote is added to the output of a command the local model allowed when
 // it fails: the failure may be for want of the network, which that command
@@ -714,7 +733,11 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				}
 			}
 			if verdict == policy.Ask && r.Classifier != nil && classifier.Eligible(cc) {
-				if ok, why := r.Classifier.Decide(ctx, creq); ok {
+				if !r.Sandbox.NoNetPossible() {
+					// A command the model allows runs with no network: without
+					// that, it asks.
+					reason = noNetReason
+				} else if ok, why := r.Classifier.Decide(ctx, creq); ok {
 					verdict, reason, by = policy.Allow, why, classifier.By
 					explain = why == ""
 					d.ViaModel = true
@@ -735,7 +758,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 		}
 		record(d)
 		if explain && d.State == agent.ToolAllowed {
-			go r.explainLater(ws, a.ID, c.ID, creq)
+			r.explainSoon(ws, a.ID, c.ID, creq)
 		}
 	}
 	if waiting {
