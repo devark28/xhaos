@@ -124,6 +124,26 @@ func TestRunnerListedWithTheDirectFlagRules(t *testing.T) {
 	}
 }
 
+// npx TOOL is listed only when TOOL is installed in the project: a listed
+// tool that is not in node_modules/.bin is not listed, and a tool that is
+// installed for another project is not found here.
+func TestRunnerNotListedWhenTheToolIsMissing(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	installTools(t, other, "tsc")
+	for _, cmd := range []string{"npx tsc --noEmit", "npx eslint .", "npx vitest run"} {
+		if name, ok := ListedIn(root, cmd); ok {
+			t.Errorf("ListedIn(%q) with no tools in the project listed as %q", cmd, name)
+		}
+	}
+	if name, ok := ListedIn(other, "npx tsc --noEmit"); !ok || name != "npx tsc --noEmit" {
+		t.Errorf("ListedIn with the tool installed = %q, %v; want listed", name, ok)
+	}
+	if name, ok := ListedIn(root, "npx tsc --noEmit"); ok {
+		t.Errorf("ListedIn(root without tsc) = %q; want refused", name)
+	}
+}
+
 // A read beside a runner's listed command is refused: the runner can download
 // a package, and the read is not judged in the same line. The same read beside
 // a runner-free listed command is still taken.
