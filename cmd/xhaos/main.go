@@ -80,7 +80,8 @@ func main() {
 	sandboxMode := flag.String("sandbox", sandbox.Auto, "confine agents' commands with Landlock: auto (when the kernel supports it), on (refuse commands without it), off")
 	publicHosts := flag.String("public-host", "", "domain names a reverse proxy serves this server under (comma-separated, e.g. xhaos.example.com); needed when it listens on localhost behind the proxy")
 	trustedProxies := flag.String("trusted-proxy", "", "reverse proxies whose X-Forwarded-For and X-Forwarded-Proto headers are trusted (comma-separated addresses or CIDRs, e.g. 127.0.0.1,::1)")
-	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty)")
+	dictationURL := flag.String("dictation-url", "", "warm dictation service base URL, e.g. http://127.0.0.1:8190 (optional; takes go there, and to -dictation-cmd when it fails)")
+	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty and no -dictation-url)")
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
@@ -139,6 +140,7 @@ func main() {
 		Passphrase: true,
 		Sandbox:    *sandboxMode,
 		Dictation: dictation.Config{
+			URL:        *dictationURL,
 			Program:    *dictationCmd,
 			Args:       *dictationArgs,
 			Model:      *dictationModel,
