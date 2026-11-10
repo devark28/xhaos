@@ -16,8 +16,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -66,6 +69,44 @@ func Pick(want string) Choice {
 // user (the same uid inside), pid and IPC namespaces. Not the network.
 var bwrapNamespaces = []string{"--unshare-user", "--unshare-pid", "--unshare-ipc"}
 
+// bwrapSession are the options every sandboxed command gets besides its
+// namespaces: a new session, so it has no controlling terminal and cannot
+// push input into the one xhaos-node was started from (TIOCSTI: /dev/tty is
+// there and Pi kernels allow it), and it dies with the helper's parent.
+var bwrapSession = []string{"--new-session", "--die-with-parent"}
+
+// bwrapNoUserns is passed when bwrap has it (0.8 and later): the command
+// cannot make user namespaces of its own (less kernel to attack).
+const bwrapNoUserns = "--disable-userns"
+
+var versionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+var bwrapVersions sync.Map // bwrap's path → [2]int{major, minor}
+
+// bwrapVersion is the major and minor version of the bwrap at path, asked
+// once; 0, 0 when it does not say.
+func bwrapVersion(path string) (major, minor int) {
+	if v, ok := bwrapVersions.Load(path); ok {
+		mm := v.([2]int)
+		return mm[0], mm[1]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, path, "--version").Output()
+	if m := versionRe.FindStringSubmatch(string(out)); m != nil {
+		major, _ = strconv.Atoi(m[1])
+		minor, _ = strconv.Atoi(m[2])
+	}
+	bwrapVersions.Store(path, [2]int{major, minor})
+	return major, minor
+}
+
+// bwrapHasNoUserns: bwrap 0.8 or later.
+func bwrapHasNoUserns(path string) bool {
+	major, minor := bwrapVersion(path)
+	return major > 0 || minor >= 8
+}
+
 // ProbeBwrap says why bubblewrap cannot sandbox commands for this user, or
 // nil when it can.
 func ProbeBwrap() error {
@@ -81,7 +122,11 @@ func ProbeBwrap() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	args := append(slices.Clone(bwrapNamespaces), "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--", "true")
+	args := append(slices.Clone(bwrapNamespaces), bwrapSession...)
+	if bwrapHasNoUserns(path) {
+		args = append(args, bwrapNoUserns)
+	}
+	args = append(args, "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--", "true")
 	out, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
 	if err != nil {
 		msg, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
@@ -109,8 +154,16 @@ func readTrim(path string) string {
 // mounts cover earlier ones, so read-only folders inside a writable one are
 // left out (Landlock would allow writing there too), /tmp is a fresh tmpfs
 // before the folders under it are bound, and the writable folders come last.
-func bwrapArgs(p policy, self string) []string {
-	args := slices.Clone(bwrapNamespaces)
+//
+// bwrap 0.4 (Debian bullseye) refuses to make a path twice ("File exists"),
+// so each path is named once: repeats are dropped, and so is anything
+// inside a folder already bound read-only or behind a link made here (PATH
+// brings /usr/bin and /bin again).
+func bwrapArgs(p policy, self string, noUserns bool) []string {
+	args := append(slices.Clone(bwrapNamespaces), bwrapSession...)
+	if noUserns {
+		args = append(args, bwrapNoUserns)
+	}
 	args = append(args, "--tmpfs", "/tmp", "--proc", "/proc")
 	devOpen := slices.Contains(p.Write, "/dev")
 	if devOpen {
@@ -135,10 +188,30 @@ func bwrapArgs(p policy, self string) []string {
 		}
 		write = append(write, w)
 	}
+	// The real folders read, and the links among them.
+	var dirs, links []string
 	for _, r := range p.Read {
-		if r == "/proc" || inside(r, []string{"/proc", "/dev"}) || inside(r, write) {
+		if fi, err := os.Lstat(r); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			links = append(links, r)
+		} else if err == nil {
+			dirs = append(dirs, r)
+		}
+	}
+	// below: path is strictly inside one of these folders.
+	below := func(path string, in []string) bool {
+		for _, d := range in {
+			if path != d && inside(path, []string{d}) {
+				return true
+			}
+		}
+		return false
+	}
+	named := map[string]bool{}
+	for _, r := range p.Read {
+		if named[r] || r == "/proc" || inside(r, []string{"/proc", "/dev"}) || inside(r, write) || below(r, dirs) || below(r, links) {
 			continue
 		}
+		named[r] = true
 		fi, err := os.Lstat(r)
 		switch {
 		case err != nil:
@@ -153,7 +226,8 @@ func bwrapArgs(p policy, self string) []string {
 		}
 	}
 	for _, f := range append(slices.Clone(p.Files), self) {
-		if f != "" && !inside(f, write) {
+		if f != "" && !named[f] && !inside(f, write) && !inside(f, dirs) && !below(f, links) {
+			named[f] = true
 			args = append(args, "--ro-bind-try", f, f)
 		}
 	}
@@ -177,6 +251,6 @@ func bwrapCommand(ctx context.Context, self string, p policy, raw []byte, dir, c
 	if err != nil {
 		return nil, errors.New("commands run under bubblewrap here, and bwrap is gone (apt install bubblewrap)")
 	}
-	args := append(bwrapArgs(p, self), "--chdir", dir, "--", self, helperArg, string(raw), command)
+	args := append(bwrapArgs(p, self, bwrapHasNoUserns(path)), "--chdir", dir, "--", self, helperArg, string(raw), command)
 	return exec.CommandContext(ctx, path, args...), nil
 }

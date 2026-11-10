@@ -39,12 +39,12 @@ func TestBwrapArgs(t *testing.T) {
 		Devices: append(slices.Clone(commonDevices), "/dev/video0"),
 		Bwrap:   true,
 	}
-	args := bwrapArgs(p, "/usr/local/bin/xhaos-node")
+	args := bwrapArgs(p, "/opt/xhaos-node", false)
 	got := mounts(args)
 	want := []string{
 		"--tmpfs /tmp", "--proc /proc", "--dev /dev",
 		"--ro-bind /usr", "--symlink " + link, "--ro-bind /etc",
-		"--ro-bind-try /etc/hostname", "--ro-bind-try /usr/local/bin/xhaos-node",
+		"--ro-bind-try /opt/xhaos-node", // /etc/hostname is in /etc already
 		"--bind-try " + root,
 		"--dev-bind-try /dev/video0",
 	}
@@ -54,7 +54,7 @@ func TestBwrapArgs(t *testing.T) {
 	if i := slices.Index(args, "--symlink"); i < 0 || args[i+1] != "usr/bin" {
 		t.Errorf("the link keeps its target: %v", args)
 	}
-	for _, ns := range []string{"--unshare-user", "--unshare-pid", "--unshare-ipc"} {
+	for _, ns := range []string{"--unshare-user", "--unshare-pid", "--unshare-ipc", "--new-session", "--die-with-parent"} {
 		if !slices.Contains(args, ns) {
 			t.Errorf("missing %s", ns)
 		}
@@ -63,9 +63,59 @@ func TestBwrapArgs(t *testing.T) {
 		t.Error("the network is shared, as with Landlock")
 	}
 	// The server's setting (devices open): the real /dev, nothing else for it.
-	open := bwrapArgs(policy{Read: []string{"/usr"}, Write: []string{root, "/dev"}}, "/x")
+	if slices.Contains(args, "--disable-userns") || !slices.Contains(bwrapArgs(p, "/x", true), "--disable-userns") {
+		t.Error("--disable-userns only when bwrap has it")
+	}
+	open := bwrapArgs(policy{Read: []string{"/usr"}, Write: []string{root, "/dev"}}, "/x", false)
 	if got := mounts(open); !slices.Contains(got, "--dev-bind /dev") || slices.Contains(got, "--dev /dev") {
 		t.Errorf("open devices = %v", got)
+	}
+}
+
+// bwrap 0.4 fails on a path named twice: PATH repeats /usr/bin and /bin,
+// and a link's or a bound folder's insides must not be named again.
+func TestBwrapArgsNameEachPathOnce(t *testing.T) {
+	dir := t.TempDir()
+	usr := filepath.Join(dir, "usr")
+	os.MkdirAll(filepath.Join(usr, "bin"), 0o755)
+	os.MkdirAll(filepath.Join(usr, "sbin"), 0o755)
+	bin, sbin := filepath.Join(dir, "bin"), filepath.Join(dir, "sbin")
+	os.Symlink("usr/bin", bin)
+	os.Symlink("usr/sbin", sbin)
+	p := policy{
+		Read:  []string{usr, bin, sbin, filepath.Join(usr, "bin"), bin, filepath.Join(usr, "sbin"), sbin, filepath.Join(bin, "tool")},
+		Files: []string{filepath.Join(usr, "bin", "git"), filepath.Join(bin, "git")},
+		Write: []string{filepath.Join(dir, "work")},
+	}
+	got := mounts(bwrapArgs(p, filepath.Join(usr, "bin", "xhaos-node"), false))
+	want := []string{"--tmpfs /tmp", "--proc /proc", "--dev /dev", "--ro-bind " + usr, "--symlink " + bin, "--symlink " + sbin, "--bind-try " + filepath.Join(dir, "work")}
+	if !slices.Equal(got, want) {
+		t.Errorf("mounts =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+}
+
+func TestBwrapVersion(t *testing.T) {
+	bin := t.TempDir()
+	for name, out := range map[string]string{"old": "bubblewrap 0.4.1", "new": "bubblewrap 0.8.0", "silent": ""} {
+		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\necho '"+out+"'\n"), 0o755)
+	}
+	if bwrapHasNoUserns(filepath.Join(bin, "old")) || !bwrapHasNoUserns(filepath.Join(bin, "new")) || bwrapHasNoUserns(filepath.Join(bin, "silent")) {
+		t.Error("--disable-userns is for bwrap 0.8 and later")
+	}
+}
+
+// DNS works where /etc/resolv.conf links into /run: its target is readable.
+func TestResolvConfTarget(t *testing.T) {
+	conf, err := filepath.EvalSymlinks("/etc/resolv.conf")
+	if err != nil || conf == "/etc/resolv.conf" {
+		t.Skip("/etc/resolv.conf is not a link here")
+	}
+	_, p, err := Config{Cache: t.TempDir()}.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.Files, conf) {
+		t.Errorf("files = %v, want %s", p.Files, conf)
 	}
 }
 
@@ -124,6 +174,8 @@ func TestBwrapCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("… and read by the next one", "cat $TMPDIR/build.log", "build log")
 	ok("devices", "echo x > /dev/null && head -c 1 /dev/full | wc -c", "1")
 	ok("the sandbox marker", "echo $XHAOS_SANDBOX", "1")
+	ok("no controlling terminal", "{ : < /dev/tty; } 2>/dev/null || echo no tty", "no tty")
+	ok("names resolve", "getent hosts github.com >/dev/null && echo resolved", "resolved")
 	denied("reading another folder", "cat "+filepath.Join(other, "secret.txt"))
 	denied("writing outside the project", "echo x > "+filepath.Join(other, "planted.txt"))
 	denied("writing system files", "touch /usr/xhaos-planted")

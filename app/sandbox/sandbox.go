@@ -325,6 +325,11 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	}
 	// A submodule's or worktree's git data can live outside the project.
 	p.Write = append(p.Write, GitDirs(root)...)
+	// DNS: /etc/resolv.conf is often a link into /run (NetworkManager's,
+	// systemd-resolved's), which commands do not otherwise see.
+	if conf, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && conf != "/etc/resolv.conf" {
+		p.Files = append(p.Files, conf)
+	}
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
 	// never the home folder itself or ~/.local (that holds Xhaos's data).
