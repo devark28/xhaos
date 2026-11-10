@@ -171,9 +171,20 @@ CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180
 DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no
+# SAVED_PARTS lists the optional parts whose setting the settings file holds
+# (",classifier,"): a saved choice, yes or no, wins over --yes and the prompts.
+SAVED_PARTS=""
+# SAVED_OFF lists the parts a saved no left out in this run (for the summary).
+SAVED_OFF=""
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
+  for p in devtools flutter browsers podman dictation classifier; do
+    if grep -q "^$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')=" "$CONF" 2>/dev/null; then
+      SAVED_PARTS="$SAVED_PARTS$p,"
+    fi
+  done
+  if [ -n "$SAVED_PARTS" ]; then SAVED_PARTS=",$SAVED_PARTS"; fi
 else
   # No settings yet (a first install, or a server set up by hand): what is
   # already here counts as installed, so the service keeps using it.
@@ -458,6 +469,10 @@ part() {
     *",$1,"*) ;;
     *)
       if [ "$2" = yes ]; then say "$1: installed (update it with --with $1)"; return 0; fi
+      case $SAVED_PARTS in *",$1,"*)
+        SAVED_OFF="$SAVED_OFF $1"
+        say "$1: not installed (the saved setting is no; add it with --with $1)"; return 0 ;;
+      esac
       if [ "$FIRST" = no ] && [ "$YES" = no ] && [ -z "$TTY" ]; then
         say "$1: not installed (add it with --with $1)"; return 0
       fi
@@ -612,4 +627,7 @@ if [ -z "$PUBLIC_HOST" ]; then
   say "Reach it from your computer with an SSH tunnel:  ssh -N -L $PORT:127.0.0.1:$PORT <you>@<this server>"
   say "then open http://localhost:$PORT. (With a domain, put an HTTPS reverse proxy in front: see docs/deploy.md.)"
 fi
+for p in $SAVED_OFF; do
+  say "Left out by its saved setting (no): $p. To add it, re-run this installer with --with $p"
+done
 say "Settings: $CONF. Re-run this installer to update, or to add parts (--with devtools,dictation…)."
