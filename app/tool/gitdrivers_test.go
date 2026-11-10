@@ -3,8 +3,11 @@ package tool
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/devark28/xhaos/app/llm"
 )
@@ -282,6 +285,75 @@ func TestGitConfigOptionIsExec(t *testing.T) {
 		t.Errorf("ClassifyCommand(git status) = %s, want read", got)
 	}
 }
+
+// returnsWithin runs ConfigRunsDrivers(root) and reports its answer and whether
+// it returned within d. A FIFO that is opened for reading blocks, so the walk
+// must not open it.
+func returnsWithin(t *testing.T, root string, d time.Duration) (got, ok bool) {
+	t.Helper()
+	done := make(chan bool, 1)
+	go func() { done <- ConfigRunsDrivers(root) }()
+	select {
+	case got = <-done:
+		return got, true
+	case <-time.After(d):
+		return false, false
+	}
+}
+
+// A FIFO where git looks for a repo or a config blocks an open for reading
+// forever, so the walk and the floor would hang. Anything that is not a regular
+// file (or a folder, where one is expected) counts as risky and is never opened.
+func TestConfigRunsDriversFIFO(t *testing.T) {
+	t.Run("a FIFO named .git", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("mkfifo", filepath.Join(root, "sub", ".git")).CombinedOutput(); err != nil {
+			t.Skipf("mkfifo: %v %s", err, out)
+		}
+		got, ok := returnsWithin(t, root, 5*time.Second)
+		if !ok {
+			t.Fatal("ConfigRunsDrivers blocked on a FIFO named .git")
+		}
+		if !got {
+			t.Error("a FIFO named .git is not a repo git can read: want risky (true)")
+		}
+	})
+	t.Run("a FIFO as the config of a gitdir", func(t *testing.T) {
+		root := repo(t, "")
+		gd := filepath.Join(root, "gd")
+		if err := os.MkdirAll(gd, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("mkfifo", filepath.Join(gd, "config")).CombinedOutput(); err != nil {
+			t.Skipf("mkfifo: %v %s", err, out)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "sub", ".git"), []byte("gitdir: "+gd+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := returnsWithin(t, root, 5*time.Second)
+		if !ok {
+			t.Fatal("ConfigRunsDrivers blocked on a FIFO config")
+		}
+		if !got {
+			t.Error("a FIFO as a gitdir's config: want risky (true)")
+		}
+	})
+}
+
+// A config bigger than the read bound counts as risky: git would read all of it.
+func TestConfigRunsDriversBigConfig(t *testing.T) {
+	big := "[core]\n\tbare = false\n" + strings.Repeat("# filler line that does nothing\n", 1<<20/30+10)
+	if ConfigRunsDrivers(repo(t, big)) == false {
+		t.Error("a config over the read bound: want true")
+	}
+}
+
 // git reads config from outside the project when HOME, XDG_CONFIG_HOME or
 // --git-dir say so, and a command that moves it out of the project with cd or
 // -C does too: such a command is risky whatever the project's config says.

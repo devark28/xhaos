@@ -113,6 +113,10 @@ func ConfigRunsDrivers(root string) bool {
 			risky = risky || gitDirConfigRuns(p)
 			return fs.SkipDir // its objects are not config
 		}
+		if !d.Type().IsRegular() {
+			risky = true // a FIFO, socket or device named .git: git could block on it
+			return nil
+		}
 		risky = risky || dotGitFileRuns(filepath.Dir(p), p)
 		return nil
 	})
@@ -155,7 +159,7 @@ func isGitDir(dir string) bool {
 // submodule, "gitdir: <path>"; dir is the folder that holds it) could run a
 // program. A gitdir that does not exist has no config to run.
 func dotGitFileRuns(dir, dotGit string) bool {
-	raw, err := os.ReadFile(dotGit)
+	raw, err := readRegular(dotGit, maxConfigBytes)
 	if err != nil {
 		return true
 	}
@@ -177,7 +181,7 @@ func dotGitFileRuns(dir, dotGit string) bool {
 // config its commondir names (a worktree shares it).
 func gitDirConfigRuns(gitdir string) bool {
 	common := gitdir
-	raw, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	raw, err := readRegular(filepath.Join(gitdir, "commondir"), maxConfigBytes)
 	switch {
 	case err == nil:
 		common = strings.TrimSpace(string(raw))
@@ -202,15 +206,42 @@ func gitDirConfigRuns(gitdir string) bool {
 // configFileRuns reports whether one config file could run a program. A file
 // that does not exist runs nothing; one that cannot be read may.
 func configFileRuns(path string) bool {
-	f, err := os.Open(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false
 	}
+	if err != nil || !info.Mode().IsRegular() {
+		return true // a FIFO or a folder where git reads a file: never opened
+	}
+	if info.Size() > maxConfigBytes {
+		return true // too big to check, and git would read all of it
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return true
 	}
 	defer f.Close()
-	return configRuns(f)
+	return configRuns(io.LimitReader(f, maxConfigBytes+1))
+}
+
+// maxConfigBytes bounds a config or pointer file read. A bigger one counts as
+// risky (see configFileRuns).
+const maxConfigBytes = 1 << 20
+
+// readRegular reads a file of at most max bytes, but only when it is a regular
+// file: an open on a FIFO blocks, and a folder cannot be read.
+func readRegular(path string, max int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fs.ErrInvalid
+	}
+	if info.Size() > max {
+		return nil, fs.ErrInvalid
+	}
+	return os.ReadFile(path)
 }
 
 // runSections are sections whose every key can run a program or bring in more
