@@ -260,6 +260,11 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		server = cur.Server
 	}
 	cfg := client.Config{Server: server, Root: cur.Root, Devices: cur.Devices, Unsandboxed: cur.Unsandboxed}
+	if cfg.Root == "" && loadErr != nil {
+		// Never joined (install-node.sh --no-join): the folder the service
+		// was given, from its unit (root's file, unlike node.json).
+		cfg.Root = unitRoot(serviceUnit, state)
+	}
 	if cfg.Root == "" {
 		cfg.Root = filepath.Join(state, "xhaos-work")
 	}
@@ -295,7 +300,7 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		return
 	}
 	// The service install-node.sh made, when there is one.
-	systemd := isDir("/run/systemd/system") && exists("/etc/systemd/system/xhaos-node.service")
+	systemd := isDir("/run/systemd/system") && exists(serviceUnit)
 	if systemd {
 		_, _ = command(ctx, "systemctl", "stop", "xhaos-node")
 	}
@@ -401,6 +406,24 @@ func (d *stateDir) checkRoot(root string) error {
 		return fmt.Errorf("node.json's folder %s does not belong to the node's user (uid %d)", root, d.uid)
 	}
 	return nil
+}
+
+// serviceUnit is the unit install-node.sh writes.
+const serviceUnit = "/etc/systemd/system/xhaos-node.service"
+
+// unitRoot is the work folder in unit's "ReadWritePaths=<state> <root>"
+// line; "" when there is none (checkRoot still checks what comes back).
+func unitRoot(unit, state string) string {
+	b, err := os.ReadFile(unit)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "ReadWritePaths="+state+" "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
 }
 
 func stagedName(name string) string { return "." + name + ".rejoin" }

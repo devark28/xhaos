@@ -260,3 +260,19 @@ func TestCommitPartly(t *testing.T) {
 		}
 	}
 }
+
+// A node installed with --no-join joins by stick into the folder its unit
+// was given (install-node.sh --root), not the default.
+func TestUnitRoot(t *testing.T) {
+	unit := filepath.Join(t.TempDir(), "xhaos-node.service")
+	os.WriteFile(unit, []byte("[Service]\nUser=xhaos-node\nReadWritePaths=/var/lib/xhaos-node /srv/work\nPrivateTmp=yes\n"), 0o644)
+	if got := unitRoot(unit, "/var/lib/xhaos-node"); got != "/srv/work" {
+		t.Errorf("root = %q", got)
+	}
+	if got := unitRoot(unit, "/other/state"); got != "" {
+		t.Errorf("another state's root = %q", got)
+	}
+	if got := unitRoot(filepath.Join(t.TempDir(), "none"), "/var/lib/xhaos-node"); got != "" {
+		t.Errorf("no unit = %q", got)
+	}
+}
