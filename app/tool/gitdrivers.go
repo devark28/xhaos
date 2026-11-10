@@ -31,13 +31,22 @@ const maxScan = 200000
 // ConfigRunsDrivers), or the line sets git's environment or its exec path,
 // which can name one too.
 func GitDriverRisk(root, line string) bool {
-	if !gitWord.MatchString(line) {
+	// The shell drops quote marks and backslashes before it runs a word, so
+	// g''it and --exec-pa''th are git and --exec-path: match on that text.
+	plain := unquoted(line)
+	if !gitWord.MatchString(plain) {
 		return false
 	}
-	if strings.Contains(line, "GIT_") || strings.Contains(line, "--exec-path") {
+	if strings.Contains(plain, "GIT_") || strings.Contains(plain, "--exec-path") {
 		return true
 	}
 	return ConfigRunsDrivers(root)
+}
+
+// unquoted drops the quote marks and backslashes of a command line, as the
+// shell does before it runs a word (the same text the floor reads as plain).
+func unquoted(line string) string {
+	return strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(line)
 }
 
 // ConfigRunsDrivers reports whether a git repo under root (the .git folder or

@@ -230,6 +230,19 @@ func TestFloorGitDriverNeedsProject(t *testing.T) {
 	}
 }
 
+// Quote marks do not hide git from the shell, so the floor must still refuse a
+// git command split by them when the config could run a driver.
+func TestFloorGitQuotesDoNotHideGit(t *testing.T) {
+	risky := t.TempDir()
+	os.MkdirAll(filepath.Join(risky, ".git"), 0o755)
+	os.WriteFile(filepath.Join(risky, ".git", "config"), []byte("[diff]\n\texternal = ./x\n"), 0o644)
+	for _, line := range []string{"g''it diff", "gi\"\"t log -p", "g''it -C sub status", "git --exec-pa''th=. status"} {
+		if why := FloorIn(risky, line); why == "" {
+			t.Errorf("FloorIn(risky, %q) = \"\", want a refusal", line)
+		}
+	}
+}
+
 // Git's environment and exec path name programs whatever the config says.
 func TestFloorGitEnvAndExecPath(t *testing.T) {
 	clean := t.TempDir()

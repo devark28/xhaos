@@ -211,6 +211,12 @@ func TestGitDriverRiskGate(t *testing.T) {
 		{"no git word", risky, "grep -r external .", false},
 		{"git environment can name a driver", clean, "GIT_EXTERNAL_DIFF=./x git status", true},
 		{"git exec path can name a driver", clean, "git --exec-path=. status", true},
+		// Quote marks do not hide the word from the shell, so they must not hide it here.
+		{"quotes split git", risky, "g''it diff", true},
+		{"quotes split git in a log", risky, "gi\"\"t log -p", true},
+		{"quotes split git in -C", risky, "g''it -C sub status", true},
+		{"quotes split the exec path", clean, "git --exec-pa''th=. status", true},
+		{"quotes split GIT_", clean, "GIT_EXTERN''AL_DIFF=./x git status", true},
 		{"no repo", t.TempDir(), "git diff", false},
 		{"unknown root", "", "git diff", true},
 	}
