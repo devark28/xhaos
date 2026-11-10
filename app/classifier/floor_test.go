@@ -118,6 +118,10 @@ func TestFloor(t *testing.T) {
 		"brew install x", "brew install x >/dev/null 2>&1", "perl -pi -e 's/a/b/' main.go", "perl -e 'print 1'", "ruby -e 'puts 1'",
 		"perl scripts/x.pl", "perl -i.bak x", "cargo build --config 'target.x86_64-unknown-linux-gnu.linker=\"sh\"'", "cargo test --config=x",
 		"echo x | tee .git/config", "tee .npmrc < x", "tee out.txt .gitattributes",
+		// lua runs code given with -e or -l, a file, stdin (no arguments), or -i; sleep waits past the 2-minute limit
+		"lua -e 'os.execute(\"id\")'", "lua script.lua", "lua -l mod", "lua -i", "echo 'os.exit()' | lua", "lua", "luajit -e 'print(1)'", "/usr/bin/lua5.4 x.lua",
+		"sleep 100000", "sleep 120", "sleep 2m", "sleep 1h", "sleep 1d", "sleep 119 1", "sleep infinity", "sleep 1e9", "sleep 0x10", "true; sleep 100000",
+		"timeout 5 sleep 300", "sleep 60 60",
 		"xargs gh api repos/x/y", "xargs openssl s_client -connect example.com:443",
 		// go env -w and -u write the Go environment file; source and . run a file, except the venv activation; file -C compiles
 		"go env -w GOFLAGS=-toolexec=sh", "go env -u GOFLAGS", "source setup.sh", ". ./x.sh", ". scripts/env.sh",
@@ -186,6 +190,8 @@ func TestFloor(t *testing.T) {
 		"git config --get core.bare", "git config --list", "git config core.bare", "git config -l", "git config --get-regexp alias", "git -C sub config --get user.name",
 		"cp a.txt b.txt", "mv old.go new.go", "cp -r src/ dist/", "cp .git/config notes.txt", "install -m 644 a.go pkg/a.go",
 		"touch notes.txt", "sed -n 1p .git/config", "tar -tf x.tar", "tar -cf out.tar src", "ln -s src/shared link",
+		// lua -v only prints the version; sleep waits within the limit
+		"lua -v", "sleep 5", "sleep 0.5", "sleep 1m", "sleep .5", "sleep 119", "echo sleep 100000",
 	}
 	for _, c := range allowed {
 		if why := Floor(c); why != "" {

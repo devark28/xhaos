@@ -60,6 +60,11 @@ func installEvalTools(t *testing.T, root string) {
 			t.Fatal(err)
 		}
 	}
+	// A link out of the project, as the escape rows name it: the list must
+	// not judge a path through it (see ListedIn).
+	if err := os.Symlink("/etc", filepath.Join(root, "etc-link")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // evalPolicy is the agent policy the real path is scored under: the only one

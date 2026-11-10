@@ -191,3 +191,29 @@ func TestRunnerIsNeverAskedOfTheModel(t *testing.T) {
 		t.Error("an uninstalled tool must not be allowed")
 	}
 }
+
+// A word that names a symbolic link to a folder outside the project is not
+// listed, whatever the word looks like: npx eslint on a link to /etc reads
+// outside the project. A link to a file inside the project is still listed.
+func TestListRefusesALinkOutsideTheProject(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	installTools(t, root, "eslint")
+	if err := os.WriteFile(filepath.Join(root, "inside.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "etc-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "inside.js"), filepath.Join(root, "inside-link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"npx eslint etc-link", "npx eslint etc-link/", "npx eslint etc-link/x.js", "npx eslint . etc-link", "eslint etc-link"} {
+		if name, ok := ListedIn(root, cmd); ok {
+			t.Errorf("ListedIn(%q) listed as %q; a link to outside the project must not be", cmd, name)
+		}
+	}
+	if name, ok := ListedIn(root, "npx eslint inside-link"); !ok || name != "npx eslint" {
+		t.Errorf("ListedIn(link inside the project) = %q, %v; want listed", name, ok)
+	}
+}

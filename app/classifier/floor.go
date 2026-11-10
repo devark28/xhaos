@@ -3,6 +3,7 @@ package classifier
 import (
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/devark28/xhaos/app/tool"
@@ -100,9 +101,9 @@ var floor = []rule{
 	{"it fetches or changes Go modules, or runs a make install, deploy, publish or release target", func(c parsed) bool {
 		return after(c, is("go"), word("get")) || after(c, is("make"), word("install", "deploy", "publish", "release"))
 	}},
-	{"it runs a program named by a file, or code given on the command line (node, python, perl, ruby, deno, cargo run, go run, go generate)", func(c parsed) bool {
+	{"it runs a program named by a file, or code given on the command line (node, python, perl, ruby, lua, deno, cargo run, go run, go generate)", func(c parsed) bool {
 		return eachArgs(c, nodeName, nodeRuns) || eachArgs(c, pythonName, pythonRuns) ||
-			commandEach(c, perlName, perlRuns) || commandEach(c, rubyName, rubyRuns) ||
+			commandEach(c, perlName, perlRuns) || commandEach(c, rubyName, rubyRuns) || commandEach(c, luaName, luaRuns) ||
 			sub(c, is("deno"), "run", "eval", "x", "install") || sub(c, is("cargo"), "run") ||
 			sub(c, is("go"), "run", "generate")
 	}},
@@ -133,6 +134,9 @@ var floor = []rule{
 	}},
 	{"npm, pnpm and yarn run dev, start, serve or watch (npm start too), which run a server that does not end", func(c parsed) bool {
 		return serverRun(c) || sub(c, is("npm", "pnpm", "yarn"), "start")
+	}},
+	{"sleep waits longer than the bash tool's 2-minute limit (or forever), so the command is cut off", func(c parsed) bool {
+		return commandEach(c, is("sleep"), sleepTooLong)
 	}},
 	{"it downloads packages or modules from the network (npm view, pip download, cargo fetch, go mod download, tidy or vendor, go list -m -u)", func(c parsed) bool {
 		return sub(c, is("npm", "pnpm", "yarn", "bun"), "view", "info", "show", "search", "outdated", "audit", "update", "up", "exec", "x", "dlx", "ping", "dist-tag") ||
@@ -489,10 +493,59 @@ func pythonRuns(args []string) bool {
 var (
 	perlBase = regexp.MustCompile(`^perl[0-9.]*$`)
 	rubyBase = regexp.MustCompile(`^ruby[0-9.]*$`)
+	luaBase  = regexp.MustCompile(`^(lua|luajit)[0-9.]*$`)
 )
 
 func perlName(w string) bool { return perlBase.MatchString(path.Base(w)) }
 func rubyName(w string) bool { return rubyBase.MatchString(path.Base(w)) }
+func luaName(w string) bool  { return luaBase.MatchString(path.Base(w)) }
+
+// luaRuns is true when lua is given a file, "-", code (-e), a module to load
+// (-l), or -i, or when it has no arguments at all (it then reads its program
+// from stdin). lua -v only prints the version.
+func luaRuns(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	return codeFlagRuns("eli")(args)
+}
+
+// bashLimitSeconds is the bash tool's time limit (tool.bashTimeout, 2 minutes):
+// a command that waits longer is cut off.
+const bashLimitSeconds = 120
+
+// sleepTooLong is true when sleep's operands add up to the bash limit or more,
+// or when one of them is not a plain number of seconds (infinity, a bare word):
+// that wait ends only when it is cut off. Options are skipped.
+func sleepTooLong(args []string) bool {
+	total := 0.0
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		m := sleepOperand.FindStringSubmatch(a)
+		if m == nil {
+			return true
+		}
+		n, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			return true
+		}
+		switch m[2] {
+		case "m":
+			n *= 60
+		case "h":
+			n *= 3600
+		case "d":
+			n *= 86400
+		}
+		total += n
+	}
+	return total >= bashLimitSeconds
+}
+
+// sleepOperand is a sleep operand: a number and an optional suffix (s, m, h, d).
+var sleepOperand = regexp.MustCompile(`^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)([smhd]?)$`)
 
 // perlRuns is true when perl is given a file, "-", or code (-e, -E); -p and
 // -n only loop over input.
