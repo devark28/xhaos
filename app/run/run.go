@@ -297,6 +297,16 @@ func sshSetup(scratch string, keys []string, values map[string]string, use secre
 	return env, nil
 }
 
+// explainLater writes the classifier's reason for a call it allowed into the
+// call's tool state. It runs in the background, after the call was recorded
+// as allowed; the answer's time is not part of the call's wait.
+func (r *Runner) explainLater(ws string, agentID int64, callID string, req classifier.Request) {
+	text := r.Classifier.Explain(context.Background(), req)
+	if err := r.agents.SetToolReason(ws, agentID, callID, text); err != nil {
+		slog.Error("run: record the classifier's reason", "agent", agentID, "err", err)
+	}
+}
+
 func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
 	// While dangerously allowed, git is checked around each command: what it
 	// did to protected branches or the project's checkout is undone.
@@ -664,6 +674,8 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 		}
 		call, err := r.prepare(root, ws, a, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
+		explain := false // the classifier allowed it and its reason follows in the background
+		var creq classifier.Request
 		switch {
 		case reply.Stop == "max_tokens":
 			// The input may be cut off yet still parse; never run it.
@@ -687,7 +699,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				}
 			}
 			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy, Root: root}
-			creq := classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
+			creq = classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
 			if verdict == policy.Ask && r.Classifier != nil {
 				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model
 					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+classifier.ListReason(name), classifier.By
@@ -695,7 +707,8 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			}
 			if verdict == policy.Ask && r.Classifier != nil && classifier.Eligible(cc) {
 				if ok, why := r.Classifier.Decide(ctx, creq); ok {
-					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+why, classifier.By
+					verdict, reason, by = policy.Allow, why, classifier.By
+					explain = why == ""
 				} else if why != "" {
 					reason = "the local classifier asks: " + why
 				}
@@ -712,6 +725,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			}
 		}
 		record(d)
+		if explain && d.State == agent.ToolAllowed {
+			go r.explainLater(ws, a.ID, c.ID, creq)
+		}
 	}
 	if waiting {
 		_ = r.agents.SetStatus(ws, a.ID, agent.StatusAttention)
