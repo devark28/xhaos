@@ -7,75 +7,126 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
-// git diff, log and show run a program named by the project's own git config:
-// a diff.external program, a textconv or command driver, or an alias. Such a
-// read is not a read, so the gate asks for it when the project's config could
-// run one (see GitDriverRisk). Only the project's config is read; the owner's
-// global and system config is trusted as the owner's own.
+// git runs programs that the project's own git config names: a diff driver
+// (diff.external, textconv, command), a filter, the fsmonitor hook, an alias,
+// an include. Any git command can run one (status runs the fsmonitor and the
+// clean filters, blame runs a textconv, an alias runs a shell command), so
+// when a repo's config names one, a git command is not a read (see
+// GitDriverRisk). Only config in the project is read: the owner's global and
+// system config is trusted as the owner's own.
 
-// gitDriverReads are the git subcommands that run diff drivers.
-var gitDriverReads = map[string]bool{"diff": true, "log": true, "show": true}
+// gitWord matches git as a word of a command line (git, /usr/bin/git, the git
+// in $(git ...)); the .git folder of a path does not count.
+var gitWord = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])git(?:$|[^A-Za-z0-9_])`)
 
-// gitValueOpts are git's global options that take a separate value word.
-var gitValueOpts = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true}
+// maxScan bounds the walk for repos: a bigger tree counts as risky.
+const maxScan = 200000
 
-// GitDriverRisk reports whether line runs git diff, log or show and the
-// project folder root has git config that could run a program when they do.
+// GitDriverRisk reports whether line runs git and git could run a program the
+// project names: the config of a repo under root names one (see
+// ConfigRunsDrivers), or the line sets git's environment or its exec path,
+// which can name one too.
 func GitDriverRisk(root, line string) bool {
-	return runsGitDriverRead(line) && ConfigRunsDrivers(root)
+	if !gitWord.MatchString(line) {
+		return false
+	}
+	if strings.Contains(line, "GIT_") || strings.Contains(line, "--exec-path") {
+		return true
+	}
+	return ConfigRunsDrivers(root)
 }
 
-// runsGitDriverRead reports whether a simple command in line is git with diff,
-// log or show as its subcommand (the first word that is not an option).
-func runsGitDriverRead(line string) bool {
-	for _, part := range splitCommands(line) {
-		words, ok := shellWords(part)
-		if !ok {
-			continue
+// ConfigRunsDrivers reports whether a git repo under root (the .git folder or
+// file of root and of any folder below it: a command can cd or use -C into
+// any of them) could run a program in any git command. Its config and its
+// per-worktree config count, and so does the common config a worktree shares.
+// An unreadable file, a tree too large to check, or an empty root counts as
+// yes; a folder with no repo counts as no.
+func ConfigRunsDrivers(root string) bool {
+	if root == "" {
+		return true
+	}
+	risky, scanned := false, 0
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			risky = true // a folder that cannot be read may hold a repo
+			return nil
 		}
-		if len(words) == 0 || filepath.Base(words[0]) != "git" {
-			continue
+		if scanned++; scanned > maxScan {
+			risky = true
+			return fs.SkipAll
 		}
-		for i := 1; i < len(words); i++ {
-			w := words[i]
-			if gitValueOpts[w] { // -C <path>, -c <name=value>, ...: skip the value
-				i++
-				continue
-			}
-			if strings.HasPrefix(w, "-") {
-				continue
-			}
-			if gitDriverReads[w] {
-				return true
-			}
-			break
+		if d.Name() != ".git" {
+			return nil
+		}
+		if d.IsDir() {
+			risky = risky || gitDirConfigRuns(p)
+			return fs.SkipDir // its objects are not config
+		}
+		risky = risky || dotGitFileRuns(filepath.Dir(p), p)
+		return nil
+	})
+	return risky || err != nil
+}
+
+// dotGitFileRuns reports whether the repo of a .git file (a worktree or a
+// submodule, "gitdir: <path>"; dir is the folder that holds it) could run a
+// program. A gitdir that does not exist has no config to run.
+func dotGitFileRuns(dir, dotGit string) bool {
+	raw, err := os.ReadFile(dotGit)
+	if err != nil {
+		return true
+	}
+	gitdir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
+	if gitdir == "" {
+		return true
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	if _, err := os.Stat(gitdir); errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	return gitDirConfigRuns(gitdir)
+}
+
+// gitDirConfigRuns reports whether the config files of the git dir gitdir
+// could run a program: its own config and per-worktree config, and the common
+// config its commondir names (a worktree shares it).
+func gitDirConfigRuns(gitdir string) bool {
+	common := gitdir
+	raw, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	switch {
+	case err == nil:
+		common = strings.TrimSpace(string(raw))
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitdir, common)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return true
+	}
+	for _, path := range []string{
+		filepath.Join(gitdir, "config.worktree"),
+		filepath.Join(gitdir, "config"),
+		filepath.Join(common, "config"),
+	} {
+		if configFileRuns(path) {
+			return true
 		}
 	}
 	return false
 }
 
-// ConfigRunsDrivers reports whether the git config of the project at root could
-// run a program in git diff, log or show: diff.external, a diff section with
-// textconv or command, any alias, or an include (which can bring any of these
-// in). A missing .git folder has no project config and counts as no; an
-// unreadable config, or an empty root, counts as yes.
-func ConfigRunsDrivers(root string) bool {
-	if root == "" {
-		return true
-	}
-	path, ok, err := gitConfigPath(root)
-	if err != nil {
-		return true
-	}
-	if !ok {
-		return false
-	}
+// configFileRuns reports whether one config file could run a program. A file
+// that does not exist runs nothing; one that cannot be read may.
+func configFileRuns(path string) bool {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false // a .git folder with no config file: nothing to run
+		return false
 	}
 	if err != nil {
 		return true
@@ -84,42 +135,26 @@ func ConfigRunsDrivers(root string) bool {
 	return configRuns(f)
 }
 
-// gitConfigPath returns the config file of the repository at root: root/.git/config,
-// or for a worktree the common config its gitdir names. ok is false when root
-// has no .git at all; err is set when .git cannot be read.
-func gitConfigPath(root string) (path string, ok bool, err error) {
-	dot := filepath.Join(root, ".git")
-	fi, err := os.Stat(dot)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	if fi.IsDir() {
-		return filepath.Join(dot, "config"), true, nil
-	}
-	// A file: "gitdir: <path>" (a worktree or a submodule).
-	raw, err := os.ReadFile(dot)
-	if err != nil {
-		return "", false, err
-	}
-	gitdir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(root, gitdir)
-	}
-	if common, err := os.ReadFile(filepath.Join(gitdir, "commondir")); err == nil {
-		c := strings.TrimSpace(string(common))
-		if !filepath.IsAbs(c) {
-			c = filepath.Join(gitdir, c)
-		}
-		return filepath.Join(c, "config"), true, nil
-	}
-	return filepath.Join(gitdir, "config"), true, nil
+// runSections are sections whose every key can run a program or bring in more
+// config: an alias runs a shell command, an include adds config files.
+var runSections = map[string]bool{"alias": true, "include": true, "includeif": true, "pager": true}
+
+// runKeys are section.key pairs that name a program git runs (the section is
+// the name before any subsection, so filter "lfs" clean is filter.clean).
+var runKeys = map[string]bool{
+	"diff.external": true, "diff.textconv": true, "diff.command": true,
+	"filter.clean": true, "filter.smudge": true, "filter.process": true,
+	"merge.driver":   true,
+	"core.fsmonitor": true, "core.hookspath": true, "core.pager": true, "core.editor": true,
+	"core.sshcommand": true, "core.askpass": true, "core.gitproxy": true,
+	"credential.helper": true, "gpg.program": true, "sequence.editor": true,
+	"remote.uploadpack": true, "remote.receivepack": true, "remote.vcs": true,
 }
 
-// configRuns reports whether a git config file has a key or section that
-// makes a diff run a program. Keys are matched by name, case-insensitively.
+// configRuns reports whether a git config file could make git run a program:
+// a key in runKeys, any key of a runSections section, or a line git cannot
+// read. Section and key names are case-insensitive. A key on the same line as
+// its section header ([diff] external = x) counts.
 func configRuns(r io.Reader) bool {
 	sc := bufio.NewScanner(r)
 	section := ""
@@ -128,22 +163,30 @@ func configRuns(r io.Reader) bool {
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
-		if strings.HasPrefix(line, "[") {
-			hdr := strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
-			if i := strings.IndexAny(hdr, " \t\"."); i >= 0 {
-				hdr = hdr[:i]
+		if line[0] == '[' {
+			end := strings.IndexByte(line, ']')
+			if end < 0 {
+				return true // a header git may read another way
 			}
-			section = strings.ToLower(strings.TrimSpace(hdr))
-			if section == "alias" || section == "include" || section == "includeif" {
+			name := strings.ToLower(line[1:end])
+			if f := strings.FieldsFunc(name, func(r rune) bool { return r == ' ' || r == '\t' || r == '"' || r == '.' }); len(f) > 0 {
+				section = f[0]
+			} else {
+				section = ""
+			}
+			if runSections[section] {
 				return true
 			}
-			continue
+			line = strings.TrimSpace(line[end+1:])
+			if line == "" {
+				continue
+			}
 		}
 		key, _, _ := strings.Cut(line, "=")
 		key = strings.ToLower(strings.TrimSpace(key))
-		if section == "diff" && (key == "external" || key == "textconv" || key == "command") {
+		if runKeys[section+"."+key] {
 			return true
 		}
 	}
-	return sc.Err() != nil // unreadable part: risky
+	return sc.Err() != nil // an unreadable part: risky
 }

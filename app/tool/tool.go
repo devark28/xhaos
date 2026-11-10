@@ -328,6 +328,8 @@ func Resolve(root, rel string) (string, error) {
 }
 
 // insideGit reports whether path is in the project's .git directory.
+// insideGit reports whether path is inside a .git folder or is one, at the
+// root or in any subfolder.
 func insideGit(root, path string) bool {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -337,8 +339,9 @@ func insideGit(root, path string) bool {
 	if err != nil {
 		return false
 	}
-	first := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
-	return first == ".git"
+	// Any .git below the root counts: a repo in a subfolder has its own
+	// hooks and config.
+	return slices.Contains(strings.Split(filepath.ToSlash(rel), "/"), ".git")
 }
 
 func mustResolve(root, rel string) string { p, _ := Resolve(root, rel); return p }

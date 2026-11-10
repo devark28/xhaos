@@ -223,6 +223,15 @@ func TestWritesIntoGitAreRefused(t *testing.T) {
 	if _, err := Prepare(root, call("write_file", map[string]any{"path": ".gitignore", "content": "x\n"})); err != nil {
 		t.Fatalf(".gitignore refused: %v", err)
 	}
+	// A repo in a subfolder: its config and hooks are as protected as the root's.
+	for _, p := range []string{"sub/.git/config", "pkg/tool/.git/hooks/pre-commit", "sub/.git"} {
+		if _, err := Prepare(root, call("write_file", map[string]any{"path": p, "content": "x\n"})); err == nil {
+			t.Errorf("a write to %s was accepted", p)
+		}
+	}
+	if _, err := Prepare(root, call("write_file", map[string]any{"path": "sub/gitfiles/notes.txt", "content": "x\n"})); err != nil {
+		t.Errorf("a file named like git's folder but not .git was refused: %v", err)
+	}
 }
 
 func TestAskUserInput(t *testing.T) {

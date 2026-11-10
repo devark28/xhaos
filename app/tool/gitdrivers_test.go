@@ -44,7 +44,20 @@ func TestConfigRunsDrivers(t *testing.T) {
 		{"include", "[include]\n\tpath = ../other\n", true},
 		{"includeIf", "[includeIf \"gitdir:/x/\"]\n\tpath = ../other\n", true},
 		{"comment with the word", "# [alias] and external = x are comments\n[core]\n\tbare = false\n", false},
-		{"core pager is not a diff driver", "[core]\n\tpager = less\n", false},
+		{"core pager runs for output", "[core]\n\tpager = less\n", true},
+		{"fsmonitor hook", "[core]\n\tfsmonitor = ./hook\n", true},
+		{"fsmonitor boolean", "[core]\n\tfsmonitor\n", true},
+		{"hooksPath", "[core]\n\thooksPath = .githooks\n", true},
+		{"lfs-style clean filter", "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n", true},
+		{"smudge filter", "[filter \"x\"]\n\tSmudge = ./s\n", true},
+		{"merge driver", "[merge \"m\"]\n\tdriver = ./m %O\n", true},
+		{"credential helper", "[credential]\n\thelper = store\n", true},
+		{"same-line key after the header", "[diff] external = /tmp/x.sh\n", true},
+		{"same-line key after a subsection header", "[diff \"x\"] command = ./d\n", true},
+		{"a broken header", "[diff\n\texternal = x\n", true},
+		{"pager section", "[pager]\n\tdiff = cat\n", true},
+		{"a key that is not a driver", "[filter \"x\"]\n\trequired = true\n", false},
+		{"legacy dotted subsection", "[diff.x]\n\ttextconv = ./t\n", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -52,6 +65,51 @@ func TestConfigRunsDrivers(t *testing.T) {
 				t.Errorf("ConfigRunsDrivers = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// A command can cd or use -C into a nested repo, so every repo under the
+// project counts: a driver in a subfolder's repo is a driver.
+func TestConfigRunsDriversNestedRepos(t *testing.T) {
+	root := repo(t, "[core]\n\tbare = false\n")
+	sub := filepath.Join(root, "pkg", "tool", ".git")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "config"), []byte("[alias]\n\tx = !sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ConfigRunsDrivers(root) {
+		t.Error("a nested repo whose config has an alias: want true")
+	}
+	// A nested worktree-style .git file pointing at a risky gitdir.
+	gitdir := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(gitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "config"), []byte("[diff]\n\texternal = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clean := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(clean, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clean, "sub", ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ConfigRunsDrivers(clean) {
+		t.Error("a .git file whose gitdir sets diff.external: want true")
+	}
+}
+
+// A per-worktree config (extensions.worktreeConfig) is read too.
+func TestConfigRunsDriversWorktreeConfig(t *testing.T) {
+	root := repo(t, "[core]\n\tbare = false\n")
+	if err := os.WriteFile(filepath.Join(root, ".git", "config.worktree"), []byte("[core]\n\tfsmonitor = x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ConfigRunsDrivers(root) {
+		t.Error("config.worktree sets core.fsmonitor: want true")
 	}
 }
 
@@ -112,26 +170,26 @@ func TestConfigRunsDriversUnreadable(t *testing.T) {
 	}
 }
 
-func TestGitDriverRead(t *testing.T) {
+func TestGitWord(t *testing.T) {
 	cases := []struct {
 		line string
 		want bool
 	}{
 		{"git diff", true},
-		{"git log -p", true},
-		{"git show HEAD", true},
-		{"git -C sub log", true},
+		{"git status", true},
+		{"git -C sub blame x", true},
 		{"cd src && git diff --stat", true},
 		{"/usr/bin/git show", true},
-		{"git status", false},
-		{"git rev-parse HEAD", false},
-		{"git commit -m msg", false},
-		{"echo git diff", false},
+		{"time git log", true},
+		{"X=1 git rev-parse HEAD", true},
+		{"echo $(git status)", true},
+		{"cat .git/config", false},
 		{"grep -r diff .", false},
+		{"go test ./...", false},
 	}
 	for _, c := range cases {
-		if got := runsGitDriverRead(c.line); got != c.want {
-			t.Errorf("runsGitDriverRead(%q) = %v, want %v", c.line, got, c.want)
+		if got := gitWord.MatchString(c.line); got != c.want {
+			t.Errorf("gitWord(%q) = %v, want %v", c.line, got, c.want)
 		}
 	}
 }
@@ -145,8 +203,14 @@ func TestGitDriverRiskGate(t *testing.T) {
 	}{
 		{"diff with a driver", risky, "git diff", true},
 		{"log with a driver", risky, "git log --oneline", true},
-		{"status is never a driver run", risky, "git status", false},
+		{"status runs filters and fsmonitor too", risky, "git status", true},
+		{"blame with a driver", risky, "git -C sub blame x", true},
+		{"wrapped git with a driver", risky, "time git diff", true},
 		{"diff with a clean config", clean, "git diff", false},
+		{"status with a clean config", clean, "git status", false},
+		{"no git word", risky, "grep -r external .", false},
+		{"git environment can name a driver", clean, "GIT_EXTERNAL_DIFF=./x git status", true},
+		{"git exec path can name a driver", clean, "git --exec-path=. status", true},
 		{"no repo", t.TempDir(), "git diff", false},
 		{"unknown root", "", "git diff", true},
 	}
@@ -178,8 +242,11 @@ func TestPrepareGitReadEffect(t *testing.T) {
 	if got := prep(clean, "git diff"); got != Read {
 		t.Errorf("git diff with a clean project config: effect %s, want read", got)
 	}
-	if got := prep(risky, "git status"); got != Read {
-		t.Errorf("git status: effect %s, want read", got)
+	if got := prep(risky, "git status"); got != Exec {
+		t.Errorf("git status with a driver in the config: effect %s, want exec", got)
+	}
+	if got := prep(clean, "git status"); got != Read {
+		t.Errorf("git status with a clean config: effect %s, want read", got)
 	}
 }
 
