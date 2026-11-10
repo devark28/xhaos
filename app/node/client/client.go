@@ -76,16 +76,22 @@ func save(state string, c Config, key ed25519.PrivateKey) error {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath(state), []byte(hex.EncodeToString(key.Seed())+"\n"), 0o600); err != nil {
+	keyFile, configFile := Encode(c, key)
+	if err := os.WriteFile(keyPath(state), keyFile, 0o600); err != nil {
 		return err
 	}
+	return os.WriteFile(configPath(state), configFile, 0o600)
+}
+
+// Encode is what save writes: node.key and node.json.
+func Encode(c Config, key ed25519.PrivateKey) (keyFile, configFile []byte) {
 	raw, _ := json.MarshalIndent(c, "", "  ")
-	return os.WriteFile(configPath(state), append(raw, '\n'), 0o600)
+	return []byte(hex.EncodeToString(key.Seed()) + "\n"), append(raw, '\n')
 }
 
 // Leave forgets the server: deletes the key and the config.
 func Leave(state string) error {
-	for _, p := range []string{keyPath(state), configPath(state)} {
+	for _, p := range []string{keyPath(state), configPath(state), filepath.Join(state, ConnectedFile)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -141,34 +147,44 @@ func Join(ctx context.Context, state string, c Config, code, version string) (Co
 	if err := os.MkdirAll(c.Root, 0o755); err != nil {
 		return c, err
 	}
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+	c, key, err := Enroll(ctx, c, code, version)
 	if err != nil {
 		return c, err
 	}
+	return c, save(state, c, key)
+}
+
+// Enroll is Join's network half: it makes a key and joins with the code, but
+// touches no file (apply-usb runs as root and saves the result itself).
+func Enroll(ctx context.Context, c Config, code, version string) (Config, ed25519.PrivateKey, error) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return c, nil, err
+	}
 	conn, err := dial(ctx, c.Server)
 	if err != nil {
-		return c, err
+		return c, nil, err
 	}
 	defer conn.CloseNow()
 	facts := Facts(c, version)
 	if err := wsjson.Write(ctx, conn, wire.Msg{Type: wire.TJoin, Code: strings.TrimSpace(code), PublicKey: key.Public().(ed25519.PublicKey), Facts: &facts}); err != nil {
-		return c, err
+		return c, nil, err
 	}
 	var m wire.Msg
 	for m.Type == "" || m.Type == wire.TChallenge { // the server greets every connection with one
 		if err := wsjson.Read(ctx, conn, &m); err != nil {
-			return c, fmt.Errorf("joining: %w", err)
+			return c, nil, fmt.Errorf("joining: %w", err)
 		}
 	}
 	if m.Type == wire.TError {
-		return c, refusal{m.Error} // trying again will not help: Refused(err)
+		return c, nil, refusal{m.Error} // trying again will not help: Refused(err)
 	}
 	if m.Type != wire.TJoined || m.Node == 0 {
-		return c, fmt.Errorf("joining: unexpected answer %q", m.Type)
+		return c, nil, fmt.Errorf("joining: unexpected answer %q", m.Type)
 	}
 	c.Node, c.Name, c.Workspace = m.Node, m.Name, m.Workspace
 	conn.Close(websocket.StatusNormalClosure, "joined")
-	return c, save(state, c, key)
+	return c, key, nil
 }
 
 // Node serves one server, reconnecting as needed.
@@ -254,7 +270,14 @@ func (n *Node) session(ctx context.Context) error {
 		return fmt.Errorf("expected a challenge, got %q", m.Type)
 	}
 	facts := Facts(n.Config, n.Version)
-	if err := wsjson.Write(ctx, conn, wire.Msg{Type: wire.THello, Node: n.Config.Node, Sig: wire.Sign(n.Key, m.Nonce), Facts: &facts, Jobs: n.jobs.list()}); err != nil {
+	hello := wire.Msg{Type: wire.THello, Node: n.Config.Node, Sig: wire.Sign(n.Key, m.Nonce), Facts: &facts, Jobs: n.jobs.list()}
+	// The server reads at most wire.MaxHello before the node has proven
+	// itself: a long job list follows the welcome instead.
+	jobsLater := false
+	if raw, _ := json.Marshal(hello); len(raw) > wire.MaxHello-4096 {
+		hello.Jobs, jobsLater = nil, true
+	}
+	if err := wsjson.Write(ctx, conn, hello); err != nil {
 		return err
 	}
 	if err := wsjson.Read(ctx, conn, &m); err != nil {
@@ -271,9 +294,13 @@ func (n *Node) session(ctx context.Context) error {
 		return fmt.Errorf("expected welcome, got %q", m.Type)
 	}
 	n.Log.Printf("connected to %s as %s (node %d)", n.Config.Server, m.Name, n.Config.Node)
+	n.markConnected()
 	n.mu.Lock()
 	n.conn = conn
 	n.mu.Unlock()
+	if jobsLater {
+		n.sendJobs()
+	}
 	defer func() {
 		n.mu.Lock()
 		n.conn = nil
@@ -299,6 +326,25 @@ func (n *Node) session(ctx context.Context) error {
 		}
 	}()
 	return s.loop()
+}
+
+// ConnectedFile is written in the state folder after the node's first
+// welcome: a Pi's first boot waits for it before deleting its first-boot
+// files (the Wi-Fi password and the join code) from the card.
+const ConnectedFile = "connected"
+
+func (n *Node) markConnected() {
+	if n.State == "" {
+		return
+	}
+	p := filepath.Join(n.State, ConnectedFile)
+	if _, err := os.Lstat(p); err == nil {
+		return
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339) + " " + n.Config.Server + "\n"
+	if err := os.WriteFile(p, []byte(stamp), 0o600); err != nil {
+		n.Log.Printf("writing %s: %v", p, err)
+	}
 }
 
 // sendJobs tells the server the job list changed.

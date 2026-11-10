@@ -19,7 +19,7 @@ export interface NodeView {
 }
 export interface NodeList { url: string; note?: string; nodes: NodeView[] }
 export interface NodeNotice { id: number; state: NodeState; lastSeen?: string; facts?: NodeFacts; jobs: NodeJob[] }
-export interface PiSetup { hostname: string; user: string; sshKey: string; wifiSsid: string; wifiPassword: string; country: string }
+export interface PiSetup { hostname: string; user: string; sshKey: string; wifiSsid: string; wifiPassword: string; country: string; usbConfig: boolean }
 export interface NodeFile { name: string; content: string }
 // A join code, shown once: the command to run, or the Pi's first-boot files
 // and the command that flashes a card with them.

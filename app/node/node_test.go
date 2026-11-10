@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,11 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/devark28/xhaos/app/agent"
 	"github.com/devark28/xhaos/app/backend"
 	"github.com/devark28/xhaos/app/llm"
 	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/node/client"
+	"github.com/devark28/xhaos/app/node/wire"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/tool"
 )
@@ -111,8 +115,8 @@ func (e *env) join(t *testing.T, name string) (node.View, string) {
 	t.Cleanup(cancel)
 	for i := 0; ; i++ {
 		v := e.view(t, added.Node.ID)
-		if v.State == node.Online {
-			return v, nodeRoot
+		if _, err := os.Stat(filepath.Join(state, client.ConnectedFile)); v.State == node.Online && err == nil {
+			return v, nodeRoot // online, and the node wrote its "connected" file
 		}
 		if i > 200 {
 			t.Fatalf("node never came online: %+v", v)
@@ -190,7 +194,7 @@ func TestPiFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(added.Files) != 2 || added.Warning == "" || added.Command != node.FlashCommand || time.Until(added.Expires) < 59*time.Minute {
+	if len(added.Files) != 2 || added.Warning == "" || added.Command != node.FlashCommand("dev") || time.Until(added.Expires) < 59*time.Minute {
 		t.Fatalf("added = %+v", added)
 	}
 	user, net := added.Files[0].Content, added.Files[1].Content
@@ -199,13 +203,60 @@ func TestPiFiles(t *testing.T) {
 			t.Errorf("user-data lacks %q:\n%s", want, user)
 		}
 	}
-	for _, want := range []string{`"Lab \"5G\"":`, `password: "correct horse"`, `regulatory-domain: "RW"`} {
+	for _, want := range []string{`"Lab \"5G\"":`, `password: "correct horse"`, `regulatory-domain: "RW"`, "ethernets:"} {
 		if !strings.Contains(net, want) {
 			t.Errorf("network-config lacks %q:\n%s", want, net)
 		}
 	}
+	// Both files carry the same id, so flash-node.sh can tell a stale one.
+	stamp := func(s string) string {
+		for _, l := range strings.Split(s, "\n") {
+			if strings.HasPrefix(l, "# xhaos-node-files id=") {
+				return l
+			}
+		}
+		return ""
+	}
+	if a, b := stamp(user), stamp(net); a == "" || a != b || !strings.Contains(a, fmt.Sprintf("expires=%d ", added.Expires.Unix())) {
+		t.Errorf("stamps %q and %q", a, b)
+	}
+	if !strings.Contains(user, "/etc/cloud/cloud-init.disabled") || !strings.Contains(user, `rm -f \"$d/user-data\" \"$d/network-config\"`) || !strings.Contains(user, "/var/lib/xhaos-node/connected") {
+		t.Errorf("user-data does not clean the boot partition:\n%s", user)
+	}
+
+	// Wired: network-config is still written, with no Wi-Fi.
+	wired, err := e.s.Nodes.Add(node.AddRequest{WorkspaceID: ws, Name: "pi5", Pi: &node.PiSetup{Hostname: "pi5", UsbConfig: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(user, "--usb-config") || !strings.Contains(wired.Files[0].Content, "--usb-config") {
+		t.Error("--usb-config should follow the Pi form's checkbox")
+	}
+	if len(wired.Files) != 2 || wired.Files[1].Name != "network-config" || strings.Contains(wired.Files[1].Content, "wifis") || !strings.Contains(wired.Files[1].Content, "ethernets:") {
+		t.Errorf("wired files = %+v", wired.Files)
+	}
+	if stamp(wired.Files[0].Content) == stamp(user) {
+		t.Error("two nodes' files share an id")
+	}
 	if _, err := e.s.Nodes.Add(node.AddRequest{WorkspaceID: ws, Name: "bad", Pi: &node.PiSetup{Hostname: "bad_host"}}); err == nil {
 		t.Fatal("bad hostname accepted")
+	}
+}
+
+func TestScriptURLs(t *testing.T) {
+	for v, ref := range map[string]string{"v0.1.8": "v0.1.8", "v1.2.3-rc.1": "v1.2.3-rc.1", "dev": "main", "": "main", "v1; rm -rf /": "main", "0.1.8": "main"} {
+		if got, want := node.ScriptURL("install-node.sh", v), "https://raw.githubusercontent.com/devark28/xhaos/"+ref+"/install-node.sh"; got != want {
+			t.Errorf("%q: %s, want %s", v, got, want)
+		}
+	}
+	if c := node.InstallCommand("https://n.example", "AAAA-BBBB-CCCC", "v0.1.8"); !strings.Contains(c, "/v0.1.8/install-node.sh") || !strings.Contains(c, "--version v0.1.8") {
+		t.Error(c)
+	}
+	if c := node.InstallCommand("https://n.example", "AAAA-BBBB-CCCC", "v1; rm -rf /"); strings.Contains(c, "rm -rf") {
+		t.Error(c)
+	}
+	if c := node.FlashCommand("v0.1.8"); !strings.Contains(c, "/v0.1.8/flash-node.sh") {
+		t.Error(c)
 	}
 }
 
@@ -354,5 +405,91 @@ func TestRemovedNodeIsRefused(t *testing.T) {
 	list, _ := e.s.Nodes.Nodes(ws)
 	if len(list.Nodes) != 0 || e.s.NodeHub.Online(v.ID) {
 		t.Fatalf("still there: %+v", list)
+	}
+}
+
+// Wrong join codes slow down joins from an address, never a node with a good
+// key from the same address (a shared NAT), and its hello does not clear them.
+func TestJoinStrikesSpareGoodNodes(t *testing.T) {
+	e := setup(t)
+	v, _ := e.join(t, "pi5")
+	wrong := func() error {
+		_, err := client.Join(context.Background(), t.TempDir(), client.Config{Server: e.url, Root: t.TempDir()}, "AAAA-BBBB-CCCC", "test")
+		return err
+	}
+	for i := 0; i < 3; i++ {
+		if err := wrong(); err == nil || !client.Refused(err) || !strings.Contains(err.Error(), "wrong, used or expired") {
+			t.Fatalf("wrong code %d: %v", i, err)
+		}
+	}
+	if err := wrong(); err == nil || !strings.Contains(err.Error(), "too many wrong join codes") {
+		t.Fatalf("join while held back: %v", err)
+	}
+	// The joined node loses its connection and comes back from the same
+	// address while it is held back for joins.
+	e.s.NodeHub.Kick(v.ID)
+	offline := false
+	for i := 0; ; i++ {
+		st := e.view(t, v.ID).State
+		if st != node.Online {
+			offline = true
+		} else if offline {
+			break
+		}
+		if i > 500 {
+			t.Fatalf("the node did not reconnect (went offline: %v)", offline)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !e.s.NodeHub.JoinHeld("127.0.0.1") {
+		t.Fatal("a good hello cleared the join strikes")
+	}
+}
+
+// Sockets that have not proven themselves are capped, and read little.
+func TestPendingSockets(t *testing.T) {
+	e := setup(t)
+	u := "ws" + strings.TrimPrefix(e.url, "http") + wire.Path
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var open []*websocket.Conn
+	defer func() {
+		for _, c := range open {
+			c.CloseNow()
+		}
+	}()
+	for i := 0; i < node.MaxPending; i++ {
+		c, _, err := websocket.Dial(ctx, u, nil)
+		if err != nil {
+			t.Fatalf("socket %d: %v", i, err)
+		}
+		open = append(open, c)
+	}
+	_, resp, err := websocket.Dial(ctx, u, nil)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("socket %d: %v %v", node.MaxPending+1, resp, err)
+	}
+	// One that sends more than wire.MaxHello is cut off.
+	c := open[0]
+	var m wire.Msg
+	if err := wsjson.Read(ctx, c, &m); err != nil || m.Type != wire.TChallenge {
+		t.Fatalf("challenge: %+v %v", m, err)
+	}
+	big := wire.Msg{Type: wire.THello, Node: 1, Facts: &wire.Facts{Hostname: strings.Repeat("x", wire.MaxHello)}}
+	_ = wsjson.Write(ctx, c, big)
+	if err := wsjson.Read(ctx, c, &m); websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
+		t.Fatalf("oversized hello: %+v %v", m, err)
+	}
+	// Its place is free again.
+	for i := 0; ; i++ {
+		c, _, err := websocket.Dial(ctx, u, nil)
+		if err == nil {
+			open = append(open, c)
+			break
+		}
+		if i > 100 {
+			t.Fatalf("no place after one socket ended: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

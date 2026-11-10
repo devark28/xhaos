@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -30,15 +29,20 @@ import (
 // check: a node proves itself with its key, or joins with a code) and runs
 // requests on them.
 type Hub struct {
-	s      *Service
-	notify Notifier
-	limit  auth.Limiter // wrong codes and keys, per address
-	mu     sync.Mutex
-	conns  map[int64]*conn
+	s         *Service
+	notify    Notifier
+	joinLimit auth.Limiter  // wrong join codes, per address
+	pending   chan struct{} // sockets that have not proven themselves yet
+	mu        sync.Mutex
+	conns     map[int64]*conn
 }
 
+// MaxPending is how many node sockets may be open at once before they have
+// joined or proven their key; more are turned away until those finish.
+const MaxPending = 32
+
 func newHub(s *Service, live Notifier) *Hub {
-	return &Hub{s: s, notify: live, conns: map[int64]*conn{}}
+	return &Hub{s: s, notify: live, conns: map[int64]*conn{}, pending: make(chan struct{}, MaxPending)}
 }
 
 type liveNode struct {
@@ -107,11 +111,26 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	addr := auth.ClientAddr(r)
-	if wait := h.limit.Wait(addr, time.Now()); wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		http.Error(w, "too many wrong join codes or keys from this address; try again later", http.StatusTooManyRequests)
+	// Only join codes can be guessed, so only wrong codes count against an
+	// address, and only joins wait for them: a node with a good key is never
+	// held back by wrong codes from its address (a shared NAT), and its
+	// hello does not clear them. A failed hello is refused; a flood of
+	// sockets is bounded by MaxPending and wire.MaxHello.
+	select {
+	case h.pending <- struct{}{}:
+	default:
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many node connections are starting at once; try again shortly", http.StatusServiceUnavailable)
 		return
 	}
+	held := true
+	release := func() {
+		if held {
+			held = false
+			<-h.pending
+		}
+	}
+	defer release()
 	w = hijackable(w)
 	// The connection outlives the server's read and write timeouts.
 	rc := http.NewResponseController(w)
@@ -121,9 +140,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c.SetReadLimit(wire.MaxFrame + 64)
+	c.SetReadLimit(wire.MaxHello)
 	defer c.CloseNow()
-	h.serve(c, addr)
+	h.serve(c, addr, release)
 }
 
 // hijackable is the writer a WebSocket can take over: the server's own,
@@ -149,7 +168,9 @@ type refused struct{ why string }
 
 func (r refused) Error() string { return r.why }
 
-func (h *Hub) serve(c *websocket.Conn, addr string) {
+// serve runs one node socket; proven is called once the node has proven
+// itself (or the handshake ended), freeing its place among the pending.
+func (h *Hub) serve(c *websocket.Conn, addr string, proven func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	nonce := make([]byte, 32)
@@ -165,6 +186,11 @@ func (h *Hub) serve(c *websocket.Conn, addr string) {
 	}
 	switch m.Type {
 	case wire.TJoin:
+		if wait := h.joinLimit.Wait(addr, time.Now()); wait > 0 {
+			_ = wsjson.Write(hctx, c, wire.Msg{Type: wire.TError, Error: fmt.Sprintf("too many wrong join codes from this address: try again in %d s", int(wait.Seconds())+1)})
+			c.Close(websocket.StatusNormalClosure, "")
+			return
+		}
 		_ = wsjson.Write(hctx, c, h.join(addr, m))
 		c.Close(websocket.StatusNormalClosure, "")
 		return
@@ -173,7 +199,7 @@ func (h *Hub) serve(c *websocket.Conn, addr string) {
 		c.Close(websocket.StatusProtocolError, "expected join or hello")
 		return
 	}
-	nc, err := h.hello(hctx, c, addr, nonce, m)
+	nc, err := h.hello(hctx, c, nonce, m)
 	if err != nil {
 		var r refused
 		if errors.As(err, &r) {
@@ -186,6 +212,8 @@ func (h *Hub) serve(c *websocket.Conn, addr string) {
 		return
 	}
 	hcancel()
+	proven()
+	c.SetReadLimit(wire.MaxFrame + 64)
 	nc.run(ctx)
 }
 
@@ -212,7 +240,7 @@ func (h *Hub) join(addr string, m wire.Msg) wire.Msg {
 	err = tx.QueryRow(`SELECT n.id, n.workspace_id, n.name FROM node_codes c JOIN nodes n ON n.id = c.node_id
 		WHERE c.hash = ? AND c.expires_at > ? AND n.public_key IS NULL`, hashCode(m.Code), sqlitedb.Stamp(now)).Scan(&id, &ws, &name)
 	if errors.Is(err, sql.ErrNoRows) {
-		h.limit.Fail(addr, now)
+		h.joinLimit.Fail(addr, now)
 		return fail("this join code is wrong, used or expired: on Xhaos's Nodes tab, make a new code for the node")
 	}
 	if err != nil {
@@ -229,7 +257,7 @@ func (h *Hub) join(addr string, m wire.Msg) wire.Msg {
 	if err := tx.Commit(); err != nil {
 		return fail("server error")
 	}
-	h.limit.Clear(addr)
+	h.joinLimit.Clear(addr)
 	h.s.changed(ws, id)
 	return wire.Msg{Type: wire.TJoined, Node: id, Workspace: ws, Name: name}
 }
@@ -242,7 +270,7 @@ func protocolOf(f *wire.Facts) int {
 }
 
 // hello checks a joined node's signature and makes it the node's connection.
-func (h *Hub) hello(ctx context.Context, c *websocket.Conn, addr string, nonce []byte, m wire.Msg) (*conn, error) {
+func (h *Hub) hello(ctx context.Context, c *websocket.Conn, nonce []byte, m wire.Msg) (*conn, error) {
 	now := h.s.now()
 	var (
 		ws, name string
@@ -250,20 +278,17 @@ func (h *Hub) hello(ctx context.Context, c *websocket.Conn, addr string, nonce [
 	)
 	err := h.s.db.QueryRow(`SELECT workspace_id, name, public_key FROM nodes WHERE id = ?`, m.Node).Scan(&ws, &name, &key)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && key == nil) {
-		h.limit.Fail(addr, now)
 		return nil, refused{"this node is not on the server (it was removed): join again with a new code"}
 	}
 	if err != nil {
 		return nil, err
 	}
 	if !wire.Verify(ed25519.PublicKey(key), nonce, m.Sig) {
-		h.limit.Fail(addr, now)
 		return nil, refused{"this node's key does not match the one it joined with: join again with a new code"}
 	}
 	if protocolOf(m.Facts) != wire.Protocol {
 		return nil, refused{fmt.Sprintf("this xhaos-node speaks protocol %d, the server %d: install the same release as the server", protocolOf(m.Facts), wire.Protocol)}
 	}
-	h.limit.Clear(addr)
 	facts, _ := json.Marshal(m.Facts)
 	if _, err := h.s.db.Exec(`UPDATE nodes SET facts = ?, last_seen = ? WHERE id = ?`, string(facts), sqlitedb.Stamp(now), m.Node); err != nil {
 		return nil, err

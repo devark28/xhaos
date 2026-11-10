@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -235,8 +236,21 @@ func firstLine(out string, err error) string {
 
 // rejoin joins with the stick's code. The node's current key stays until the
 // new join has succeeded; the node keeps its folder, devices and sandbox mode.
+//
+// This runs as root, but the state folder and everything in it belong to the
+// xhaos-node user, who can run agents' commands: nothing read from there is
+// trusted with root's rights. node.json is read without following symlinks,
+// its folder is never created or chowned here (the node service makes it),
+// and the new files are written beside the old ones with O_NOFOLLOW|O_EXCL,
+// handed over with fchown and renamed into place.
 func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
-	cur, _, loadErr := client.Load(state)
+	dir, err := openState(state)
+	if err != nil {
+		r.fail("join: %v (was install-node.sh run here?)", err)
+		return
+	}
+	defer dir.close()
+	cur, loadErr := dir.config()
 	server := s.Server
 	if server == "" {
 		if loadErr != nil {
@@ -249,20 +263,15 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 	if cfg.Root == "" {
 		cfg.Root = filepath.Join(state, "xhaos-work")
 	}
-	owner, err := os.Stat(state)
-	if err != nil {
-		r.fail("join: %v (was install-node.sh run here?)", err)
+	if err := dir.checkRoot(cfg.Root); err != nil {
+		r.fail("join: %v. Nothing was changed; join by hand (xhaos-node leave, then install-node.sh or xhaos-node join).", err)
 		return
 	}
-	st := owner.Sys().(*syscall.Stat_t)
-	_, rootErr := os.Stat(cfg.Root)
 
-	tmp := filepath.Join(state, ".rejoin")
-	_ = os.RemoveAll(tmp)
-	defer os.RemoveAll(tmp)
 	var c client.Config
+	var key ed25519.PrivateKey
 	for attempt := 1; ; attempt++ {
-		c, err = client.Join(ctx, tmp, cfg, s.Code, version)
+		c, key, err = client.Enroll(ctx, cfg, s.Code, version)
 		if err == nil || client.Refused(err) || attempt == 12 || ctx.Err() != nil {
 			break
 		}
@@ -276,22 +285,20 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		r.fail("join %s: %v. This node keeps its old key.", server, err)
 		return
 	}
-	if errors.Is(rootErr, os.ErrNotExist) {
-		_ = os.Chown(cfg.Root, int(st.Uid), int(st.Gid))
+	keyFile, configFile := client.Encode(c, key)
+	files := []stateFile{{"node.key", keyFile}, {"node.json", configFile}}
+	if err := dir.stage(files); err != nil {
+		r.fail("join: saving the new key: %v. This node keeps its old key; the new entry on %s stays offline (remove it there).", err, c.Server)
+		return
 	}
 	// The service install-node.sh made, when there is one.
 	systemd := isDir("/run/systemd/system") && exists("/etc/systemd/system/xhaos-node.service")
 	if systemd {
 		_, _ = command(ctx, "systemctl", "stop", "xhaos-node")
 	}
-	for _, name := range []string{"node.key", "node.json"} {
-		if err := os.Chown(filepath.Join(tmp, name), int(st.Uid), int(st.Gid)); err == nil {
-			err = os.Rename(filepath.Join(tmp, name), filepath.Join(state, name))
-		}
-		if err != nil {
-			r.fail("join: saving %s: %v", name, err)
-			return
-		}
+	if err := dir.commit(files); err != nil {
+		r.fail("join: saving the new key: %v", err)
+		return
 	}
 	r.line("Joined %s as %s (node %d).", c.Server, c.Name, c.Node)
 	if loadErr == nil && (cur.Server != c.Server || cur.Node != c.Node) {
@@ -303,6 +310,140 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 			r.fail("starting xhaos-node: %v %s", err, out)
 		}
 	}
+}
+
+// stateDir is the node's state folder, opened once (not followed if it is a
+// symlink); every file in it is reached relative to that descriptor.
+type stateDir struct {
+	path     string
+	fd       int
+	uid, gid int
+}
+
+type stateFile struct {
+	name    string
+	content []byte
+}
+
+func openState(path string) (*stateDir, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return &stateDir{path: path, fd: fd, uid: int(st.Uid), gid: int(st.Gid)}, nil
+}
+
+func (d *stateDir) close() { unix.Close(d.fd) }
+
+// config reads node.json; a symlink or anything but a small file is refused,
+// and errors never quote its content (it might be another file's).
+func (d *stateDir) config() (client.Config, error) {
+	var c client.Config
+	fd, err := unix.Openat(d.fd, "node.json", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return c, fmt.Errorf("node.json: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), filepath.Join(d.path, "node.json"))
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return c, err
+	}
+	if !fi.Mode().IsRegular() {
+		return c, errors.New("node.json is not a file")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return c, err
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return client.Config{}, errors.New("node.json is not a node config")
+	}
+	return c, nil
+}
+
+// checkRoot vets node.json's folder for agents before root joins with it:
+// an absolute path that is either a real folder of the node's user, or not
+// there yet and inside the state folder (the node service then makes it).
+// Anything else (a system folder, a symlink, someone else's) is refused.
+func (d *stateDir) checkRoot(root string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return fmt.Errorf("node.json's folder %q is not a clean absolute path", root)
+	}
+	var st unix.Stat_t
+	err := unix.Lstat(root, &st)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		if !strings.HasPrefix(root, filepath.Clean(d.path)+"/") {
+			return fmt.Errorf("node.json's folder %s does not exist and is outside %s", root, d.path)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("node.json's folder %s: %w", root, err)
+	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
+		return fmt.Errorf("node.json's folder %s is not a folder (a symlink?)", root)
+	case int(st.Uid) != d.uid:
+		return fmt.Errorf("node.json's folder %s does not belong to the node's user (uid %d)", root, d.uid)
+	}
+	return nil
+}
+
+func stagedName(name string) string { return "." + name + ".rejoin" }
+
+// stage writes each file beside its final name, owned by the node's user. A
+// leftover (or planted) staged name is removed first; O_EXCL|O_NOFOLLOW then
+// makes sure the file written is the one just created, never a link's target.
+func (d *stateDir) stage(files []stateFile) error {
+	for _, f := range files {
+		if err := d.stageOne(f); err != nil {
+			d.unstage(files)
+			return fmt.Errorf("%s: %w", f.name, err)
+		}
+	}
+	return nil
+}
+
+func (d *stateDir) stageOne(f stateFile) error {
+	tmp := stagedName(f.name)
+	if err := unix.Unlinkat(d.fd, tmp, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	fd, err := unix.Openat(d.fd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), tmp)
+	defer file.Close()
+	if err := unix.Fchown(fd, d.uid, d.gid); err != nil {
+		return err
+	}
+	if _, err := file.Write(f.content); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func (d *stateDir) unstage(files []stateFile) {
+	for _, f := range files {
+		_ = unix.Unlinkat(d.fd, stagedName(f.name), 0)
+	}
+}
+
+// commit renames the staged files over the old ones (a rename replaces a
+// symlink, it does not write through it).
+func (d *stateDir) commit(files []stateFile) error {
+	for _, f := range files {
+		if err := unix.Renameat(d.fd, stagedName(f.name), d.fd, f.name); err != nil {
+			d.unstage(files)
+			return fmt.Errorf("%s: %w", f.name, err)
+		}
+	}
+	return unix.Fsync(d.fd)
 }
 
 func exists(p string) bool {
@@ -329,7 +470,7 @@ func describeNode(r *report, state string) {
 	if out, err := command(context.Background(), "nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"); err == nil && out != "" {
 		r.line("Active connections: %s", strings.ReplaceAll(out, "\n", ", "))
 	}
-	if c, _, err := client.Load(state); err == nil {
+	if c, err := nodeConfig(state); err == nil {
 		r.line("Node: %s (#%d) of %s", c.Name, c.Node, c.Server)
 	} else {
 		r.line("Node: not joined")
@@ -338,6 +479,15 @@ func describeNode(r *report, state string) {
 		out, _ := command(context.Background(), "systemctl", "is-active", "xhaos-node")
 		r.line("Service xhaos-node: %s", out)
 	}
+}
+
+func nodeConfig(state string) (client.Config, error) {
+	d, err := openState(state)
+	if err != nil {
+		return client.Config{}, err
+	}
+	defer d.close()
+	return d.config()
 }
 
 func addresses() []string {

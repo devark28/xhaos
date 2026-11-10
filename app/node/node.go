@@ -277,7 +277,8 @@ type PiSetup struct {
 	SSHKey       string `json:"sshKey"` // optional: a public key for the owner's login
 	WifiSSID     string `json:"wifiSsid"`
 	WifiPassword string `json:"wifiPassword"`
-	Country      string `json:"country"` // ISO 3166 code, e.g. GB, RW
+	Country      string `json:"country"`   // ISO 3166 code, e.g. GB, RW
+	UsbConfig    bool   `json:"usbConfig"` // install-node.sh --usb-config: XHAOS sticks may change Wi-Fi and server
 }
 
 type AddRequest struct {
@@ -415,9 +416,11 @@ func (s *Service) code(ws string, id int64, pi *PiSetup) (Added, error) {
 	}
 	out := Added{Node: v, Code: code, Expires: exp, Command: InstallCommand(s.URL, code, s.Version)}
 	if pi != nil {
-		out.Files = piFiles(*pi, s.URL, code, s.Version)
-		out.Command = FlashCommand
-		out.Warning = "These files hold your Wi-Fi password and this join code in plain text, on a partition any computer can read, and they stay on the card after the first boot. The code works once and expires in 1 hour, used or not."
+		id := make([]byte, 8)
+		_, _ = rand.Read(id)
+		out.Files = piFiles(*pi, s.URL, code, s.Version, hex.EncodeToString(id), exp)
+		out.Command = FlashCommand(s.Version)
+		out.Warning = "These files hold your Wi-Fi password and this join code in plain text, on a partition any computer can read, until the Pi has joined (it then deletes them from the card). The code works once and expires in 1 hour, used or not."
 	}
 	return out, nil
 }
@@ -426,23 +429,35 @@ func (s *Service) code(ws string, id int64, pi *PiSetup) (Added, error) {
 // creates the xhaos-node user and its service). A release server pins the
 // node to its own release, so both speak the same protocol.
 func InstallCommand(url, code, version string) string {
-	return "curl -fsSL " + InstallScriptURL + " | sudo sh -s -- " + installArgs(url, code, version)
+	return "curl -fsSL " + ScriptURL("install-node.sh", version) + " | sudo sh -s -- " + installArgs(url, code, version)
 }
 
 func installArgs(url, code, version string) string {
 	args := fmt.Sprintf("--server %s --code %s", url, code)
-	if strings.HasPrefix(version, "v") {
+	if releaseRE.MatchString(version) {
 		args += " --version " + version
 	}
 	return args
 }
 
-// InstallScriptURL is where install-node.sh is downloaded from.
-const InstallScriptURL = "https://raw.githubusercontent.com/devark28/xhaos/main/install-node.sh"
+// ScriptURL is where a node script (install-node.sh, flash-node.sh) is
+// downloaded from: the server's own release tag, so a release server never
+// hands root a script from a moving branch; main only for development builds.
+func ScriptURL(name, version string) string {
+	ref := "main"
+	if releaseRE.MatchString(version) {
+		ref = version
+	}
+	return "https://raw.githubusercontent.com/devark28/xhaos/" + ref + "/" + name
+}
+
+var releaseRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$`)
 
 // FlashCommand writes Raspberry Pi OS and a Pi's first-boot files (from the
 // downloads folder) to an SD card on a Linux computer, the Pi's Command.
-const FlashCommand = "curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/flash-node.sh | sudo sh -s -- --files ~/Downloads"
+func FlashCommand(version string) string {
+	return "curl -fsSL " + ScriptURL("flash-node.sh", version) + " | sudo sh -s -- --files ~/Downloads"
+}
 
 type UpdateRequest struct {
 	WorkspaceID string   `json:"workspaceId"`

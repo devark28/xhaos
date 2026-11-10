@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/devark28/xhaos/app/apperr"
 )
@@ -58,10 +59,41 @@ func q(s string) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func piFiles(p PiSetup, url, code, version string) []File {
+// piStamp is the line both first-boot files carry: flash-node.sh refuses a
+// pair whose ids differ (one is left over from another node) or whose code
+// has expired.
+func piStamp(id string, name string, expires time.Time) string {
+	return fmt.Sprintf("# xhaos-node-files id=%s expires=%d node=%s (the join code expires %s)\n",
+		id, expires.Unix(), name, expires.UTC().Format("2006-01-02 15:04 UTC"))
+}
+
+// piCleanup runs after the install. Once the node has joined and been
+// welcomed by the server (xhaos-node writes its "connected" file), the Wi-Fi
+// password and the join code leave the card's boot partition, and cloud-init
+// is turned off so it does not take the missing files for a new machine (new
+// SSH host keys) on the next boot; the network stays, as netplan renders
+// cloud-init's saved config on every boot by itself. The copies of the
+// password that remain are made root-only. If the node never connects, the
+// files stay, and the log says how to remove them.
+const piCleanup = `log() { logger -t xhaos-node "$*" 2>/dev/null || true; echo "xhaos-node: $*"; }
+i=0; while [ ! -f /var/lib/xhaos-node/connected ] && [ $i -lt 60 ]; do sleep 5; i=$((i+1)); done
+if [ ! -f /var/lib/xhaos-node/connected ]; then
+  log "the node has not connected to the server, so user-data and network-config stay on the card's boot partition (they hold the Wi-Fi password and the join code). Remove them by hand: sudo rm -f /boot/firmware/user-data /boot/firmware/network-config"
+  exit 0
+fi
+for d in /boot/firmware /boot; do rm -f "$d/user-data" "$d/network-config"; done
+touch /etc/cloud/cloud-init.disabled
+chmod go-rwx /etc/netplan/*.yaml /etc/NetworkManager/system-connections/* /run/NetworkManager/system-connections/* 2>/dev/null || true
+sync
+log "the node is connected: deleted user-data and network-config from the boot partition and turned cloud-init off"`
+
+func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File {
+	stamp := piStamp(id, p.Hostname, expires)
 	var u strings.Builder
 	u.WriteString("#cloud-config\n")
+	u.WriteString(stamp)
 	u.WriteString("# Made by Xhaos for node " + q(p.Hostname) + ". Holds a one-time join code: it works once, for 1 hour.\n")
+	u.WriteString("# Once the node has joined, it deletes this file and network-config from the card.\n")
 	fmt.Fprintf(&u, "hostname: %s\nmanage_etc_hosts: true\n\n", q(p.Hostname))
 	u.WriteString("users:\n")
 	fmt.Fprintf(&u, "  - name: %s\n", q(p.User))
@@ -74,14 +106,23 @@ func piFiles(p PiSetup, url, code, version string) []File {
 		u.WriteString("\nenable_ssh: true\nssh_pwauth: false\n")
 	}
 	// The network may come up after runcmd starts: retry for ten minutes.
-	install := fmt.Sprintf("for i in $(seq 1 60); do curl -fsSL %s | sh -s -- %s && break; sleep 10; done", InstallScriptURL, installArgs(url, code, version))
+	args := installArgs(url, code, version)
+	if p.UsbConfig {
+		args += " --usb-config"
+	}
+	install := fmt.Sprintf("for i in $(seq 1 60); do curl -fsSL %s | sh -s -- %s && break; sleep 10; done", ScriptURL("install-node.sh", version), args)
 	u.WriteString("\nruncmd:\n")
 	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(install))
+	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(piCleanup))
 
-	files := []File{{Name: "user-data", Content: u.String()}}
+	// Always written: an older network-config left in the downloads folder
+	// (another network's password) must never go on the card instead.
+	var n strings.Builder
+	n.WriteString(stamp)
+	n.WriteString("network:\n  version: 2\n")
+	n.WriteString("  ethernets:\n    renderer: NetworkManager\n    wired:\n      match:\n        name: \"e*\"\n      dhcp4: true\n      optional: true\n")
 	if p.WifiSSID != "" {
-		var n strings.Builder
-		n.WriteString("network:\n  version: 2\n  wifis:\n    renderer: NetworkManager\n    wlan0:\n      dhcp4: true\n")
+		n.WriteString("  wifis:\n    renderer: NetworkManager\n    wlan0:\n      dhcp4: true\n")
 		fmt.Fprintf(&n, "      regulatory-domain: %s\n", q(p.Country))
 		n.WriteString("      access-points:\n")
 		fmt.Fprintf(&n, "        %s:\n", q(p.WifiSSID))
@@ -89,7 +130,6 @@ func piFiles(p PiSetup, url, code, version string) []File {
 			fmt.Fprintf(&n, "          password: %s\n", q(p.WifiPassword))
 		}
 		n.WriteString("      optional: true\n")
-		files = append(files, File{Name: "network-config", Content: n.String()})
 	}
-	return files
+	return []File{{Name: "user-data", Content: u.String()}, {Name: "network-config", Content: n.String()}}
 }

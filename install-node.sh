@@ -2,7 +2,10 @@
 # Xhaos node installer: makes this Linux machine a node of an Xhaos server,
 # so its agents can run commands and copy files here (docs/nodes.md).
 #
-#   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install-node.sh | sudo sh -s -- --server https://xhaos.example.com --code XXXX-XXXX-XXXX
+#   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/vX.Y.Z/install-node.sh | sudo sh -s -- --server https://xhaos.example.com --code XXXX-XXXX-XXXX --version vX.Y.Z
+#
+# (The Nodes tab gives this command with the server's own release in place of
+# vX.Y.Z; a development server's uses main.)
 #
 # Installs xhaos-node from the GitHub release (checked against the release's
 # SHA256SUMS), creates the unprivileged xhaos-node user (no sudo) and its
@@ -17,14 +20,16 @@
 #   --unsandboxed      run commands without Landlock: only for kernels without it;
 #                      agents can then reach everything the xhaos-node user can
 #   --version vX.Y.Z   install that release instead of the latest
-#   --no-usb-config    do not apply XHAOS USB sticks (see below)
+#   --usb-config       apply XHAOS USB sticks (see below); off unless given
+#   --no-usb-config    stop applying them
 #   --help
 #
-# With systemd, plugging in a USB stick labelled XHAOS that holds
-# xhaos-node.conf applies its settings (new Wi-Fi, joining again) and writes
-# xhaos-node-result.txt back to it (docs/nodes.md, "USB stick config"). Anyone
-# who can plug a stick in can then move the node to their own server: on a
-# machine where that matters more than easy setup, pass --no-usb-config.
+# With --usb-config (and systemd), plugging in a USB stick labelled XHAOS
+# that holds xhaos-node.conf applies its settings (new Wi-Fi, joining again)
+# and writes xhaos-node-result.txt back to it (docs/nodes.md, "USB stick
+# config"). Anyone who can plug a stick in can then change the node's Wi-Fi
+# and move it to their own server, so it is off by default. A re-run without
+# either option keeps the current choice.
 #
 # Environment (mostly for testing): XHAOS_BASE_URL (where release archives
 # are downloaded from).
@@ -36,7 +41,7 @@ USER_NAME=xhaos-node
 STATE=/var/lib/xhaos-node
 UNIT=/etc/systemd/system/xhaos-node.service
 BASE_URL=${XHAOS_BASE_URL:-https://github.com/$REPO/releases/download}
-VERSION=latest SERVER="" CODE="" ROOT="" DEVICES="" UNSANDBOXED=no USB_CONFIG=yes
+VERSION=latest SERVER="" CODE="" ROOT="" DEVICES="" UNSANDBOXED=no USB_CONFIG=""
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
@@ -53,7 +58,9 @@ install-node.sh --server URL --code CODE [options]   (as root)
   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
   --unsandboxed      run commands without Landlock (kernels without it only)
   --version vX.Y.Z   install that release instead of the latest
-  --no-usb-config    do not apply XHAOS USB sticks (new Wi-Fi or join code by USB)
+  --usb-config       apply USB sticks labelled XHAOS (new Wi-Fi or join code by USB):
+                     anyone with such a stick can then change the Wi-Fi and the server
+  --no-usb-config    stop applying them (the default for a new install)
 
 Run again without --code to update xhaos-node.
 EOF
@@ -70,6 +77,7 @@ while [ $# -gt 0 ]; do
     --device) shift; DEVICES="$DEVICES ${1:-}" ;;
     --device=*) DEVICES="$DEVICES ${1#--device=}" ;;
     --unsandboxed) UNSANDBOXED=yes ;;
+    --usb-config) USB_CONFIG=yes ;;
     --no-usb-config) USB_CONFIG=no ;;
     --version) shift; VERSION=${1:-latest} ;;
     --version=*) VERSION=${1#--version=} ;;
@@ -207,6 +215,9 @@ systemctl enable xhaos-node >/dev/null 2>&1 || true
 # stays unprivileged).
 USB_RULE=/etc/udev/rules.d/90-xhaos-node-usb.rules
 USB_UNIT=/etc/systemd/system/xhaos-node-usb@.service
+if [ -z "$USB_CONFIG" ]; then # a re-run keeps the choice; a new install has it off
+  if [ -e "$USB_UNIT" ]; then USB_CONFIG=yes; else USB_CONFIG=no; fi
+fi
 if [ "$USB_CONFIG" = yes ]; then
   cat >"$TMP/rule" <<'RULE'
 # Managed by install-node.sh: a stick labelled XHAOS applies its xhaos-node.conf (docs/nodes.md).
@@ -238,6 +249,8 @@ elif [ -e "$USB_RULE" ] || [ -e "$USB_UNIT" ]; then
   systemctl daemon-reload
   udevadm control --reload-rules 2>/dev/null || true
   say "USB stick settings are off (--no-usb-config)."
+else
+  say "USB stick settings are off (--usb-config turns them on)."
 fi
 systemctl restart xhaos-node
 sleep 2

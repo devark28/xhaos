@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,8 +105,128 @@ func TestApplyRejoin(t *testing.T) {
 	if !strings.Contains(res, "Joined "+server) || strings.Contains(read(t, filepath.Join(dir, usbconf.FileName)), code) {
 		t.Errorf("result:\n%s", res)
 	}
-	if _, err := os.Stat(filepath.Join(state, ".rejoin")); !os.IsNotExist(err) {
-		t.Errorf("the temporary join folder is left: %v", err)
+	for _, name := range []string{"node.key", "node.json"} {
+		if _, err := os.Lstat(filepath.Join(state, stagedName(name))); !os.IsNotExist(err) {
+			t.Errorf("staged %s is left: %v", name, err)
+		}
 	}
 	t.Log(res)
+}
+
+// joinedState is a state folder whose node.json has the given root.
+func joinedState(t *testing.T, root string) string {
+	t.Helper()
+	state := t.TempDir()
+	raw, _ := json.Marshal(client.Config{Server: "http://127.0.0.1:1", Node: 7, Name: "pi", Root: root})
+	if err := os.WriteFile(filepath.Join(state, "node.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// A node.json written by the node's user must not steer root: a folder
+// outside the state folder that is not the user's own is refused before
+// anything is joined, created or chowned.
+func TestRejoinRefusesForeignRoot(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{
+		"/etc/systemd/system/xhaos-node-usb@.service.d", // missing, outside the state folder
+		"/etc", // exists, root's (when the test runs as another user)
+		link,   // a symlink
+		"relative/work",
+		"/tmp/../etc",
+	} {
+		if root == "/etc" && os.Geteuid() == 0 {
+			continue
+		}
+		state := joinedState(t, root)
+		dir := stick(t, "code=ABCD-EFGH-JKMN\n")
+		if applyDir(context.Background(), dir, state) {
+			t.Fatalf("root %s: accepted", root)
+		}
+		res := read(t, filepath.Join(dir, usbconf.ResultName))
+		if !strings.Contains(res, "node.json's folder") || !strings.Contains(res, "Nothing was changed") {
+			t.Errorf("root %s: result:\n%s", root, res)
+		}
+		if _, err := os.Lstat("/etc/systemd/system/xhaos-node-usb@.service.d"); err == nil && root == "/etc/systemd/system/xhaos-node-usb@.service.d" {
+			t.Errorf("root %s was created", root)
+		}
+	}
+}
+
+func TestCheckRootAccepts(t *testing.T) {
+	state := t.TempDir()
+	d, err := openState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	own := t.TempDir() // the test user's, like the node user's own folder
+	for _, root := range []string{filepath.Join(state, "xhaos-work"), own} {
+		if err := d.checkRoot(root); err != nil {
+			t.Errorf("%s: %v", root, err)
+		}
+	}
+}
+
+// Symlinks the node's user plants in the state folder (at the final names or
+// the staged ones) are replaced, never written through.
+func TestStageIgnoresSymlinks(t *testing.T) {
+	state := t.TempDir()
+	victims := t.TempDir()
+	for _, name := range []string{"node.key", stagedName("node.key"), "node.json", stagedName("node.json")} {
+		victim := filepath.Join(victims, name)
+		if err := os.WriteFile(victim, []byte("precious\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(victim, filepath.Join(state, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := openState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	if _, err := d.config(); err == nil {
+		t.Error("node.json through a symlink was read")
+	}
+	files := []stateFile{{"node.key", []byte("new key\n")}, {"node.json", []byte("{}\n")}}
+	if err := d.stage(files); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.commit(files); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(victims)
+	for _, e := range ents {
+		if got := read(t, filepath.Join(victims, e.Name())); got != "precious\n" {
+			t.Errorf("%s was written through a symlink: %q", e.Name(), got)
+		}
+	}
+	for _, f := range files {
+		fi, err := os.Lstat(filepath.Join(state, f.name))
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s: %v %v", f.name, fi, err)
+		}
+		if got := read(t, filepath.Join(state, f.name)); got != string(f.content) {
+			t.Errorf("%s = %q", f.name, got)
+		}
+		if _, err := os.Lstat(filepath.Join(state, stagedName(f.name))); !os.IsNotExist(err) {
+			t.Errorf("staged %s left: %v", f.name, err)
+		}
+	}
+}
+
+func TestStateFolderSymlinkRefused(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openState(link); err == nil {
+		t.Error("a state folder that is a symlink was opened")
+	}
 }

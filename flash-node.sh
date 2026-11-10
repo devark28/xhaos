@@ -3,14 +3,19 @@
 # a node's first-boot files on it, so the Pi joins Xhaos on its first boot
 # with no screen or keyboard (docs/nodes.md, "Easier blind setup").
 #
-#   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/flash-node.sh | sudo sh -s -- --files ~/Downloads
+#   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/vX.Y.Z/flash-node.sh | sudo sh -s -- --files ~/Downloads
+#
+# (The Nodes tab gives this command with the server's own release in place of
+# vX.Y.Z; a development server's uses main.)
 #
 # --files is the folder holding the user-data and network-config downloaded
 # from Nodes → Add node → Raspberry Pi. The image comes from
 # downloads.raspberrypi.com, is checked against its published SHA-256 and is
 # kept in /var/cache/xhaos-node for the next card. Only removable or USB disks
-# that hold no mounted system folder are offered, and the chosen disk's name
-# must be typed to erase it.
+# (and SD cards, never a built-in eMMC) that hold no mounted system folder are
+# offered, and the chosen disk's name must be typed to erase it. The two files
+# must be one pair (the same id) whose join code has not expired, so files
+# left over from another node are never copied.
 #
 # Options:
 #   --files DIR      folder with user-data and network-config (required)
@@ -95,11 +100,20 @@ why_not() {
   esac
   rm=$(lsblk -dno RM "$dev" | tr -d ' ')
   tran=$(lsblk -dno TRAN "$dev" | tr -d ' ')
-  case $dev in /dev/mmcblk*) tran=${tran:-mmc} ;; esac
-  if [ "$rm" != 1 ] && [ "$tran" != usb ] && [ "$tran" != mmc ]; then
-    say "$dev is a fixed ${tran:-internal} disk, not a removable, USB or SD card one"
-    return
-  fi
+  case $dev in
+    /dev/mmcblk*)
+      # An SD card, or the computer's own eMMC (type MMC, not removable).
+      mmc=$(cat "/sys/block/${dev#/dev/}/device/type" 2>/dev/null || true)
+      if [ "$rm" != 1 ] && [ "$mmc" != SD ]; then
+        say "$dev is a built-in ${mmc:-MMC} disk (eMMC), not an SD card"
+        return
+      fi ;;
+    *)
+      if [ "$rm" != 1 ] && [ "$tran" != usb ]; then
+        say "$dev is a fixed ${tran:-internal} disk, not a removable, USB or SD card one"
+        return
+      fi ;;
+  esac
   for t in $(lsblk -nlpo TYPE "$dev"); do
     case $t in disk|part) ;; *) say "$dev holds a $t device (LVM, RAID or encryption); close it first"; return ;; esac
   done
@@ -140,9 +154,32 @@ fi
 [ -f "$FILES/user-data" ] || die "no user-data in $FILES (a browser may have saved it as user-data.txt or user-data (1): rename it)"
 [ -f "$FILES/network-config" ] || die "no network-config in $FILES (a browser may have saved it as network-config.txt: rename it)"
 [ "$(head -n 1 "$FILES/user-data")" = "#cloud-config" ] || die "$FILES/user-data is not a cloud-init file (its first line should be #cloud-config)"
+
+# The pair: both files carry the same "# xhaos-node-files id=… expires=…"
+# line. A browser that finds an older file saves the new one as
+# "user-data (1)" or "user-data.txt": then the old one would be copied.
+stamp() { grep -m 1 '^# xhaos-node-files id=' "$1" 2>/dev/null || true; }
+field() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
+for f in user-data network-config; do
+  for other in "$FILES/$f"?* "$FILES/$f".*; do
+    [ -f "$other" ] || continue
+    if [ -n "$(find "$other" -prune -newer "$FILES/$f")" ]; then
+      die "$other is newer than $FILES/$f: the browser kept an older $f. Delete the old files, rename the new ones to user-data and network-config, and run again."
+    fi
+  done
+done
+user_stamp=$(stamp "$FILES/user-data")
+net_stamp=$(stamp "$FILES/network-config")
+[ -n "$user_stamp" ] || die "$FILES/user-data has no xhaos-node-files line: make new files on the Nodes tab (Pi files)"
+[ -n "$net_stamp" ] || die "$FILES/network-config has no xhaos-node-files line: it is not from Xhaos, or from an older Xhaos; make new files on the Nodes tab"
+[ "$(field "$user_stamp" id)" = "$(field "$net_stamp" id)" ] || die "user-data and network-config in $FILES were made for different nodes or at different times (their ids differ): delete both and download them again"
+expires=$(field "$user_stamp" expires)
+case $expires in ''|*[!0-9]*) die "$FILES/user-data has a broken xhaos-node-files line" ;; esac
+[ "$expires" -gt "$(date +%s)" ] || die "the join code in $FILES/user-data has expired (codes last an hour): on the Nodes tab, make new Pi files"
+say "First-boot files for node $(field "$user_stamp" node); the join code expires in $(( (expires - $(date +%s)) / 60 )) minutes."
 if [ "$YES" = yes ] && [ -z "$DISK" ]; then die "--yes needs --disk: the disk to erase must be named"; fi
 for tool in curl sha256sum xz dd mount umount; do has $tool || die "needs $tool"; done
-if [ -z "$DISK" ] && [ "$YES" = no ] && ! { : </dev/tty; } 2>/dev/null; then
+if [ -z "$DISK" ] && [ "$YES" = no ] && ! (: </dev/tty) 2>/dev/null; then
   die "no terminal to choose the disk on: pass --disk /dev/sdX --yes"
 fi
 
@@ -294,4 +331,5 @@ if has eject; then eject "$DISK" 2>/dev/null || true; fi
 step "Done"
 say "Put the card in the Pi and power it. It joins on its first boot (a Pi Zero 2 W takes a few minutes);"
 say "its card on the Nodes tab turns online. The join code works once and expires an hour after it was made."
-say "The card's boot partition still holds the Wi-Fi password in plain text."
+say "Until the node has joined, the card's boot partition holds the Wi-Fi password and the join code in plain text;"
+say "once it is connected, the Pi deletes both files (a deleted file may still be recoverable from the card)."

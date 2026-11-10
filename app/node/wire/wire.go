@@ -26,6 +26,7 @@ const Protocol = 1
 // Limits.
 const (
 	MaxFrame    = 1 << 20   // largest frame either side reads
+	MaxHello    = 64 << 10  // largest frame the server reads before a node has proven itself
 	Chunk       = 256 << 10 // file data per binary frame
 	MaxCopy     = 1 << 30   // bytes in one copy (a file, or a folder's tar)
 	MaxJobLog   = 10 << 20  // a job's output kept on the node (the newest bytes)

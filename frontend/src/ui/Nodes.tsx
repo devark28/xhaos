@@ -80,10 +80,10 @@ function AddForm({ names, onAdded, onCancel }: { names: NodeView[]; onAdded(out:
   );
 }
 
-const blankPi: PiSetup = { hostname: '', user: 'pi', sshKey: '', wifiSsid: '', wifiPassword: '', country: '' };
+const blankPi: PiSetup = { hostname: '', user: 'pi', sshKey: '', wifiSsid: '', wifiPassword: '', country: '', usbConfig: false };
 
 function PiFields({ setup, onChange }: { setup: PiSetup; onChange(next: PiSetup): void }) {
-  const set = (key: keyof PiSetup) => (e: { target: { value: string } }) => onChange({ ...setup, [key]: e.target.value });
+  const set = (key: Exclude<keyof PiSetup, 'usbConfig'>) => (e: { target: { value: string } }) => onChange({ ...setup, [key]: e.target.value });
   return <>
     <Field label="Hostname"><input value={setup.hostname} onChange={set('hostname')} placeholder="pi5" data-pi-hostname {...stylex.props(s.input, s.mono)} /></Field>
     <Field label="User" hint="Your login on the Pi. It has no password: sign in with the SSH key below."><input value={setup.user} onChange={set('user')} data-pi-user {...stylex.props(s.input, s.mono)} /></Field>
@@ -95,6 +95,8 @@ function PiFields({ setup, onChange }: { setup: PiSetup; onChange(next: PiSetup)
       <Field label="Wi-Fi password" hint="Written into the files in plain text; not kept by Xhaos."><input type="password" autoComplete="off" value={setup.wifiPassword} onChange={set('wifiPassword')} data-pi-pass {...stylex.props(s.input)} /></Field>
       <Field label="Country" hint="Where the Pi is used, as a two-letter code (GB, RW, US): Wi-Fi channels depend on it."><input value={setup.country} onChange={set('country')} maxLength={2} placeholder="RW" data-pi-country {...stylex.props(s.input, s.mono, s.short)} /></Field>
     </>}
+    <Toggle name="pi-usb-config" label="USB stick settings" on={setup.usbConfig} onChange={on => onChange({ ...setup, usbConfig: on })}
+      hint="Lets a USB stick labelled XHAOS give the Pi a new Wi-Fi network or join code later, with no screen or SSH. Anyone who can plug a stick labelled XHAOS into the Pi can then change its Wi-Fi and move it to another server. Off: change them over SSH." />
   </>;
 }
 
