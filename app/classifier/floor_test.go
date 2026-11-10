@@ -102,6 +102,14 @@ func TestFloor(t *testing.T) {
 		// redirects into .git, node_modules and tool config files
 		"echo hi > .git/config", "echo x >> node_modules/.bin/x", "echo x > .npmrc", "printf x >| .gitattributes",
 		"echo x &> Makefile", "echo x > sub/.gitconfig", "echo x > .git",
+		// git config writes: a value, or a change to the config
+		"git config alias.x '!sh'", "git config core.fsmonitor true", "git config --add a b", "git config --unset core.x",
+		"git -C sub config user.name x y", "git config -e", "git config --remove-section alias", "git config -f x.cfg core.a b",
+		// copies, moves, links and in-place edits into .git, node_modules and tool config files
+		"cp x .git/hooks/pre-commit", "mv x .git/config", "install -m 755 x .git/hooks/pre-commit", "ln -s /tmp/x .git/config",
+		"cp -t .git/hooks x", "cp --target-directory=.git/hooks x", "cp -tnode_modules x", "cp x Makefile", "mv a.txt .npmrc",
+		"touch .git/config", "touch notes.txt .gitattributes",
+		"echo ok && cp x .git/hooks/post-commit", "true; mv x node_modules/.bin/tsc",
 		// gh and openssl s_client reach other machines
 		"gh pr create --title x", "gh api repos/x", "gh auth status", "time gh issue list", "openssl s_client -connect example.com:443",
 		// package installs by brew, code on the command line of perl and ruby, perl -i, cargo --config, tee into protected files
@@ -172,6 +180,10 @@ func TestFloor(t *testing.T) {
 		"file x.txt", "file -b x.txt",
 		// env and go env as arguments, not commands
 		"echo env go", "echo go env -w", "grep env .env", "echo go env -u",
+		// copies, moves and in-place edits inside the project, and tar listings
+		"git config --get core.bare", "git config --list", "git config core.bare", "git config -l", "git config --get-regexp alias", "git -C sub config --get user.name",
+		"cp a.txt b.txt", "mv old.go new.go", "cp -r src/ dist/", "cp .git/config notes.txt", "install -m 644 a.go pkg/a.go",
+		"touch notes.txt", "sed -n 1p .git/config", "tar -tf x.tar", "tar -cf out.tar src", "ln -s src/shared link",
 	}
 	for _, c := range allowed {
 		if why := Floor(c); why != "" {
@@ -180,8 +192,8 @@ func TestFloor(t *testing.T) {
 	}
 }
 
-// git diff, log and show are refused only when the project's own git config
-// could run a diff driver; with a clean config, or with no project folder,
+// A git command is refused only when the project's own git config could run a
+// program in it; with a clean config, or with no project folder,
 // the rule does not apply (the gate asks for an unknown folder).
 func TestFloorGitDriverNeedsProject(t *testing.T) {
 	risky := t.TempDir()
@@ -197,7 +209,7 @@ func TestFloorGitDriverNeedsProject(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, line := range []string{"git diff", "git log --oneline", "git show HEAD", "cd src && git diff --stat"} {
+	for _, line := range []string{"git diff", "git log --oneline", "git show HEAD", "cd src && git diff --stat", "git status", "git blame x"} {
 		if why := FloorIn(risky, line); why == "" {
 			t.Errorf("FloorIn(risky, %q) = \"\", want a refusal", line)
 		}
@@ -208,7 +220,34 @@ func TestFloorGitDriverNeedsProject(t *testing.T) {
 			t.Errorf("FloorIn(\"\", %q) = %q, want \"\" (no folder known)", line, why)
 		}
 	}
-	if why := FloorIn(risky, "git status"); why != "" {
-		t.Errorf("FloorIn(risky, git status) = %q, want \"\"", why)
+}
+
+// Git's environment and exec path name programs whatever the config says.
+func TestFloorGitEnvAndExecPath(t *testing.T) {
+	clean := t.TempDir()
+	os.MkdirAll(filepath.Join(clean, ".git"), 0o755)
+	os.WriteFile(filepath.Join(clean, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+	for _, line := range []string{"GIT_EXTERNAL_DIFF=./x git status", "git --exec-path=. status"} {
+		if why := FloorIn(clean, line); why == "" {
+			t.Errorf("FloorIn(clean, %q) = \"\", want a refusal", line)
+		}
+	}
+}
+
+// A wrapper hides nothing, and a repo in a subfolder counts (a command can cd
+// or use -C into it), when a config names a program.
+func TestFloorGitWrappersAndNestedRepos(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(root, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+	sub := filepath.Join(root, "sub", ".git")
+	os.MkdirAll(sub, 0o755)
+	os.WriteFile(filepath.Join(sub, "config"), []byte("[alias]\n\tx = !sh\n"), 0o644)
+	// Any risky repo under the project refuses every git command there: a
+	// shell can change folder in ways the words do not show.
+	for _, line := range []string{"git status", "git -C sub status", "cd sub && git status", "time git -C sub blame x", "X=1 git -C sub log"} {
+		if why := FloorIn(root, line); why == "" {
+			t.Errorf("FloorIn(root, %q) = \"\", want a refusal (sub has an alias)", line)
+		}
 	}
 }

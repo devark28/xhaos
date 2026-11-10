@@ -20,9 +20,10 @@ import (
 // read safely ($ expansions other than $TMPDIR, backticks, brace expansion,
 // eval, a pipe into a shell) matches too.
 
-// gitDriverWhy is the floor's reason for git diff, log and show when the
-// project's git config could run a diff driver (see tool.GitDriverRisk).
-const gitDriverWhy = "git diff, log and show run a diff program that the project's git config names (diff.external, a textconv or command driver, an alias)"
+// gitDriverWhy is the floor's reason for a git command when the project's git
+// config could run a program in it, or git's environment or exec path names
+// one (see tool.GitDriverRisk).
+const gitDriverWhy = "git runs a program that the project's git config or git's environment names (a diff driver, filter, fsmonitor hook, alias, or GIT_* setting)"
 
 // rule is one row of the floor: why it refuses, and when.
 type rule struct {
@@ -154,6 +155,12 @@ var floor = []rule{
 	{"a shell, python, node, perl or ruby reads its program from stdin (a heredoc, a here-string, a process substitution, a file on stdin, a pipe, -s, or no script file)", stdinCode},
 	{"a redirect or tee writes into .git, node_modules, or a tool config file (.npmrc, .gitattributes, .gitconfig, Makefile)", func(c parsed) bool {
 		return redirectsToProtected(c) || commandEach(c, is("tee"), teeProtected)
+	}},
+	{"git config writes a value or changes the config (a key with a value can name a program: an alias, core.fsmonitor)", func(c parsed) bool {
+		return eachArgs(c, is("git"), gitConfigWrite)
+	}},
+	{"a copy, move, install, link or touch writes into .git, node_modules, or a tool config file", func(c parsed) bool {
+		return commandEach(c, is("cp", "mv", "install", "ln"), copyToProtected) || commandEach(c, is("touch"), anyProtected)
 	}},
 	{"gh talks to GitHub (any command but --version, help)", func(c parsed) bool {
 		return commandEach(c, is("gh"), ghReaches)
@@ -519,6 +526,48 @@ func teeProtected(args []string) bool {
 	return false
 }
 
+// copyToProtected is true when a copy, move, install or link writes into a
+// protected file or folder: its last operand, or the folder -t names.
+func copyToProtected(args []string) bool {
+	last := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-t" || a == "--target-directory":
+			i++
+			if i < len(args) && protectedFile.MatchString(args[i]) {
+				return true
+			}
+			continue
+		case strings.HasPrefix(a, "--target-directory="):
+			if protectedFile.MatchString(strings.TrimPrefix(a, "--target-directory=")) {
+				return true
+			}
+			continue
+		case strings.HasPrefix(a, "-t") && !strings.HasPrefix(a, "--"):
+			if protectedFile.MatchString(a[2:]) {
+				return true
+			}
+			continue
+		case strings.HasPrefix(a, "-"):
+			continue
+		}
+		last = a
+	}
+	return protectedFile.MatchString(last)
+}
+
+// anyProtected is true when a file operand (a word that is not an option)
+// names a protected file.
+func anyProtected(args []string) bool {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") && protectedFile.MatchString(a) {
+			return true
+		}
+	}
+	return false
+}
+
 // envRuns is true when env is given anything but NAME=value assignments, so it
 // runs a program (bare env only prints).
 func envRuns(args []string) bool {
@@ -685,6 +734,42 @@ func gitConfigOption(args []string) bool {
 		}
 	}
 	return false
+}
+
+// gitConfigWrite is true when git's subcommand (its arguments after the
+// global options) is config and config is given a write (see configWrites).
+func gitConfigWrite(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case gitValueOpts[a]: // -C dir and the like: skip the value
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			return a == "config" && configWrites(args[i+1:])
+		}
+	}
+	return false
+}
+
+// configWrites is true when git config's arguments write: a key with a value
+// (git config key value), or an option that adds, unsets, renames, removes or
+// edits. A key alone, and --get, --list and -l, read.
+func configWrites(args []string) bool {
+	reads, positional := false, 0
+	for _, a := range args {
+		switch {
+		case a == "--add" || a == "--replace-all" || a == "--unset" || a == "--unset-all" ||
+			a == "--remove-section" || a == "--rename-section" || a == "-e" || a == "--edit":
+			return true
+		case strings.HasPrefix(a, "--get") || a == "--list" || a == "-l":
+			reads = true
+		case strings.HasPrefix(a, "-"):
+		default:
+			positional++
+		}
+	}
+	return !reads && positional >= 2
 }
 
 // gitValueOpts are git's global options that take their value as the next
