@@ -280,3 +280,109 @@ func TestGitConfigOptionIsExec(t *testing.T) {
 		t.Errorf("ClassifyCommand(git status) = %s, want read", got)
 	}
 }
+// git reads config from outside the project when HOME, XDG_CONFIG_HOME or
+// --git-dir say so, and a command that moves it out of the project with cd or
+// -C does too: such a command is risky whatever the project's config says.
+func TestGitDriverRiskOutsideConfig(t *testing.T) {
+	root := repo(t, "[core]\n\tbare = false\n")
+	for _, line := range []string{
+		"HOME=. git diff",
+		"XDG_CONFIG_HOME=. git status",
+		"env HOME=/tmp/h git log",
+		"git --git-dir=/tmp/bare --work-tree=. status",
+		"git --work-tree=. status",
+		"cd .. && git status",
+		"cd /tmp && git status",
+		"git -C /tmp status",
+		"git -C ../other status",
+		"cd - && git status",
+		"git -C ~/other status",
+		"git -C $HOME/x status",
+	} {
+		if !GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = false, want true", line)
+		}
+	}
+	for _, line := range []string{"git status", "git -C sub status", "cd sub && git diff", "git log -1", "echo HOME is here && git status"} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false (clean project)", line)
+		}
+	}
+}
+
+// A folder with a bare repo's HEAD, objects and refs is a repo that git can
+// enter with -C or cd, though its name is not .git: its config counts.
+func TestConfigRunsDriversBareGitDir(t *testing.T) {
+	bare := func(config string) string {
+		root := repo(t, "[core]\n\tbare = false\n")
+		evil := filepath.Join(root, "evil")
+		for _, d := range []string{"objects", "refs"} {
+			if err := os.MkdirAll(filepath.Join(evil, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(evil, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(evil, "config"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	if ConfigRunsDrivers(bare("[core]\n\tbare = true\n")) {
+		t.Error("a bare folder with a clean config: want false")
+	}
+	root := bare("[core]\n\tfsmonitor = ./hook\n")
+	if !ConfigRunsDrivers(root) {
+		t.Error("a bare folder whose config names an fsmonitor hook: want true")
+	}
+	if !GitDriverRisk(root, "git -C evil status") {
+		t.Error("git -C into the bare folder: want risky")
+	}
+}
+
+// git can enter a folder that is a symlink to one outside the project, and
+// the walk does not follow links: such a link counts as risky. A link inside
+// the project, or a dangling one, does not.
+func TestConfigRunsDriversSymlinks(t *testing.T) {
+	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	outside := t.TempDir()
+	root := repo(t, "[core]\n\tbare = false\n")
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if !ConfigRunsDrivers(root) {
+		t.Error("a link to a folder outside the project: want risky")
+	}
+	inside := repo(t, "[core]\n\tbare = false\n")
+	if err := os.MkdirAll(filepath.Join(inside, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(inside, "real"), filepath.Join(inside, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(inside, "missing"), filepath.Join(inside, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	if ConfigRunsDrivers(inside) {
+		t.Error("links inside the project and a dangling link: want false")
+	}
+}
+
+// A project folder that is itself a link is still a project: the walk starts
+// at the folder it points to, so the repo inside is checked.
+func TestConfigRunsDriversSymlinkedRoot(t *testing.T) {
+	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	real := repo(t, "[diff]\n\texternal = ./x\n")
+	link := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if !ConfigRunsDrivers(link) {
+		t.Error("a project folder that is a link to a repo with a driver: want risky")
+	}
+}

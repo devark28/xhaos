@@ -272,3 +272,21 @@ func TestFloorGitWrappersAndNestedRepos(t *testing.T) {
 		}
 	}
 }
+// HOME and XDG_CONFIG_HOME point git at config outside the project: refused by
+// the git driver rule, whatever the project's config says. A --git-dir, cd or
+// -C outside the project is refused by the path rule (and by GitDriverRisk).
+func TestFloorGitOutsideConfig(t *testing.T) {
+	clean := t.TempDir()
+	os.MkdirAll(filepath.Join(clean, ".git"), 0o755)
+	os.WriteFile(filepath.Join(clean, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+	for _, line := range []string{"HOME=. git diff", "XDG_CONFIG_HOME=. git diff"} {
+		if why := FloorIn(clean, line); why != gitDriverWhy {
+			t.Errorf("FloorIn(clean, %q) = %q, want the git driver refusal", line, why)
+		}
+	}
+	for _, line := range []string{"git --git-dir=/tmp/bare --work-tree=. status", "cd .. && git status", "git -C /tmp status"} {
+		if why := FloorIn(clean, line); why == "" {
+			t.Errorf("FloorIn(clean, %q) = \"\", want a refusal", line)
+		}
+	}
+}

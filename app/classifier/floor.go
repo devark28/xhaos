@@ -24,7 +24,7 @@ import (
 // gitDriverWhy is the floor's reason for a git command when the project's git
 // config could run a program in it, or git's environment or exec path names
 // one (see tool.GitDriverRisk).
-const gitDriverWhy = "git runs a program that the project's git config or git's environment names (a diff driver, filter, fsmonitor hook, alias, or GIT_* setting)"
+const gitDriverWhy = "git runs a program that the project's git config or git's environment names (a diff driver, filter, fsmonitor hook, alias, or GIT_* setting), or reads config from outside the project (HOME, --git-dir, cd or -C out of it)"
 
 // rule is one row of the floor: why it refuses, and when.
 type rule struct {
