@@ -17,7 +17,7 @@ func mounts(args []string) []string {
 		case "--ro-bind", "--ro-bind-try", "--bind", "--bind-try", "--dev-bind", "--dev-bind-try", "--symlink":
 			out = append(out, args[i]+" "+args[i+2])
 			i += 2
-		case "--tmpfs", "--proc", "--dev":
+		case "--tmpfs", "--proc", "--dev", "--remount-ro":
 			out = append(out, args[i]+" "+args[i+1])
 			i++
 		}
@@ -42,11 +42,11 @@ func TestBwrapArgs(t *testing.T) {
 	args := bwrapArgs(p, "/opt/xhaos-node", false)
 	got := mounts(args)
 	want := []string{
-		"--tmpfs /tmp", "--proc /proc", "--dev /dev",
+		"--tmpfs /tmp", "--proc /proc", "--dev /dev", "--tmpfs /dev/shm",
+		"--dev-bind-try /dev/video0", "--remount-ro /dev", // devices before /dev turns read-only
 		"--ro-bind /usr", "--symlink " + link, "--ro-bind /etc",
 		"--ro-bind-try /opt/xhaos-node", // /etc/hostname is in /etc already
 		"--bind-try " + root,
-		"--dev-bind-try /dev/video0",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("mounts =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
@@ -67,7 +67,7 @@ func TestBwrapArgs(t *testing.T) {
 		t.Error("--disable-userns only when bwrap has it")
 	}
 	open := bwrapArgs(policy{Read: []string{"/usr"}, Write: []string{root, "/dev"}}, "/x", false)
-	if got := mounts(open); !slices.Contains(got, "--dev-bind /dev") || slices.Contains(got, "--dev /dev") {
+	if got := mounts(open); !slices.Contains(got, "--dev-bind /dev") || slices.Contains(got, "--dev /dev") || slices.Contains(got, "--remount-ro /dev") {
 		t.Errorf("open devices = %v", got)
 	}
 }
@@ -88,7 +88,7 @@ func TestBwrapArgsNameEachPathOnce(t *testing.T) {
 		Write: []string{filepath.Join(dir, "work")},
 	}
 	got := mounts(bwrapArgs(p, filepath.Join(usr, "bin", "xhaos-node"), false))
-	want := []string{"--tmpfs /tmp", "--proc /proc", "--dev /dev", "--ro-bind " + usr, "--symlink " + bin, "--symlink " + sbin, "--bind-try " + filepath.Join(dir, "work")}
+	want := []string{"--tmpfs /tmp", "--proc /proc", "--dev /dev", "--tmpfs /dev/shm", "--remount-ro /dev", "--ro-bind " + usr, "--symlink " + bin, "--symlink " + sbin, "--bind-try " + filepath.Join(dir, "work")}
 	if !slices.Equal(got, want) {
 		t.Errorf("mounts =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
@@ -172,7 +172,12 @@ func TestBwrapCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(dir, "cache", "home"))
 	ok("$TMPDIR is kept between commands", "echo build log > $TMPDIR/build.log", "")
 	ok("… and read by the next one", "cat $TMPDIR/build.log", "build log")
-	ok("devices", "echo x > /dev/null && head -c 1 /dev/full | wc -c", "1")
+	ok("devices", "echo x > /dev/null && head -c 1 /dev/urandom | wc -c", "1")
+	// /dev/full is bound as a granted device: after /dev turned read-only it
+	// still opens for writing (the device answers, not the file system).
+	ok("a granted device after the remount", "echo x > /dev/full 2>&1; head -c 1 /dev/full | wc -c", "No space left")
+	ok("a writable /dev/shm", "echo x > /dev/shm/a && cat /dev/shm/a", "x")
+	ok("pseudo-terminals", "ls /dev/pts/ptmx && echo pts", "pts")
 	ok("the sandbox marker", "echo $XHAOS_SANDBOX", "1")
 	ok("no controlling terminal", "{ : < /dev/tty; } 2>/dev/null || echo no tty", "no tty")
 	ok("names resolve", "getent hosts github.com >/dev/null && echo resolved", "resolved")

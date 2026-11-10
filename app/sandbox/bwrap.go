@@ -169,9 +169,20 @@ func bwrapArgs(p policy, self string, noUserns bool) []string {
 	if devOpen {
 		args = append(args, "--dev-bind", "/dev", "/dev")
 	} else {
-		// null, zero, full, random, urandom, tty, ptmx and pts, and a private
-		// shm: what commonDevices names (plus /dev/full, harmless).
-		args = append(args, "--dev", "/dev")
+		// null, zero, full, random, urandom, tty, ptmx and pts: what
+		// commonDevices names (plus /dev/full, harmless), a writable private
+		// shm, and the granted devices; then /dev itself is made read-only,
+		// so a command cannot create files there (as under Landlock). The
+		// remount is not recursive: shm, pts and the devices bound here keep
+		// their own mounts, and they are bound before it (the mount points
+		// are made in /dev).
+		args = append(args, "--dev", "/dev", "--tmpfs", "/dev/shm")
+		for _, d := range p.Devices {
+			if !slices.Contains(commonDevices, d) {
+				args = append(args, "--dev-bind-try", d, d)
+			}
+		}
+		args = append(args, "--remount-ro", "/dev")
 	}
 	inside := func(path string, dirs []string) bool {
 		for _, d := range dirs {
@@ -233,13 +244,6 @@ func bwrapArgs(p policy, self string, noUserns bool) []string {
 	}
 	for _, w := range write {
 		args = append(args, "--bind-try", w, w)
-	}
-	if !devOpen {
-		for _, d := range p.Devices {
-			if !slices.Contains(commonDevices, d) {
-				args = append(args, "--dev-bind-try", d, d)
-			}
-		}
 	}
 	return args
 }
