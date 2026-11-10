@@ -45,6 +45,27 @@ nodes.example.com {
 
 Xhaos learns this address from `-node-url https://nodes.example.com` (with `-public-host nodes.example.com`, so the WebSocket's `Host` is accepted). The join command and the Raspberry Pi files carry that URL; **Add node** is disabled, with the reason, until it is set. The page itself stays unreachable from that domain.
 
+#### `scripts/expose-nodes.sh` (Debian/Ubuntu, after `install.sh`)
+
+Point the domain's A record (and AAAA, if it has one) at the server, then run once:
+
+```sh
+curl -fsSL -o expose-nodes.sh https://raw.githubusercontent.com/devark28/xhaos/main/scripts/expose-nodes.sh
+sudo sh expose-nodes.sh nodes.example.com --dry-run   # see what it would change
+sudo sh expose-nodes.sh nodes.example.com
+```
+
+It is separate from `install.sh` because it changes the whole machine. Before changing anything it checks that the domain resolves to this server (and says to switch a Cloudflare-proxied record to "DNS only"), and refuses when anything but Caddy listens on ports 80 or 443. It then shows its plan and asks (`--yes` skips the questions):
+
+1. With ufw active, `ufw allow 80,443/tcp` (an inactive ufw is left off). A provider's firewall is yours to open.
+2. `apt-get install caddy`, and a site like the one above but for `/xhaos/node` only (everything else 404) in its own file, `/etc/caddy/sites/xhaos-nodes.caddy`, with one `import /etc/caddy/sites/*.caddy` line in `/etc/caddy/Caddyfile`. A Caddyfile with sites of its own keeps them; only the untouched stock one (its `:80` placeholder site answers every host on port 80) is replaced, kept as `Caddyfile.stock`. `caddy validate` must pass, or the files are put back; then `systemctl reload caddy`.
+3. `PUBLIC_HOST='nodes.example.com'` in `/etc/xhaos/install.conf`, applied by re-running `install.sh --version <installed release> --no-restart` (`NODE_URL` and `TRUSTED_PROXY` follow from it). It asks before restarting Xhaos, which pauses running agents.
+4. Checks `https://nodes.example.com/xhaos/node` answers 426 (a WebSocket is expected) and `/` answers 404. A 404 on the node path means the Caddy site is wrong, 403 that Xhaos does not have `-public-host` yet (not restarted), 502 that Xhaos is not running.
+
+Re-running it with the same domain changes nothing. `--port N` sets the port Caddy passes to (default `PORT` from `install.conf`, 5180).
+
+By hand, the same: open 80/443, install Caddy, add the site above, set `PUBLIC_HOST` in `/etc/xhaos/install.conf`, re-run `install.sh`, restart Xhaos, and check with `curl -sI https://nodes.example.com/xhaos/node` (426).
+
 ## Joining
 
 1. **Nodes** tab → **Add node**: name (default `Node 1`, `Node 2`…), and labels. Xhaos makes a join code (random, single use, expires after 15 minutes whether used or not; only its hash is stored, and it is deleted when used or expired) and shows it once:
