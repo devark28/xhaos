@@ -36,6 +36,7 @@ export interface State {
   secretsVersion: number; // bumped by secret.changed, so the Secrets section reloads
   skillsVersion: number; // bumped by skill.changed
   dangerAgent: number | null; // the agent the dangerously-allow dialog is open for
+  terminateAsk: number | null; // the agent the terminate dialog is open for
   // On phones one view shows at a time: the agents, or the open panel.
   mobileView: 'agents' | 'panel';
   workspaceName: string; // the signed-in workspace, shown in the header
@@ -97,6 +98,7 @@ function initial(): State {
     secretsVersion: 0,
     skillsVersion: 0,
     dangerAgent: null,
+    terminateAsk: null,
     mobileView: 'agents',
     workspaceName: '',
     projects: [],

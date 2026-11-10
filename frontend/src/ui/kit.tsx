@@ -2,7 +2,7 @@
 // comes from here, so they look and behave the same everywhere.
 import * as stylex from '@stylexjs/stylex';
 import type { StyleXStyles } from '@stylexjs/stylex';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 import { colors, breakpoints } from './theme/tokens.stylex.ts';
 import type { Status } from '../types.ts';
 
@@ -12,6 +12,7 @@ type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | '
   variant?: Variant;
   chosen?: boolean;
   sx?: StyleXStyles;
+  ref?: Ref<HTMLButtonElement>;
   [data: `data-${string}`]: string | number | boolean | undefined;
 };
 
