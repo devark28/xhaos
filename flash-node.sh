@@ -27,11 +27,13 @@
 #   --help
 #
 # Environment (mostly for testing): XHAOS_PI_IMAGE_URL (the image, default the
-# latest Lite arm64), XHAOS_FLASH_CACHE (default /var/cache/xhaos-node).
+# latest Lite arm64), XHAOS_FLASH_CACHE (default /var/cache/xhaos-node),
+# XHAOS_USB_SYSFS (where USB devices are listed, default /sys/bus/usb/devices).
 set -eu
 
 IMAGE_URL=${XHAOS_PI_IMAGE_URL:-https://downloads.raspberrypi.com/raspios_lite_arm64_latest}
 CACHE=${XHAOS_FLASH_CACHE:-/var/cache/xhaos-node}
+USB_SYSFS=${XHAOS_USB_SYSFS:-/sys/bus/usb/devices}
 MAX_LIST_BYTES=549755813888 # 512 GiB: bigger disks are not offered in the list
 FILES="" DISK="" IMAGE="" YES=no RPIBOOT=no LIST=no
 
@@ -237,17 +239,55 @@ esac
 if [ "$RPIBOOT" = yes ]; then
   step "rpiboot"
   has rpiboot || die "needs rpiboot (Debian, Ubuntu, Raspberry Pi OS: apt install rpiboot)"
-  GADGET=""
-  for d in /usr/share/rpiboot/mass-storage-gadget64 /usr/local/share/rpiboot/mass-storage-gadget64; do
-    [ -d "$d" ] && { GADGET=$d; break; }
-  done
-  [ -n "$GADGET" ] || die "rpiboot's mass-storage-gadget64 is missing (apt install rpiboot installs it in /usr/share/rpiboot)"
   lsblk -dnpo NAME | sort >"$WORK/before"
   say "Connect the Pi to this computer by USB now:"
   say "  Pi Zero 2 W: a data cable in the port marked USB (not PWR). Its card must not be bootable (blank, or no card yet), or it boots from the card instead."
   say "  Pi 5: unplug its power, hold the power button, and connect USB-C from this computer. This works even when the card already boots."
   say "Waiting for the Pi (Ctrl+C to stop)…"
-  rpiboot -d "$GADGET" || die "rpiboot failed (see above)"
+  # The boot ROM shows up as 0a5c:<chip>: 2764 is the Zero 2 W's BCM2710,
+  # 2711 a Pi 4, 2712 a Pi 5 (2763: older Pis, legacy firmware only).
+  CHIP="" waited=0
+  while [ -z "$CHIP" ]; do
+    for dev in "$USB_SYSFS"/*; do
+      [ "$(cat "$dev/idVendor" 2>/dev/null)" = 0a5c ] || continue
+      case $(cat "$dev/idProduct" 2>/dev/null) in 2763|2764|2711|2712) CHIP=$(cat "$dev/idProduct"); break ;; esac
+    done
+    [ -n "$CHIP" ] && break
+    sleep 1; waited=$((waited + 1))
+    if [ "$waited" -eq 20 ]; then
+      say "Nothing yet. Usual causes: a charge-only cable (try another), the Zero's PWR port instead of USB,"
+      say "  or a card that boots (the Zero then starts from it instead: use a blank card; without a card it shows up too, but with no disk)."
+      say "  A Pi 5 must have no power at all before you hold the button. Still waiting…"
+    fi
+  done
+  GADGET=""
+  for d in /usr/share/rpiboot/mass-storage-gadget64 /usr/local/share/rpiboot/mass-storage-gadget64; do
+    [ -d "$d" ] && { GADGET=$d; break; }
+  done
+  case $CHIP in
+    2711|2712)
+      [ -n "$GADGET" ] || die "rpiboot's mass-storage-gadget64 is missing (apt install rpiboot installs it in /usr/share/rpiboot)"
+      say "Found a Raspberry Pi (BCM$CHIP); sending it the USB disk system…"
+      rpiboot -d "$GADGET" || die "rpiboot failed (see above)" ;;
+    *)
+      # mass-storage-gadget64 knows the BCM2710 (Zero 2 W) only since usbboot
+      # of 2025-08-21; older rpiboot packages (Ubuntu up to 26.04) do not, so
+      # they get the legacy msd firmware built into rpiboot: slower, but in
+      # every version.
+      ver=$(dpkg-query -W -f='${Version}' rpiboot 2>/dev/null | grep -o '20[0-9]\{6\}' | head -n 1 || true)
+      if [ "$CHIP" = 2764 ] && [ -n "$GADGET" ] && [ "${ver:-0}" -ge 20250821 ]; then
+        say "Found a Pi Zero 2 W (BCM2710); sending it the USB disk system…"
+        rpiboot -d "$GADGET" || die "rpiboot failed (see above)"
+      else
+        say "Found a Raspberry Pi (USB id 0a5c:$CHIP); using rpiboot's built-in disk firmware (legacy msd)."
+        if [ "$CHIP" = 2764 ] && [ -z "$GADGET" ]; then
+          say "  Writing is slower with it; mass-storage-gadget64 (faster) is not installed."
+        elif [ "$CHIP" = 2764 ]; then
+          say "  Writing is slower with it; an rpiboot from 2025-08-21 or later (rpiboot ${ver:-not from apt} here) would use the faster mass-storage-gadget64."
+        fi
+        rpiboot || die "rpiboot failed (see above)"
+      fi ;;
+  esac
   say "The Pi is starting its USB disk mode; waiting for its card to appear…"
   i=0
   while [ $i -lt 60 ]; do
