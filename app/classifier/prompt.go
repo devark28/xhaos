@@ -72,11 +72,16 @@ func turn(b *strings.Builder, role, content string) {
 	b.WriteString("<|im_start|>" + role + "\n" + content + "<|im_end|>\n")
 }
 
-// quoteJSON is s as a JSON string, with <, > and & left as they are.
+// quoteJSON is s as a JSON string, with > and & left as they are. A "<" is
+// written as \u003c: the model's special tokens (<|im_end|> and the like) all
+// start with "<", so no text in a command can close or open a turn. Every "<"
+// in the encoded output is inside the string, so the replacement stays valid
+// JSON.
 func quoteJSON(s string) string {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(s) // a string always encodes
-	return strings.TrimSuffix(b.String(), "\n")
+	out := strings.TrimSuffix(b.String(), "\n")
+	return strings.ReplaceAll(out, "<", `\u003c`)
 }
