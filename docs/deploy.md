@@ -252,7 +252,7 @@ and start Xhaos with `-node-url https://nodes.example.com` (with `install.sh`: s
 
 On Debian or Ubuntu, `scripts/expose-nodes.sh <domain>` does all of this after `install.sh` (Caddy, the site, ufw, `PUBLIC_HOST`, and a check); see [nodes.md](nodes.md#scriptsexpose-nodessh-debianubuntu-after-installsh).
 
-On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (for kernels without Landlock).
+On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (only where neither Landlock nor bubblewrap works; on a kernel without Landlock it installs bubblewrap with apt).
 
 ## In a container
 

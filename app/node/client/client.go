@@ -2,7 +2,7 @@
 // a server with a one-time code, then keeps one WebSocket open to it and
 // serves its requests (commands as jobs, files in and out), always inside
 // the node root and, unless the owner on this machine said otherwise, under
-// Landlock.
+// Landlock or, on kernels without it, bubblewrap.
 package client
 
 import (
@@ -166,7 +166,7 @@ func Enroll(ctx context.Context, c Config, code, version string) (Config, ed2551
 		return c, nil, err
 	}
 	defer conn.CloseNow()
-	facts := Facts(c, version)
+	facts := Facts(c, sandbox.Pick(""), version)
 	if err := wsjson.Write(ctx, conn, wire.Msg{Type: wire.TJoin, Code: strings.TrimSpace(code), PublicKey: key.Public().(ed25519.PublicKey), Facts: &facts}); err != nil {
 		return c, nil, err
 	}
@@ -194,9 +194,13 @@ type Node struct {
 	Version string
 	State   string
 	Log     *log.Logger
+	// Sandbox is the sandbox to use: "" or "auto" (Landlock, else
+	// bubblewrap), sandbox.Landlock or sandbox.Bwrap (xhaos-node run --sandbox).
+	Sandbox string
 
-	sb   sandbox.Config
-	jobs *jobs
+	sb     sandbox.Config
+	choice sandbox.Choice
+	jobs   *jobs
 
 	mu   sync.Mutex
 	conn *websocket.Conn
@@ -211,9 +215,18 @@ func (n *Node) Run(ctx context.Context) error {
 	if err := os.MkdirAll(n.Config.Root, 0o755); err != nil {
 		return err
 	}
-	n.sb = sandbox.Config{Mode: sandbox.On, Cache: filepath.Join(n.State, "cache"), LimitDevices: true, Devices: n.Config.Devices}
 	if n.Config.Unsandboxed {
 		n.sb = sandbox.Config{Mode: sandbox.Off}
+		n.choice = sandbox.Choice{ABI: sandbox.ABI()}
+		n.Log.Printf("sandbox: off (--unsandboxed): commands run unconfined")
+	} else {
+		n.choice = sandbox.Pick(n.Sandbox)
+		n.sb = sandbox.Config{Mode: sandbox.On, Cache: filepath.Join(n.State, "cache"), LimitDevices: true, Devices: n.Config.Devices, Enforcer: n.choice.Kind}
+		if n.choice.Kind == "" {
+			n.Log.Printf("sandbox: none (%s): commands are refused", n.choice.Note)
+		} else {
+			n.Log.Printf("sandbox: %s", n.choice.Note)
+		}
 	}
 	n.jobs = newJobs(n.sendJobs)
 	defer n.jobs.killAll()
@@ -269,7 +282,7 @@ func (n *Node) session(ctx context.Context) error {
 	if m.Type != wire.TChallenge {
 		return fmt.Errorf("expected a challenge, got %q", m.Type)
 	}
-	facts := Facts(n.Config, n.Version)
+	facts := Facts(n.Config, n.choice, n.Version)
 	hello := wire.Msg{Type: wire.THello, Node: n.Config.Node, Sig: wire.Sign(n.Key, m.Nonce), Facts: &facts, Jobs: n.jobs.list()}
 	// The server reads at most wire.MaxHello before the node has proven
 	// itself: a long job list follows the welcome instead.
@@ -488,8 +501,8 @@ func (s *served) exec(ctx context.Context, m wire.Msg) error {
 		return errors.New("no command")
 	}
 	n := s.n
-	if !n.Config.Unsandboxed && sandbox.ABI() == 0 {
-		return errors.New("this node's kernel has no Landlock, so it runs no commands; the owner of the machine can allow it with xhaos-node join --unsandboxed (or install-node.sh --unsandboxed)")
+	if !n.Config.Unsandboxed && n.choice.Kind == "" {
+		return fmt.Errorf("this node has no sandbox (%s), so it runs no commands; the owner of the machine can install bubblewrap (apt install bubblewrap, then restart xhaos-node), or allow commands unconfined with install-node.sh --unsandboxed", n.choice.Note)
 	}
 	dir, err := wire.Confine(n.Config.Root, m.Dir)
 	if err != nil {
@@ -498,11 +511,10 @@ func (s *served) exec(ctx context.Context, m wire.Msg) error {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("%s is not a folder on this node", m.Dir)
 	}
-	cmd, err := n.sb.Command(context.Background(), n.Config.Root, m.Command)
+	cmd, err := n.sb.Command(context.Background(), n.Config.Root, m.Command, sandbox.Extra{Dir: dir})
 	if err != nil {
 		return err
 	}
-	cmd.Dir = dir
 	if n.Config.Unsandboxed {
 		cmd.Env = append(os.Environ(), "XHAOS_NODE=1")
 	} else {

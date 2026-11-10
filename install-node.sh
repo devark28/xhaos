@@ -12,13 +12,17 @@
 # folder /var/lib/xhaos-node, joins the server with the one-time code, and
 # runs the node as a systemd service. Run again without --code to update.
 #
+# Commands run under Landlock, or under bubblewrap on kernels without it
+# (Raspberry Pi OS): there, it installs bubblewrap with apt when missing.
+#
 # Options:
 #   --server URL       the server's public address (from the Nodes tab)
 #   --code CODE        the one-time join code (from the Nodes tab)
 #   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
 #   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
-#   --unsandboxed      run commands without Landlock: only for kernels without it;
-#                      agents can then reach everything the xhaos-node user can
+#   --unsandboxed      run commands unconfined: only where neither Landlock nor
+#                      bubblewrap works; agents can then reach everything the
+#                      xhaos-node user can
 #   --version vX.Y.Z   install that release instead of the latest
 #   --usb-config       apply XHAOS USB sticks (see below); off unless given
 #   --no-usb-config    stop applying them
@@ -50,6 +54,28 @@ has() { command -v "$1" >/dev/null 2>&1; }
 
 # as_node runs a command as the node's user.
 as_node() { runuser -u "$USER_NAME" -- env HOME="$STATE" XHAOS_NODE_STATE="$STATE" "$@"; }
+
+# confinement is the service's systemd confinement, one property per line:
+# the unit and the sandbox check both use it, so the check sees what the
+# service will (bubblewrap runs inside it).
+confinement() {
+  printf '%s\n' NoNewPrivileges=yes ProtectSystem=strict ProtectHome=read-only "ReadWritePaths=$STATE $ROOT" PrivateTmp=yes
+}
+
+# as_service runs a command as the service would: the node's user, its
+# environment and confinement (systemd-run); as_node without systemd.
+as_service() {
+  if [ "$SYSTEMD" != yes ] || ! has systemd-run; then as_node "$@"; return; fi
+  n=$#
+  set -- "$@" --wait --pipe --quiet --collect -p "User=$USER_NAME" -E "HOME=$STATE" -E "XHAOS_NODE_STATE=$STATE"
+  while IFS= read -r prop; do set -- "$@" -p "$prop"; done <<PROPS
+$(confinement)
+PROPS
+  set -- "$@" --
+  i=0
+  while [ "$i" -lt "$n" ]; do set -- "$@" "$1"; shift; i=$((i + 1)); done # the command after the options
+  systemd-run "$@" </dev/null
+}
 
 # The node's user owns its state folder, and so does any command an agent
 # runs on an unsandboxed node: as root, this script never follows a link in
@@ -105,7 +131,8 @@ install-node.sh --server URL --code CODE [options]   (as root)
   --code CODE        the one-time join code (from the Nodes tab)
   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
-  --unsandboxed      run commands without Landlock (kernels without it only)
+  --unsandboxed      run commands unconfined (only where neither Landlock nor
+                     bubblewrap works)
   --version vX.Y.Z   install that release instead of the latest
   --usb-config       apply USB sticks labelled XHAOS (new Wi-Fi or join code by USB):
                      anyone with such a stick can then change the Wi-Fi and the server
@@ -211,6 +238,32 @@ for dev in $DEVICES; do
   fi
 done
 
+# ---- the sandbox -----------------------------------------------------------------
+
+# Landlock when the kernel has it, else bubblewrap (installed here when
+# missing). Never fatal: without either, the node joins and refuses commands.
+# (Releases before the bubblewrap fallback have no sandbox-check.)
+if [ "$UNSANDBOXED" = no ] && "$BIN" help 2>/dev/null | grep -q sandbox-check; then
+  step "The sandbox"
+  if ! as_node "$BIN" sandbox-check --sandbox landlock >/dev/null 2>&1 && ! has bwrap; then
+    if has apt-get; then
+      say "This kernel has no Landlock; installing bubblewrap so commands run sandboxed."
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1 ||
+        { apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1; } ||
+        say "warning: apt-get install bubblewrap failed; install it yourself, then: systemctl restart xhaos-node"
+    else
+      say "This kernel has no Landlock and bwrap is missing: install bubblewrap with your package manager, then re-run this."
+    fi
+  fi
+  # As the service runs it (its confinement could stop bubblewrap).
+  if line=$(as_service "$BIN" sandbox-check 2>&1); then
+    say "Commands run under: $line"
+  else
+    say "warning: $line"
+  fi
+fi
+
 # ---- joining -------------------------------------------------------------------
 
 if [ "$JOINED" = yes ]; then
@@ -246,11 +299,7 @@ Restart=always
 RestartSec=10
 # 3: the server refused this node (it was removed); retrying will not help.
 RestartPreventExitStatus=3
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=$STATE $ROOT
-PrivateTmp=yes
+$(confinement)
 
 [Install]
 WantedBy=multi-user.target
@@ -306,6 +355,10 @@ systemctl restart xhaos-node
 sleep 2
 if systemctl is-active --quiet xhaos-node; then
   say "xhaos-node is running. The node's card on the Nodes tab turns online."
+  # What the service itself picked (its systemd settings could differ from
+  # the check above).
+  sb=$(journalctl -u xhaos-node --since -15s -o cat --no-pager 2>/dev/null | grep '^xhaos-node: sandbox:' | tail -n 1 || true)
+  [ -z "$sb" ] || say "The service says: ${sb#xhaos-node: }"
 else
   say "xhaos-node did not stay up; see: journalctl -u xhaos-node -n 50"
   exit 1

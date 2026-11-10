@@ -12,15 +12,26 @@ import (
 	"github.com/devark28/xhaos/app/sandbox"
 )
 
-// Facts describes this machine for the server.
-func Facts(c Config, version string) wire.Facts {
+// Facts describes this machine for the server; sb is the sandbox picked at
+// start (sandbox.Pick).
+func Facts(c Config, sb sandbox.Choice, version string) wire.Facts {
 	host, _ := os.Hostname()
 	f := wire.Facts{
 		Version: version, Protocol: wire.Protocol, Hostname: host,
 		OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU(),
-		Root: c.Root, Landlock: sandbox.ABI(), Devices: c.Devices, Unsandbox: c.Unsandboxed,
+		Root: c.Root, Landlock: sb.ABI, Devices: c.Devices, Unsandbox: c.Unsandboxed,
 	}
-	f.Sandboxed = !c.Unsandboxed && f.Landlock > 0
+	switch {
+	case c.Unsandboxed:
+		f.Sandbox, f.SandboxNote = wire.SandboxOff, "--unsandboxed"
+	case sb.Kind == sandbox.Landlock:
+		f.Sandbox, f.SandboxNote = wire.SandboxLandlock, sb.Note
+	case sb.Kind == sandbox.Bwrap:
+		f.Sandbox, f.SandboxNote = wire.SandboxBwrap, sb.Note
+	default:
+		f.Sandbox, f.SandboxNote = wire.SandboxNone, sb.Note
+	}
+	f.Sandboxed = f.Sandbox == wire.SandboxLandlock || f.Sandbox == wire.SandboxBwrap
 	if b, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
 		f.Kernel = strings.TrimSpace(string(b))
 	}

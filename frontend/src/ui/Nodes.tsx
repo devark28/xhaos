@@ -13,6 +13,7 @@ import { activeAgents } from '../model.ts';
 import { useApp, workspaceOf, toast } from './state/store.ts';
 import { openPanel } from './state/panels.ts';
 import { connected } from './state/backend.ts';
+import { sandboxBadge } from './node-sandbox.ts';
 import {
   addNode, newNodeCode, updateNode, removeNode, grantNode, stopNodeJob, nextNodeName, labelsOf,
   type NodeAdded, type NodeView, type NodeJob, type PiSetup,
@@ -182,17 +183,13 @@ function NodeCard({ n, issued, onIssued, onDone }: { n: NodeView; issued?: NodeA
 function Facts({ n }: { n: NodeView }) {
   const f = n.facts!;
   const what = [f.model || `${f.os}/${f.arch}`, f.distro, `${f.cpus} CPU${f.cpus === 1 ? '' : 's'}`, f.memoryMB ? `${(f.memoryMB / 1024).toFixed(f.memoryMB < 10240 ? 1 : 0)} GB` : '', `xhaos-node ${f.version}`].filter(Boolean);
-  const sandbox = f.unsandboxed
-    ? { text: 'unsandboxed', warn: true, tip: 'Its owner ran it with --unsandboxed: commands run as the xhaos-node user without Landlock, and can reach everything that user can.' }
-    : f.landlock === 0
-      ? { text: 'no Landlock: runs no commands', warn: true, tip: 'This kernel has no Landlock, so the node refuses commands. Its owner can allow them unconfined with install-node.sh --unsandboxed.' }
-      : { text: `Landlock ${f.landlock}`, warn: false, tip: `Commands run inside ${f.root}, confined by Landlock.` };
+  const sandbox = sandboxBadge(f);
   return (
     <div data-node-facts {...stylex.props(s.facts)}>
       <span>{what.join(' · ')}</span>
       <span {...stylex.props(s.factLine)}>
         <code {...stylex.props(s.code)}>{f.root}</code>
-        <span data-node-sandbox {...stylex.props(sandbox.warn && s.warn)}>{sandbox.text}</span><Info text={sandbox.tip} />
+        <span data-node-sandbox={sandbox.kind} {...stylex.props(sandbox.danger && s.danger)}>{sandbox.text}</span><Info text={sandbox.tip} />
       </span>
       {((f.devices?.length ?? 0) > 0 || (f.hardware?.length ?? 0) > 0) && (
         <span {...stylex.props(s.factLine)}>
@@ -305,6 +302,7 @@ const s = stylex.create({
   code: { fontFamily: fonts.mono, fontSize: 10, color: colors.textSoft, backgroundColor: colors.card, paddingInline: 4, borderRadius: 3, overflowWrap: 'anywhere' },
   allowed: { color: colors.brand },
   warn: { color: colors.warn },
+  danger: { color: colors.danger, fontWeight: 500 },
   command: { display: 'block', fontFamily: fonts.mono, fontSize: 10, color: colors.textStrong, backgroundColor: colors.sunken, paddingBlock: 6, paddingInline: 7, borderRadius: 3, overflowWrap: 'anywhere', userSelect: 'all', lineHeight: 1.45 },
   chips: { display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' },
   chip: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, paddingInline: 6, paddingBlock: 1, borderRadius: 9, backgroundColor: colors.card, color: colors.textSoft, borderWidth: 0, fontFamily: 'inherit' },

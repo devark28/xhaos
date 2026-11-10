@@ -19,6 +19,9 @@
 // connect to processes outside the sandbox through abstract sockets, nor
 // open any Unix socket (the SSH agent, keyring, D-Bus, Docker; seccomp).
 // Network access is unchanged for now.
+//
+// On kernels without Landlock, xhaos-node can enforce the same policy with
+// bubblewrap instead (bwrap.go, Config.Enforcer); the server never does.
 package sandbox
 
 import (
@@ -58,6 +61,9 @@ type Config struct {
 	// commands may use every device the user may (the server's commands).
 	LimitDevices bool
 	Devices      []string // device files or folders of them, e.g. /dev/video0, /dev/dri
+	// Enforcer is what confines commands: Landlock (or "") or Bwrap
+	// (bubblewrap; xhaos-node on kernels without Landlock, see Pick).
+	Enforcer string
 }
 
 // commonDevices are open to every command, even with LimitDevices.
@@ -82,10 +88,12 @@ func ABI() int {
 
 func (c Config) Status() Status {
 	abi := ABI()
-	s := Status{Mode: c.Mode, ABI: abi, Active: c.Mode != Off && abi > 0}
+	s := Status{Mode: c.Mode, ABI: abi, Active: c.Mode != Off && (abi > 0 || c.Enforcer == Bwrap)}
 	switch {
 	case c.Mode == Off:
 		s.Note = "Off: agents' commands run with the server user's full access."
+	case c.Enforcer == Bwrap:
+		s.Note = "Commands run under bubblewrap: they see only their project folder (plus a shared cache), system files and toolchains, and their own processes."
 	case abi == 0 && c.Mode == On:
 		s.Note = "Required, but this kernel has no Landlock: commands are refused."
 	case abi == 0:
@@ -108,15 +116,19 @@ type policy struct {
 	// proxy), and no UDP (DNS lookups could carry a secret out).
 	Port    int  `json:"port,omitempty"`
 	DenyUDP bool `json:"denyUdp,omitempty"`
+	// Bwrap: bubblewrap confines the helper already (its mounts are this
+	// policy); the helper only adds the seccomp filter.
+	Bwrap bool `json:"bwrap,omitempty"`
 }
 
 // Command builds the command that runs `bash -c command` in root, inside
 // the sandbox when it is active. The error says why a command cannot run.
-// Extra is more for one command: folders it may read (skills' files) and
-// environment variables.
+// Extra is more for one command: folders it may read (skills' files),
+// environment variables, and the folder it starts in when not root.
 type Extra struct {
 	Read []string
 	Env  []string
+	Dir  string
 }
 
 func (x Extra) apply(env []string, p *policy) []string {
@@ -125,9 +137,15 @@ func (x Extra) apply(env []string, p *policy) []string {
 }
 
 func (c Config) Command(ctx context.Context, root, command string, extra ...Extra) (*exec.Cmd, error) {
+	dir := root
+	for _, x := range extra {
+		if x.Dir != "" {
+			dir = x.Dir
+		}
+	}
 	plain := func() (*exec.Cmd, error) {
 		cmd := exec.CommandContext(ctx, "bash", "-c", command)
-		cmd.Dir = root
+		cmd.Dir = dir
 		for _, x := range extra {
 			if len(x.Env) > 0 {
 				cmd.Env = append(os.Environ(), x.Env...)
@@ -138,7 +156,8 @@ func (c Config) Command(ctx context.Context, root, command string, extra ...Extr
 	if c.Mode == Off || c.Mode == "" {
 		return plain()
 	}
-	if ABI() == 0 {
+	bwrap := c.Enforcer == Bwrap
+	if !bwrap && ABI() == 0 {
 		if c.Mode == On {
 			return nil, errors.New("commands must run sandboxed, and this kernel has no Landlock")
 		}
@@ -155,9 +174,17 @@ func (c Config) Command(ctx context.Context, root, command string, extra ...Extr
 	for _, x := range extra {
 		env = x.apply(env, &p)
 	}
+	p.Bwrap = bwrap
 	raw, _ := json.Marshal(p)
-	cmd := exec.CommandContext(ctx, self, helperArg, string(raw), command)
-	cmd.Dir = root
+	var cmd *exec.Cmd
+	if bwrap {
+		if cmd, err = bwrapCommand(ctx, self, p, raw, dir, command); err != nil {
+			return nil, err
+		}
+	} else {
+		cmd = exec.CommandContext(ctx, self, helperArg, string(raw), command)
+	}
+	cmd.Dir = dir
 	cmd.Env = env
 	return cmd, nil
 }
@@ -189,6 +216,9 @@ const NetABI = 4
 func (c Config) CommandSealed(ctx context.Context, root, command string, s Sealed) (*exec.Cmd, func(), error) {
 	if c.Mode == Off || c.Mode == "" {
 		return nil, nil, errors.New("secrets are only given to sandboxed commands, and the sandbox is off (start the server with -sandbox auto)")
+	}
+	if c.Enforcer == Bwrap {
+		return nil, nil, errors.New("secrets need Landlock, and commands here run under bubblewrap")
 	}
 	if abi := ABI(); abi < NetABI {
 		return nil, nil, fmt.Errorf("secrets need a kernel whose Landlock can restrict the network (ABI %d+, Linux 6.7+); this one has ABI %d", NetABI, abi)
@@ -295,6 +325,11 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	}
 	// A submodule's or worktree's git data can live outside the project.
 	p.Write = append(p.Write, GitDirs(root)...)
+	// DNS: /etc/resolv.conf is often a link into /run (NetworkManager's,
+	// systemd-resolved's), which commands do not otherwise see.
+	if conf, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && conf != "/etc/resolv.conf" {
+		p.Files = append(p.Files, conf)
+	}
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
 	// never the home folder itself or ~/.local (that holds Xhaos's data).
@@ -371,7 +406,12 @@ func MaybeRun() {
 	if err := json.Unmarshal([]byte(os.Args[2]), &p); err != nil {
 		fail(err)
 	}
-	if err := restrict(p); err != nil {
+	if p.Bwrap {
+		// Inside bwrap: its mounts are the policy; only Unix sockets are left.
+		if err := denySockets(p.DenyUDP); err != nil {
+			fail(err)
+		}
+	} else if err := restrict(p); err != nil {
 		fail(err)
 	}
 	bash, err := exec.LookPath("bash")

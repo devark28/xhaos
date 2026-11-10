@@ -105,3 +105,44 @@ func TestInstallScriptRefusesSymlinkedState(t *testing.T) {
 		t.Fatalf("a symlinked state folder: %v %q %s", err, touched, out)
 	}
 }
+
+// The sandbox check runs the way the service does: systemd-run with the
+// unit's user, environment and confinement, the command after them.
+func TestInstallScriptChecksTheSandboxAsTheService(t *testing.T) {
+	bin := t.TempDir()
+	stub := "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]\\n' \"$a\"; done\n"
+	if err := os.WriteFile(filepath.Join(bin, "systemd-run"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script, _ := filepath.Abs("../../install-node.sh")
+	sh := `set -eu
+XHAOS_INSTALL_NODE_FUNCTIONS=1 . "$1"
+ROOT=/srv/work SYSTEMD=yes
+as_service /usr/local/bin/xhaos-node sandbox-check --sandbox "a b"
+echo ---
+SYSTEMD=no
+as_node() { echo "as_node $*"; }
+as_service /usr/local/bin/xhaos-node sandbox-check
+`
+	cmd := exec.Command("sh", "-c", sh, "sh", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	run, plain, _ := strings.Cut(string(b), "---\n")
+	want := "[--wait]\n[--pipe]\n[--quiet]\n[--collect]\n[-p]\n[User=xhaos-node]\n[-E]\n[HOME=/var/lib/xhaos-node]\n[-E]\n[XHAOS_NODE_STATE=/var/lib/xhaos-node]\n" +
+		"[-p]\n[NoNewPrivileges=yes]\n[-p]\n[ProtectSystem=strict]\n[-p]\n[ProtectHome=read-only]\n[-p]\n[ReadWritePaths=/var/lib/xhaos-node /srv/work]\n[-p]\n[PrivateTmp=yes]\n" +
+		"[--]\n[/usr/local/bin/xhaos-node]\n[sandbox-check]\n[--sandbox]\n[a b]\n"
+	if run != want {
+		t.Errorf("systemd-run got\n%swant\n%s", run, want)
+	}
+	if plain != "as_node /usr/local/bin/xhaos-node sandbox-check\n" {
+		t.Errorf("without systemd: %q", plain)
+	}
+	// The unit holds the same confinement.
+	raw, _ := os.ReadFile(script)
+	if !strings.Contains(string(raw), "Environment=HOME=$STATE XHAOS_NODE_STATE=$STATE\nExecStart=$BIN run\n") || !strings.Contains(string(raw), "RestartPreventExitStatus=3\n$(confinement)\n\n[Install]") {
+		t.Error("the unit no longer takes its confinement from confinement()")
+	}
+}
