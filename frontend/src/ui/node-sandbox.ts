@@ -10,7 +10,7 @@ export function sandboxBadge(f: SandboxFacts): SandboxBadge {
     case 'landlock':
       return { kind, text: `Landlock ${f.landlock}`, danger: false, tip: `Commands run inside ${f.root}, confined by Landlock.` };
     case 'bwrap':
-      return { kind, text: 'bubblewrap', danger: false, tip: `Commands run inside ${f.root}, confined by bubblewrap: they see only that folder, system files and their own processes (this kernel has no Landlock).` };
+      return { kind, text: 'bubblewrap', danger: false, tip: `Commands run inside ${f.root}, confined by bubblewrap: they see only that folder, system files and their own processes (${f.landlock > 0 ? 'chosen with --sandbox bwrap' : 'this kernel has no Landlock'}).` };
     case 'off':
       return { kind, text: 'unsandboxed', danger: true, tip: 'Its owner ran it with --unsandboxed: commands run as the xhaos-node user, unconfined, and can reach everything that user can. Only for a machine you can wipe.' };
     default: {

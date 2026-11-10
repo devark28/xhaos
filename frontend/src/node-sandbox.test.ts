@@ -6,6 +6,8 @@ test('the badge names what confines a node\'s commands', () => {
   assert.deepEqual(
     [sandboxBadge({ root: '/w', landlock: 6, sandbox: 'landlock' }), sandboxBadge({ root: '/w', landlock: 0, sandbox: 'bwrap' })].map(b => [b.text, b.danger]),
     [['Landlock 6', false], ['bubblewrap', false]]);
+  assert.match(sandboxBadge({ root: '/w', landlock: 0, sandbox: 'bwrap' }).tip, /this kernel has no Landlock/);
+  assert.match(sandboxBadge({ root: '/w', landlock: 4, sandbox: 'bwrap' }).tip, /chosen with --sandbox bwrap/);
 });
 
 test('unsandboxed and no sandbox are red, and say how to fix it', () => {
