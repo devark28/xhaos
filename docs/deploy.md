@@ -112,7 +112,7 @@ Notes:
 
 ## The dictation service
 
-Dictation's speech model takes several seconds to load. The installer runs it as a service, `xhaos-dictation.service`, so the model stays loaded and a take does not wait for it. It runs as the `xhaos` user, on `127.0.0.1:8190` only, with `Restart=always`, and Xhaos gets `-dictation-url http://127.0.0.1:8190`. Its unit has `Wants=` and `After=`, not `Requires=`, so Xhaos starts without it, and a take then runs the sidecar command (the fallback set by `-dictation-cmd`) until the service is back.
+Dictation's speech model takes several seconds to load. The installer runs it as a service, `xhaos-dictation.service`, so the model stays loaded and a take does not wait for it. It runs as the `xhaos` user, on `127.0.0.1:8190` only, with `Restart=always`, and Xhaos gets `-dictation-url http://127.0.0.1:8190`. Its unit has `Wants=` and `After=`, not `Requires=`, so Xhaos starts without it, and a take then runs the sidecar command (the fallback set by `-dictation-cmd`) until the service is back. The service takes one take at a time: a second take that arrives meanwhile runs with the command, so it never waits behind another.
 
 It keeps the model in memory all the time: about 1,070 MB resident after a few takes and 1,363 MB at peak, measured with the reference sidecar and the pinned model on an 8-CPU machine. Turn it off if that memory is needed elsewhere.
 

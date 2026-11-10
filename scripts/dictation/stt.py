@@ -14,7 +14,8 @@ arguments). Nothing is written to disk.
 
 Server (warm). Loads the model once and answers each take over HTTP, so no take
 pays the model load. It listens on 127.0.0.1 only (--host takes a loopback
-address and no other), and takes one take at a time: others wait in line.
+address and no other), and takes one take at a time: a take that arrives
+during another gets 503 at once, and Xhaos runs it with the command instead.
 
   stt.py --serve --model /opt/models/whisper-large-v3-turbo-ct2 --port 8190
 
@@ -132,7 +133,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, whisper):
         super().__init__(address, Handler)
         self.whisper = whisper
-        # Takes queue on this lock; /health does not take it, so it answers during a take.
+        # One take at a time; /health does not take this lock, so it answers during a take.
         self.turn = threading.Lock()
 
 
@@ -150,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path != "/transcribe":
             return self.reply(404, "no such path")
         length = self.headers.get("Content-Length")
-        if length is None or not length.isdigit():
+        if length is None or not (length.isascii() and length.isdigit()):
             return self.reply(411, "Content-Length is required")
         if int(length) > MAX_BODY:
             return self.reply(413, "the take is too long")
@@ -160,14 +161,20 @@ class Handler(BaseHTTPRequestHandler):
         prompt = query.get("prompt", [""])[0].strip()
         try:
             pcm = read_wav(BytesIO(body))
-        except (ValueError, wave.Error) as err:
-            return self.reply(400, str(err))
-        with self.server.turn:
-            try:
-                text = transcribe_pcm(self.server.whisper, pcm, language, prompt)
-            except Exception as err:  # the model failed: say so, keep serving
-                print(f"transcription failed: {err}", file=sys.stderr, flush=True)
-                return self.reply(500, f"transcription failed: {err}")
+        except (ValueError, EOFError, wave.Error) as err:
+            return self.reply(400, str(err) or "not a WAV")
+        # One take at a time. A busy service says so at once instead of queueing:
+        # Xhaos then runs the take with the command, and a take never spends its
+        # time limit waiting behind another (or behind one Xhaos gave up on).
+        if not self.server.turn.acquire(blocking=False):
+            return self.reply(503, "busy with another take")
+        try:
+            text = transcribe_pcm(self.server.whisper, pcm, language, prompt)
+        except Exception as err:  # the model failed: say so, keep serving
+            print(f"transcription failed: {err}", file=sys.stderr, flush=True)
+            return self.reply(500, f"transcription failed: {err}")
+        finally:
+            self.server.turn.release()
         self.reply(200, text)
 
     def reply(self, status: int, text: str):

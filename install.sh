@@ -181,8 +181,10 @@ DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no DICTATIO
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
-  # Settings from before the warm service: dictation keeps it on (as the classifier does).
-  [ -n "$DICTATION_SERVICE" ] || DICTATION_SERVICE=$DICTATION
+  # Settings from before the warm service: installed dictation keeps it on (as
+  # the classifier does). Only --without dictation stores 'no', so dictation
+  # declined earlier and installed now still gets the service.
+  [ -n "$DICTATION_SERVICE" ] || [ "$DICTATION" != yes ] || DICTATION_SERVICE=yes
 else
   # No settings yet (a first install, or a server set up by hand): what is
   # already here counts as installed, so the service keeps using it.

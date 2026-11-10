@@ -243,7 +243,7 @@ class ServerTest(Env):
         conn.request("GET", "/health")
         return conn.getresponse().status
 
-    def test_takes_queue_one_at_a_time_and_health_answers_during_one(self):
+    def test_one_take_at_a_time_a_second_is_503_and_health_answers_during_one(self):
         port = self.start_server_with({"STUB_SLOW": "1.0"})
         wav = make_wav(1.0)
         results = []
@@ -251,22 +251,24 @@ class ServerTest(Env):
         def take():
             results.append(self.post(port, "/transcribe", wav)[0])
 
-        threads = [threading.Thread(target=take) for _ in range(3)]
-        started = time.time()
-        for t in threads:
-            t.start()
-        time.sleep(0.3)  # the first take is running; the others wait for the lock
-        health_started = time.time()
+        first = threading.Thread(target=take)
+        first.start()
+        time.sleep(0.3)  # the first take is running
+        busy_started = time.time()
+        self.assertEqual(self.post(port, "/transcribe", wav)[0], 503)
+        self.assertLess(time.time() - busy_started, 0.8, "a busy service must answer at once, not queue")
         self.assertEqual(self.health(port), 200)
-        self.assertLess(time.time() - health_started, 0.8, "health must not wait for a take")
-        for t in threads:
-            t.join(30)
-        self.assertEqual(results, [200, 200, 200])
-        self.assertGreaterEqual(time.time() - started, 2.9, "three 1 s takes must run one after another")
-        # No two takes overlapped: each start is followed by its end before the next start.
+        first.join(30)
+        self.assertEqual(results, [200])
+        # Free again once the first take is done.
+        self.assertEqual(self.post(port, "/transcribe", wav)[0], 200)
         events = [line for line in self.stub_log() if line.startswith(("start", "end"))]
-        self.assertEqual(events, ["start en None", "end ok"] * 3)
+        self.assertEqual(events, ["start en None", "end ok"] * 2)
 
+    def test_empty_body_is_400_and_server_keeps_going(self):
+        port = self.start_server_with({})
+        self.assertEqual(self.post(port, "/transcribe", b"")[0], 400)
+        self.assertEqual(self.post(port, "/transcribe", make_wav(0.5))[0], 200)
 
 if __name__ == "__main__":
     unittest.main()

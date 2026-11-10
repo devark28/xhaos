@@ -130,6 +130,23 @@ func TestWarmServiceErrorFallsBackToTheCommand(t *testing.T) {
 	}
 }
 
+// A busy service (one take at a time) answers 503 at once: the take runs with
+// the command instead of waiting behind the other one.
+func TestWarmServiceBusyFallsBackToTheCommand(t *testing.T) {
+	s := db(t)
+	ts := fakeService(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy with another take", http.StatusServiceUnavailable)
+	})
+	s.cfg = Config{URL: ts.URL, Program: fakeSidecar(t, "echo from the command")}
+	got, err := s.Transcribe(workspace.DefaultID, pcm(32000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from the command" {
+		t.Fatalf("transcript = %q, want the command's", got)
+	}
+}
+
 func TestWarmServiceDownFallsBackToTheCommand(t *testing.T) {
 	s := db(t)
 	s.cfg = Config{URL: closedURL(t), Program: fakeSidecar(t, "echo from the command")}
