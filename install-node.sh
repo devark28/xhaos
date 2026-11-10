@@ -12,13 +12,17 @@
 # folder /var/lib/xhaos-node, joins the server with the one-time code, and
 # runs the node as a systemd service. Run again without --code to update.
 #
+# Commands run under Landlock, or under bubblewrap on kernels without it
+# (Raspberry Pi OS): there, it installs bubblewrap with apt when missing.
+#
 # Options:
 #   --server URL       the server's public address (from the Nodes tab)
 #   --code CODE        the one-time join code (from the Nodes tab)
 #   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
 #   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
-#   --unsandboxed      run commands without Landlock: only for kernels without it;
-#                      agents can then reach everything the xhaos-node user can
+#   --unsandboxed      run commands unconfined: only where neither Landlock nor
+#                      bubblewrap works; agents can then reach everything the
+#                      xhaos-node user can
 #   --version vX.Y.Z   install that release instead of the latest
 #   --usb-config       apply XHAOS USB sticks (see below); off unless given
 #   --no-usb-config    stop applying them
@@ -105,7 +109,8 @@ install-node.sh --server URL --code CODE [options]   (as root)
   --code CODE        the one-time join code (from the Nodes tab)
   --root DIR         the folder agents work in (default /var/lib/xhaos-node/xhaos-work)
   --device PATH      a device commands may open, e.g. /dev/video0 (repeat for more)
-  --unsandboxed      run commands without Landlock (kernels without it only)
+  --unsandboxed      run commands unconfined (only where neither Landlock nor
+                     bubblewrap works)
   --version vX.Y.Z   install that release instead of the latest
   --usb-config       apply USB sticks labelled XHAOS (new Wi-Fi or join code by USB):
                      anyone with such a stick can then change the Wi-Fi and the server
@@ -211,6 +216,31 @@ for dev in $DEVICES; do
   fi
 done
 
+# ---- the sandbox -----------------------------------------------------------------
+
+# Landlock when the kernel has it, else bubblewrap (installed here when
+# missing). Never fatal: without either, the node joins and refuses commands.
+# (Releases before the bubblewrap fallback have no sandbox-check.)
+if [ "$UNSANDBOXED" = no ] && "$BIN" help 2>/dev/null | grep -q sandbox-check; then
+  step "The sandbox"
+  if ! as_node "$BIN" sandbox-check --sandbox landlock >/dev/null 2>&1 && ! has bwrap; then
+    if has apt-get; then
+      say "This kernel has no Landlock; installing bubblewrap so commands run sandboxed."
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1 ||
+        { apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends bubblewrap >/dev/null 2>&1; } ||
+        say "warning: apt-get install bubblewrap failed; install it yourself, then: systemctl restart xhaos-node"
+    else
+      say "This kernel has no Landlock and bwrap is missing: install bubblewrap with your package manager, then re-run this."
+    fi
+  fi
+  if line=$(as_node "$BIN" sandbox-check 2>&1); then
+    say "Commands run under: $line"
+  else
+    say "warning: $line"
+  fi
+fi
+
 # ---- joining -------------------------------------------------------------------
 
 if [ "$JOINED" = yes ]; then
@@ -306,6 +336,10 @@ systemctl restart xhaos-node
 sleep 2
 if systemctl is-active --quiet xhaos-node; then
   say "xhaos-node is running. The node's card on the Nodes tab turns online."
+  # What the service itself picked (its systemd settings could differ from
+  # the check above).
+  sb=$(journalctl -u xhaos-node --since -15s -o cat --no-pager 2>/dev/null | grep '^xhaos-node: sandbox:' | tail -n 1 || true)
+  [ -z "$sb" ] || say "The service says: ${sb#xhaos-node: }"
 else
   say "xhaos-node did not stay up; see: journalctl -u xhaos-node -n 50"
   exit 1

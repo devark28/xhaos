@@ -149,10 +149,20 @@ This is for setting up a Pi from nothing without a second computer to flash card
 
 The node is the last line of defence, so it enforces its own limits, whatever the server asks:
 
-- Commands and file operations stay inside the node root. Commands run under Landlock (the same sandbox package as the server: read and run system files, write only the root and a temp folder). **Without Landlock the node refuses to run commands.** Only an owner on the machine itself can lift that for that node, with `xhaos-node join --unsandboxed` (or `install-node.sh --unsandboxed`); the server cannot ask for it, and the node's card shows "not sandboxed" in red. The node reports its Landlock version when it joins.
+- Commands and file operations stay inside the node root. Commands run under Landlock (the same sandbox package as the server: read and run system files, write only the root and a temp folder). On a kernel without Landlock they run under **bubblewrap** instead (see [Bubblewrap](#bubblewrap-kernels-without-landlock)). **Without either, the node refuses to run commands.** Only an owner on the machine itself can lift that for that node, with `xhaos-node join --unsandboxed` (or `install-node.sh --unsandboxed`); the server cannot ask for it. The node's card shows the sandbox: "Landlock N" or "bubblewrap", and "unsandboxed" or "no sandbox: runs no commands" in red. `xhaos-node status` and `xhaos-node sandbox-check` print it on the machine.
 - Devices are opt-in on the node: `--device /dev/video0 --device /dev/ttyUSB0` (or the user's group membership, `video`, `dialout`, when not sandboxed). Without them a sandboxed command cannot open hardware.
 - No `sudo`: the `xhaos-node` user has none. Installing packages on a node is the owner's job.
 - Commands have a time limit; jobs have an output cap (the newest 10 MB are kept).
+
+### Bubblewrap (kernels without Landlock)
+
+Raspberry Pi OS's kernels have no Landlock (`CONFIG_SECURITY_LANDLOCK` is not set in the rpi defconfigs 6.6 to 6.19; on a Zero 2 W with trixie and 6.18, `/sys/kernel/security/lsm` is just `capability`). They do have user namespaces and seccomp, so `xhaos-node` falls back to bubblewrap (`bwrap`, Debian package `bubblewrap`, about 150 kB), which `install-node.sh` installs with apt when the kernel has no Landlock.
+
+At start the node picks: Landlock when the kernel has it, else bubblewrap when `bwrap -- true` works for its user, else none (commands are refused, and the card and the log say why: bwrap missing, `max_user_namespaces` 0, AppArmor's user namespace restriction). `xhaos-node run --sandbox landlock|bwrap` forces one (to try bubblewrap on a machine that has Landlock).
+
+Under bubblewrap a command gets the same policy as under Landlock, enforced by mounts instead: a new mount namespace that holds only the policy's folders (system folders and the toolchains on `PATH` read-only; the node root, the node's cache and the command's temp folder writable), a private `/tmp`, a `/dev` with only `null`, `zero`, `full`, `random`, `urandom`, `tty` and the pseudo-terminals plus the devices given with `--device`, and a `/proc` of its own pid namespace (it cannot see or signal the node or other processes). The rest of the machine, such as `/var/lib/xhaos-node` with the node's key, `/home` and `~/.ssh`, does not exist inside. The same seccomp filter refuses Unix sockets. The network is shared, as under Landlock. Commands holding secrets need Landlock, so they are refused under bubblewrap (nodes do not take secrets today).
+
+Not tried on real hardware yet: bubblewrap inside the node's systemd service (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`) on a Pi. `install-node.sh` prints what the service picked.
 
 ### Trust
 
@@ -213,7 +223,7 @@ Before a node has proven itself (join or signed hello), the server reads at most
 
 ## Open questions
 
-- Does Raspberry Pi OS's kernel enable Landlock? If not, the Pis need `--unsandboxed` (or a kernel with it) before they run anything. Check on a real Pi first.
+- Raspberry Pi OS's kernel has no Landlock (checked on a Zero 2 W, trixie, 6.18): Pis use bubblewrap. Still to check on a real Pi: bubblewrap inside the node's systemd service.
 - First boot now deletes `user-data` and `network-config` and disables cloud-init once the node is connected (see [Raspberry Pi first boot](#raspberry-pi-first-boot-no-screen-no-keyboard)). Still to check on a real Pi: the hostname, the SSH host keys and the network stay the same on the second boot.
 - USB boot on our hardware: which of our sticks the Zero 2 W boots from, and whether the Pi 5's bootloader on our units has USB in `BOOT_ORDER` (it is in the default). Check this before building the installer stick.
 - Should a node be shareable between workspaces? This design says no: one node, one workspace.
