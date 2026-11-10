@@ -175,7 +175,9 @@ func TestBwrapCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("devices", "echo x > /dev/null && head -c 1 /dev/urandom | wc -c", "1")
 	// /dev/full is bound as a granted device: after /dev turned read-only it
 	// still opens for writing (the device answers, not the file system).
-	ok("a granted device after the remount", "echo x > /dev/full 2>&1; head -c 1 /dev/full | wc -c", "No space left")
+	// The write must reach the device (which refuses it: ENOSPC, worded by
+	// the shell) rather than fail on the file system.
+	ok("a granted device after the remount", "{ echo x > /dev/full; } 2>&1 | grep -q 'Read-only' && echo read-only || echo device answered", "device answered")
 	ok("a writable /dev/shm", "echo x > /dev/shm/a && cat /dev/shm/a", "x")
 	ok("pseudo-terminals", "ls /dev/pts/ptmx && echo pts", "pts")
 	ok("the sandbox marker", "echo $XHAOS_SANDBOX", "1")
