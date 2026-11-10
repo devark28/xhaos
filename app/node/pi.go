@@ -67,25 +67,67 @@ func piStamp(id string, name string, expires time.Time) string {
 		id, expires.Unix(), name, expires.UTC().Format("2006-01-02 15:04 UTC"))
 }
 
-// piCleanup runs after the install. Once the node has joined and been
-// welcomed by the server (xhaos-node writes its "connected" file), the Wi-Fi
-// password and the join code leave the card's boot partition, and cloud-init
-// is turned off so it does not take the missing files for a new machine (new
-// SSH host keys) on the next boot; the network stays, as netplan renders
-// cloud-init's saved config on every boot by itself. The copies of the
-// password that remain are made root-only. If the node never connects, the
-// files stay, and the log says how to remove them.
-const piCleanup = `log() { logger -t xhaos-node "$*" 2>/dev/null || true; echo "xhaos-node: $*"; }
-i=0; while [ ! -f /var/lib/xhaos-node/connected ] && [ $i -lt 60 ]; do sleep 5; i=$((i+1)); done
-if [ ! -f /var/lib/xhaos-node/connected ]; then
-  log "the node has not connected to the server, so user-data and network-config stay on the card's boot partition (they hold the Wi-Fi password and the join code). Remove them by hand: sudo rm -f /boot/firmware/user-data /boot/firmware/network-config"
-  exit 0
-fi
+// The first-boot files hold the Wi-Fi password and the join code. Once the
+// node has joined and been welcomed by the server (xhaos-node writes its
+// "connected" file), a path unit runs piCleanup, on this boot or any later
+// one: it deletes both files from the card's boot partition, turns
+// cloud-init off so it does not take the missing files for a new machine
+// (new SSH host keys) on the next boot, makes the remaining copies of the
+// password root-only, and removes itself. The network stays: netplan
+// renders cloud-init's saved config on every boot by itself. Until then the
+// files stay, and the journal says how to remove them by hand.
+const (
+	piCleanupScript = "/usr/local/lib/xhaos-node/first-boot-done.sh"
+	piCleanupUnit   = "xhaos-node-first-boot"
+)
+
+const piCleanup = `#!/bin/sh
+# Made by Xhaos's first-boot files (docs/nodes.md): the node has connected,
+# so its Wi-Fi password and join code leave the card. Runs once, then goes.
 for d in /boot/firmware /boot; do rm -f "$d/user-data" "$d/network-config"; done
 touch /etc/cloud/cloud-init.disabled
 chmod go-rwx /etc/netplan/*.yaml /etc/NetworkManager/system-connections/* /run/NetworkManager/system-connections/* 2>/dev/null || true
 sync
-log "the node is connected: deleted user-data and network-config from the boot partition and turned cloud-init off"`
+logger -t xhaos-node "connected: deleted user-data and network-config from the boot partition and turned cloud-init off" || true
+systemctl disable ` + piCleanupUnit + `.path >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/` + piCleanupUnit + `.path /etc/systemd/system/` + piCleanupUnit + `.service "$0"
+systemctl daemon-reload || true
+`
+
+const piCleanupPath = `[Unit]
+Description=Delete Xhaos's first-boot files once the node has connected (docs/nodes.md)
+
+[Path]
+PathExists=/var/lib/xhaos-node/connected
+
+[Install]
+WantedBy=multi-user.target
+`
+
+const piCleanupService = `[Unit]
+Description=Delete Xhaos's first-boot files (Wi-Fi password, join code) from the boot partition
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh ` + piCleanupScript + `
+`
+
+// piCleanupStart enables the path unit after the install, and says in the
+// journal what is left on the card until the node connects.
+const piCleanupStart = `systemctl daemon-reload && systemctl enable --now ` + piCleanupUnit + `.path; ` +
+	`[ -f /var/lib/xhaos-node/connected ] || logger -t xhaos-node "user-data and network-config (the Wi-Fi password and the join code) stay on the card's boot partition until the node connects; to remove them by hand: sudo rm -f /boot/firmware/user-data /boot/firmware/network-config" || true`
+
+// block indents a file for a YAML literal block.
+func block(content, indent string) string {
+	var b strings.Builder
+	for _, l := range strings.SplitAfter(strings.TrimSuffix(content, "\n"), "\n") {
+		if l != "\n" {
+			b.WriteString(indent)
+		}
+		b.WriteString(l)
+	}
+	return b.String() + "\n"
+}
 
 func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File {
 	stamp := piStamp(id, p.Hostname, expires)
@@ -93,7 +135,7 @@ func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File
 	u.WriteString("#cloud-config\n")
 	u.WriteString(stamp)
 	u.WriteString("# Made by Xhaos for node " + q(p.Hostname) + ". Holds a one-time join code: it works once, for 1 hour.\n")
-	u.WriteString("# Once the node has joined, it deletes this file and network-config from the card.\n")
+	u.WriteString("# Once the node has connected, it deletes this file and network-config from the card.\n")
 	fmt.Fprintf(&u, "hostname: %s\nmanage_etc_hosts: true\n\n", q(p.Hostname))
 	u.WriteString("users:\n")
 	fmt.Fprintf(&u, "  - name: %s\n", q(p.User))
@@ -113,7 +155,15 @@ func piFiles(p PiSetup, url, code, version, id string, expires time.Time) []File
 	install := fmt.Sprintf("for i in $(seq 1 60); do curl -fsSL %s | sh -s -- %s && break; sleep 10; done", ScriptURL("install-node.sh", version), args)
 	u.WriteString("\nruncmd:\n")
 	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(install))
-	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(piCleanup))
+	fmt.Fprintf(&u, "  - [sh, -c, %s]\n", q(piCleanupStart))
+	u.WriteString("\nwrite_files:\n")
+	for _, f := range []struct{ path, perm, content string }{
+		{piCleanupScript, "0700", piCleanup},
+		{"/etc/systemd/system/" + piCleanupUnit + ".service", "0644", piCleanupService},
+		{"/etc/systemd/system/" + piCleanupUnit + ".path", "0644", piCleanupPath},
+	} {
+		fmt.Fprintf(&u, "  - path: %s\n    permissions: %s\n    content: |\n%s", q(f.path), q(f.perm), block(f.content, "      "))
+	}
 
 	// Always written: an older network-config left in the downloads folder
 	// (another network's password) must never go on the card instead.

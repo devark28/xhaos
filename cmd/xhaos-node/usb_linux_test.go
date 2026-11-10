@@ -198,8 +198,8 @@ func TestStageIgnoresSymlinks(t *testing.T) {
 	if err := d.stage(files); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.commit(files); err != nil {
-		t.Fatal(err)
+	if n, err := d.commit(files); err != nil || n != 2 {
+		t.Fatal(n, err)
 	}
 	ents, _ := os.ReadDir(victims)
 	for _, e := range ents {
@@ -228,5 +228,35 @@ func TestStateFolderSymlinkRefused(t *testing.T) {
 	}
 	if _, err := openState(link); err == nil {
 		t.Error("a state folder that is a symlink was opened")
+	}
+}
+
+// A rename that fails half-way says how far it got, and leaves no staged file.
+func TestCommitPartly(t *testing.T) {
+	state := t.TempDir()
+	d, err := openState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.close()
+	files := []stateFile{{"node.json", []byte("{}\n")}, {"node.key", []byte("k\n")}}
+	if err := d.stage(files); err != nil {
+		t.Fatal(err)
+	}
+	// node.key is a folder that is not empty: renaming a file over it fails.
+	if err := os.MkdirAll(filepath.Join(state, "node.key", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	n, err := d.commit(files)
+	if err == nil || n != 1 {
+		t.Fatalf("n = %d, err = %v", n, err)
+	}
+	if got := read(t, filepath.Join(state, "node.json")); got != "{}\n" {
+		t.Errorf("node.json = %q", got)
+	}
+	for _, f := range files {
+		if _, err := os.Lstat(filepath.Join(state, stagedName(f.name))); !os.IsNotExist(err) {
+			t.Errorf("staged %s left: %v", f.name, err)
+		}
 	}
 }

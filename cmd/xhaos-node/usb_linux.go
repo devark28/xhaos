@@ -286,7 +286,10 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		return
 	}
 	keyFile, configFile := client.Encode(c, key)
-	files := []stateFile{{"node.key", keyFile}, {"node.json", configFile}}
+	// node.json first: if the key's rename then fails, the node holds the new
+	// node and the old key, which the server refuses outright (rather than
+	// running on as the old node with a key nobody has).
+	files := []stateFile{{"node.json", configFile}, {"node.key", keyFile}}
 	if err := dir.stage(files); err != nil {
 		r.fail("join: saving the new key: %v. This node keeps its old key; the new entry on %s stays offline (remove it there).", err, c.Server)
 		return
@@ -296,8 +299,15 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 	if systemd {
 		_, _ = command(ctx, "systemctl", "stop", "xhaos-node")
 	}
-	if err := dir.commit(files); err != nil {
-		r.fail("join: saving the new key: %v", err)
+	if n, err := dir.commit(files); err != nil {
+		if n == 0 {
+			r.fail("join: saving the new settings: %v. Nothing was replaced; this node keeps its old key, and the new entry on %s stays offline (remove it there).", err, c.Server)
+		} else {
+			r.fail("join: only partly saved (%s is new, the rest old): %v. The node cannot connect like this: make a new code and plug the stick in again, or run xhaos-node leave and join by hand.", files[0].name, err)
+		}
+		if systemd {
+			_, _ = command(ctx, "systemctl", "start", "xhaos-node")
+		}
 		return
 	}
 	r.line("Joined %s as %s (node %d).", c.Server, c.Name, c.Node)
@@ -434,16 +444,18 @@ func (d *stateDir) unstage(files []stateFile) {
 	}
 }
 
-// commit renames the staged files over the old ones (a rename replaces a
-// symlink, it does not write through it).
-func (d *stateDir) commit(files []stateFile) error {
+// commit renames the staged files over the old ones, in order (a rename
+// replaces a symlink, it does not write through it); n is how many were.
+func (d *stateDir) commit(files []stateFile) (n int, err error) {
 	for _, f := range files {
 		if err := unix.Renameat(d.fd, stagedName(f.name), d.fd, f.name); err != nil {
 			d.unstage(files)
-			return fmt.Errorf("%s: %w", f.name, err)
+			_ = unix.Fsync(d.fd)
+			return n, fmt.Errorf("%s: %w", f.name, err)
 		}
+		n++
 	}
-	return unix.Fsync(d.fd)
+	return n, unix.Fsync(d.fd)
 }
 
 func exists(p string) bool {

@@ -163,7 +163,9 @@ field() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
 for f in user-data network-config; do
   for other in "$FILES/$f"?* "$FILES/$f".*; do
     [ -f "$other" ] || continue
-    if [ -n "$(find "$other" -prune -newer "$FILES/$f")" ]; then
+    [ -n "$(find "$other" -prune -newer "$FILES/$f")" ] || continue
+    # The same pair downloaded twice is fine; anything else is not.
+    if [ "$(field "$(stamp "$other")" id)" != "$(field "$(stamp "$FILES/$f")" id)" ]; then
       die "$other is newer than $FILES/$f: the browser kept an older $f. Delete the old files, rename the new ones to user-data and network-config, and run again."
     fi
   done

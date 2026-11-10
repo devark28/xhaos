@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/auth"
 	"github.com/devark28/xhaos/app/backend"
 	"github.com/devark28/xhaos/app/llm"
 	"github.com/devark28/xhaos/app/node"
@@ -24,6 +25,7 @@ import (
 	"github.com/devark28/xhaos/app/node/wire"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/tool"
+	"net/netip"
 )
 
 const ws = "default"
@@ -220,8 +222,20 @@ func TestPiFiles(t *testing.T) {
 	if a, b := stamp(user), stamp(net); a == "" || a != b || !strings.Contains(a, fmt.Sprintf("expires=%d ", added.Expires.Unix())) {
 		t.Errorf("stamps %q and %q", a, b)
 	}
-	if !strings.Contains(user, "/etc/cloud/cloud-init.disabled") || !strings.Contains(user, `rm -f \"$d/user-data\" \"$d/network-config\"`) || !strings.Contains(user, "/var/lib/xhaos-node/connected") {
-		t.Errorf("user-data does not clean the boot partition:\n%s", user)
+	// The cleanup is a path unit, so a node that connects on a later boot
+	// still clears the card, and it makes the password's copies root-only.
+	for _, want := range []string{
+		"enable --now xhaos-node-first-boot.path",
+		"PathExists=/var/lib/xhaos-node/connected",
+		"ExecStart=/bin/sh /usr/local/lib/xhaos-node/first-boot-done.sh",
+		`rm -f "$d/user-data" "$d/network-config"; done`,
+		"touch /etc/cloud/cloud-init.disabled",
+		"chmod go-rwx /etc/netplan/*.yaml /etc/NetworkManager/system-connections/*",
+		"systemctl disable xhaos-node-first-boot.path",
+	} {
+		if !strings.Contains(user, want) {
+			t.Errorf("user-data does not clean the boot partition (%q):\n%s", want, user)
+		}
 	}
 
 	// Wired: network-config is still written, with no Wi-Fi.
@@ -446,9 +460,14 @@ func TestJoinStrikesSpareGoodNodes(t *testing.T) {
 	}
 }
 
-// Sockets that have not proven themselves are capped, and read little.
+// Sockets that have not proven themselves are capped, per address and in
+// all, and read little.
 func TestPendingSockets(t *testing.T) {
 	e := setup(t)
+	// The test's sockets all come from 127.0.0.1: trust it as a proxy, so
+	// X-Forwarded-For stands for other addresses.
+	auth.TrustProxies([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")})
+	t.Cleanup(func() { auth.TrustProxies(nil) })
 	u := "ws" + strings.TrimPrefix(e.url, "http") + wire.Path
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -458,18 +477,37 @@ func TestPendingSockets(t *testing.T) {
 			c.CloseNow()
 		}
 	}()
-	for i := 0; i < node.MaxPending; i++ {
-		c, _, err := websocket.Dial(ctx, u, nil)
+	dial := func(from string) (*websocket.Conn, int, error) {
+		c, resp, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"X-Forwarded-For": {from}}})
 		if err != nil {
-			t.Fatalf("socket %d: %v", i, err)
+			code := 0
+			if resp != nil {
+				code = resp.StatusCode
+			}
+			return nil, code, err
 		}
 		open = append(open, c)
+		return c, 0, nil
 	}
-	_, resp, err := websocket.Dial(ctx, u, nil)
-	if err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("socket %d: %v %v", node.MaxPending+1, resp, err)
+	// Per address: an IPv6 /64 is one address.
+	for i := 0; i < node.MaxPendingPerAddr; i++ {
+		if _, _, err := dial(fmt.Sprintf("2001:db8::%x", i+1)); err != nil {
+			t.Fatalf("socket %d: %v", i, err)
+		}
 	}
-	// One that sends more than wire.MaxHello is cut off.
+	if _, code, err := dial("2001:db8::ff"); code != http.StatusServiceUnavailable {
+		t.Fatalf("a fifth socket from one /64: %d %v", code, err)
+	}
+	// In all.
+	for i := node.MaxPendingPerAddr; i < node.MaxPending; i++ {
+		if _, _, err := dial(fmt.Sprintf("10.0.%d.%d", i/node.MaxPendingPerAddr, i)); err != nil {
+			t.Fatalf("socket %d: %v", i, err)
+		}
+	}
+	if _, code, err := dial("10.9.9.9"); code != http.StatusServiceUnavailable {
+		t.Fatalf("socket %d: %d %v", node.MaxPending+1, code, err)
+	}
+	// One that sends more than wire.MaxHello is cut off, and its place freed.
 	c := open[0]
 	var m wire.Msg
 	if err := wsjson.Read(ctx, c, &m); err != nil || m.Type != wire.TChallenge {
@@ -480,16 +518,35 @@ func TestPendingSockets(t *testing.T) {
 	if err := wsjson.Read(ctx, c, &m); websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
 		t.Fatalf("oversized hello: %+v %v", m, err)
 	}
-	// Its place is free again.
 	for i := 0; ; i++ {
-		c, _, err := websocket.Dial(ctx, u, nil)
+		_, _, err := dial("2001:db8::ff")
 		if err == nil {
-			open = append(open, c)
 			break
 		}
 		if i > 100 {
 			t.Fatalf("no place after one socket ended: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A socket that never finishes its handshake is dropped.
+func TestHandshakeTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the handshake timeout")
+	}
+	e := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), node.HandshakeTimeout+5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(e.url, "http")+wire.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	start := time.Now()
+	var m wire.Msg
+	_ = wsjson.Read(ctx, c, &m) // the challenge
+	if _, _, err := c.Read(ctx); err == nil || time.Since(start) > node.HandshakeTimeout+2*time.Second {
+		t.Fatalf("still open after %s: %v", time.Since(start), err)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"slices"
 	"sync"
 	"time"
@@ -33,16 +34,24 @@ type Hub struct {
 	notify    Notifier
 	joinLimit auth.Limiter  // wrong join codes, per address
 	pending   chan struct{} // sockets that have not proven themselves yet
+	pendMu    sync.Mutex
+	pendBy    map[string]int // those per address (an IPv6 /64 counts as one)
 	mu        sync.Mutex
 	conns     map[int64]*conn
 }
 
 // MaxPending is how many node sockets may be open at once before they have
-// joined or proven their key; more are turned away until those finish.
-const MaxPending = 32
+// joined or proven their key, MaxPendingPerAddr how many of those from one
+// address; more are turned away until those finish. A handshake that takes
+// longer than HandshakeTimeout is dropped.
+const (
+	MaxPending        = 32
+	MaxPendingPerAddr = 4
+	HandshakeTimeout  = 10 * time.Second
+)
 
 func newHub(s *Service, live Notifier) *Hub {
-	return &Hub{s: s, notify: live, conns: map[int64]*conn{}, pending: make(chan struct{}, MaxPending)}
+	return &Hub{s: s, notify: live, conns: map[int64]*conn{}, pending: make(chan struct{}, MaxPending), pendBy: map[string]int{}}
 }
 
 type liveNode struct {
@@ -116,19 +125,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// held back by wrong codes from its address (a shared NAT), and its
 	// hello does not clear them. A failed hello is refused; a flood of
 	// sockets is bounded by MaxPending and wire.MaxHello.
-	select {
-	case h.pending <- struct{}{}:
-	default:
+	release, ok := h.admit(addr)
+	if !ok {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "too many node connections are starting at once; try again shortly", http.StatusServiceUnavailable)
 		return
-	}
-	held := true
-	release := func() {
-		if held {
-			held = false
-			<-h.pending
-		}
 	}
 	defer release()
 	w = hijackable(w)
@@ -143,6 +144,47 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(wire.MaxHello)
 	defer c.CloseNow()
 	h.serve(c, addr, release)
+}
+
+// admit takes a place among the pending sockets, for addr; release gives it
+// back (it may be called more than once).
+func (h *Hub) admit(addr string) (release func(), ok bool) {
+	key := pendingKey(addr)
+	h.pendMu.Lock()
+	if h.pendBy[key] >= MaxPendingPerAddr {
+		h.pendMu.Unlock()
+		return nil, false
+	}
+	select {
+	case h.pending <- struct{}{}:
+	default:
+		h.pendMu.Unlock()
+		return nil, false
+	}
+	h.pendBy[key]++
+	h.pendMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.pendMu.Lock()
+			if h.pendBy[key]--; h.pendBy[key] <= 0 {
+				delete(h.pendBy, key)
+			}
+			h.pendMu.Unlock()
+			<-h.pending
+		})
+	}, true
+}
+
+// pendingKey groups an IPv6 address by its /64 (one site's or host's
+// share); an IPv4 address stands for itself.
+func pendingKey(addr string) string {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil || ip.Unmap().Is4() {
+		return addr
+	}
+	p, _ := ip.Prefix(64)
+	return p.String()
 }
 
 // hijackable is the writer a WebSocket can take over: the server's own,
@@ -175,7 +217,7 @@ func (h *Hub) serve(c *websocket.Conn, addr string, proven func()) {
 	defer cancel()
 	nonce := make([]byte, 32)
 	_, _ = rand.Read(nonce)
-	hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+	hctx, hcancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer hcancel()
 	if err := wsjson.Write(hctx, c, wire.Msg{Type: wire.TChallenge, Nonce: nonce}); err != nil {
 		return
