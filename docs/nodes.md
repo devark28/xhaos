@@ -58,6 +58,22 @@ Xhaos learns this address from `-node-url https://nodes.example.com` (with `-pub
 
 Removing a node in Xhaos forgets its key: its next connection is refused. `xhaos-node leave` on the machine deletes its key and stops the service.
 
+### Install now, join later (`--no-join`)
+
+`install-node.sh --no-join` does everything except joining: `xhaos-node`, its user and folders, and the service, which waits for the node to join (`ConditionPathExists=/var/lib/xhaos-node/node.json`). It is for a machine that joins later, and for baking `xhaos-node` into an image. The node then joins in one of two ways:
+
+- **With a USB stick:** the install needs `--usb-config`. Plug in an `XHAOS` stick whose `xhaos-node.conf` has `server=` and `code=` (see "USB stick config" below). `apply-usb` joins into the folder the service was given (`--root`, read from the unit), then starts the service.
+- **By hand:** run `install-node.sh --server URL --code CODE` again.
+
+In an image build (a chroot, where systemd is installed but not running), `--no-join` sees that systemd is not running. It then writes and enables the units without starting anything or reloading systemd. It does not check the sandbox either, because the kernel running is the build host's. Instead it installs `bubblewrap` with apt, since Raspberry Pi kernels have no Landlock; the node picks its sandbox when it starts on its own kernel. `--code` does not go with `--no-join`.
+
+```sh
+# in the image's chroot (as root), e.g. an rpi-image-gen layer
+curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/vX.Y.Z/install-node.sh | sh -s -- --no-join --usb-config --version vX.Y.Z
+```
+
+The stick's Wi-Fi settings need NetworkManager. On an image without it (systemd-networkd only), a stick can join the node but cannot change its Wi-Fi.
+
 ## Raspberry Pi first boot (no screen, no keyboard)
 
 Raspberry Pi OS based on Debian Trixie (images from November 2025 on) configures itself on first boot with cloud-init, from two files on the card's boot partition: `user-data` and `network-config`. That partition is the FAT one any computer mounts when the card is inserted, so it is the "flash disk with a setup file" we want, with nothing extra to plug in.
