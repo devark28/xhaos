@@ -58,7 +58,7 @@ func (t *Tools) Specs(string) []llm.Tool {
 			Description: "List the workspace's nodes: other machines (a build PC, Raspberry Pis…) joined to Xhaos, with whether each is online, what it is (OS, arch, model, CPUs, memory), its labels, its jobs, and whether you may use it. A node is granted to an agent by the user on the Nodes tab.",
 			Schema:      llm.ToolSchema{Properties: map[string]any{}}},
 		{Name: toolRun,
-			Description: "Run a shell command on a node granted to you, in its folder (the node's root, e.g. ~/xhaos-work; dir is relative to it). It waits up to `wait` seconds (default and most 120) and returns the exit code and output; a command still running then keeps running as a job: follow it with node_job. Set background to return at once (servers, long builds). The command runs confined to the node's folder (Landlock) with no sudo; hardware such as /dev/video0 only if the node's owner opened it. Each call waits for the user's approval like bash.",
+			Description: "Run a shell command on a node granted to you, in its folder (the node's root, e.g. ~/xhaos-work; dir is relative to it). It waits up to `wait` seconds (default and most 120) and returns the exit code and output; a command still running then keeps running as a job: follow it with node_job. Set background to return at once (servers, long builds). The command runs confined to the node's folder (Landlock, or bubblewrap on kernels without it) with no sudo; hardware such as /dev/video0 only if the node's owner opened it. Each call waits for the user's approval like bash.",
 			Schema: llm.ToolSchema{Properties: map[string]any{
 				"node": str, "command": str, "dir": str,
 				"wait": num, "background": flag,
@@ -379,10 +379,7 @@ func (t *Tools) list(ws string, a agent.Agent) (string, error) {
 				what = append(what, fmt.Sprintf("%d MB memory", f.MemoryMB))
 			}
 			fmt.Fprintf(&b, "  machine: %s (host %s, xhaos-node %s)\n", strings.Join(what, ", "), f.Hostname, f.Version)
-			sandbox := "commands run under Landlock, confined to the folder"
-			if !f.Sandboxed {
-				sandbox = "commands run unconfined (its owner allowed it)"
-			}
+			sandbox := nodeSandbox(f)
 			fmt.Fprintf(&b, "  folder: %s; %s\n", f.Root, sandbox)
 			if len(f.Devices) > 0 {
 				fmt.Fprintf(&b, "  devices opened to commands: %s\n", strings.Join(f.Devices, ", "))
@@ -631,4 +628,30 @@ func receive(root, dest string, d *download) (int64, error) {
 		return 0, fmt.Errorf("%s is a folder in the project", dest)
 	}
 	return size, os.Rename(tmp.Name(), dest)
+}
+
+// nodeSandbox says how a node confines commands, for nodes_list. Nodes
+// before the bubblewrap fallback send no Sandbox: Landlock and Unsandbox
+// say it then.
+func nodeSandbox(f *wire.Facts) string {
+	kind := f.Sandbox
+	if kind == "" {
+		switch {
+		case f.Unsandbox:
+			kind = wire.SandboxOff
+		case f.Landlock > 0:
+			kind = wire.SandboxLandlock
+		default:
+			kind = wire.SandboxNone
+		}
+	}
+	switch kind {
+	case wire.SandboxLandlock:
+		return "commands run under Landlock, confined to the folder"
+	case wire.SandboxBwrap:
+		return "commands run under bubblewrap, confined to the folder"
+	case wire.SandboxOff:
+		return "commands run unconfined (its owner allowed it)"
+	}
+	return "it has no sandbox, so it refuses commands (its owner can install bubblewrap)"
 }

@@ -9,6 +9,7 @@ export interface NodeFacts {
   version: string; protocol: number; hostname: string; os: string; arch: string;
   kernel?: string; distro?: string; model?: string; cpus: number; memoryMB?: number;
   root: string; landlock: number; sandboxed: boolean; devices?: string[]; hardware?: string[]; unsandboxed?: boolean;
+  sandbox?: 'landlock' | 'bwrap' | 'off' | 'none'; sandboxNote?: string;
 }
 export interface NodeJob { id: string; command: string; dir?: string; started: number; ended?: number; running: boolean; exit: number; signal?: string; size: number; dropped: number }
 export type NodeState = 'waiting' | 'online' | 'offline';
