@@ -60,6 +60,9 @@ export interface QuestionBatch {
   draft?: Record<string, Partial<Answer>>;
 }
 
+// A title the agent proposed for itself, waiting for the owner (app/agent/title.go).
+export interface TitleProposal { title: string; reason?: string; at: string }
+
 // Dangerously allow (package danger): until when, and the branch git is locked to.
 export interface Danger { until: string; branch?: string; calls?: number } // calls: 0 or absent = the normal limit, -1 = none
 
@@ -92,6 +95,7 @@ export interface Agent {
   demoScenario?: string;
   sample?: boolean;
   questionBatch?: QuestionBatch;
+  titleProposal?: TitleProposal; // the agent proposes a new title; it does not wait for the answer
 }
 
 export interface ChannelMessage {
@@ -180,6 +184,7 @@ export interface BackendAgent {
   policy: unknown;
   createdAt: string;
   danger?: Danger;
+  titleProposal?: TitleProposal;
 }
 
 export interface BackendEvent {

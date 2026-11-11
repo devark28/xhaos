@@ -41,7 +41,7 @@ const (
 	EventMessage = "agent.message"
 	EventStatus  = "agent.status"
 	EventTool    = "agent.tool"
-	EventTitle   = "agent.title"  // a better title, written by the model
+	EventTitle   = "agent.title"  // a better title: the model's first, or a rename it proposed (title.go)
 	EventDanger  = "agent.danger" // dangerously allow turned on (data: Danger) or off (data: null)
 )
 
@@ -82,6 +82,8 @@ type Agent struct {
 	CreatedAt   time.Time     `json:"createdAt"`
 	// Danger: the owner turned on "dangerously allow" (package danger).
 	Danger *Danger `json:"danger,omitempty"`
+	// TitleProposal is a new title the agent proposed, waiting for the owner.
+	TitleProposal *TitleProposal `json:"titleProposal,omitempty"`
 }
 
 // Danger is "dangerously allow": until Until, the agent's calls that would
@@ -292,6 +294,18 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 	// 1: the title is the prompt's first line, for the model to replace.
 	if err := addColumn(db, "agents", "title_auto", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
+	}
+	// A title the agent proposed for itself, waiting for the owner (title.go).
+	for _, col := range []string{"title_proposal", "title_reason", "title_proposed_at"} {
+		if err := addColumn(db, "agents", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return nil, fmt.Errorf("migrate agents: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS agent_settings (
+		workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+		self_rename  INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return nil, fmt.Errorf("migrate agent settings: %w", err)
 	}
 	return &Service{db: db, publish: publish, now: time.Now}, nil
 }
@@ -913,15 +927,19 @@ func (s *Service) emit(events []eventlog.Event) {
 	}
 }
 
-const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch, danger_calls FROM agents`
+const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch, danger_calls, title_proposal, title_reason, title_proposed_at FROM agents`
 
 func scan(r interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
-	var at, dangerUntil, dangerBranch string
+	var at, dangerUntil, dangerBranch, proposal, reason, proposedAt string
 	var dangerCalls int
 	err := r.Scan(&a.ID, &a.WorkspaceID, &a.ParentID, &a.Title, &a.Role, &a.Status, &a.Provider, &a.Model,
-		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch, &dangerCalls)
+		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch, &dangerCalls,
+		&proposal, &reason, &proposedAt)
 	a.CreatedAt = sqlitedb.ParseStamp(at)
+	if proposal != "" {
+		a.TitleProposal = &TitleProposal{Title: proposal, Reason: reason, At: sqlitedb.ParseStamp(proposedAt)}
+	}
 	if dangerUntil != "" {
 		a.Danger = &Danger{Until: sqlitedb.ParseStamp(dangerUntil), Branch: dangerBranch, Calls: dangerCalls}
 	}
@@ -939,9 +957,10 @@ func get(q sqlitedb.Querier, workspaceID string, id int64) (Agent, error) {
 // Store is what the server itself does to agents (model runs). It is not
 // bound to clients, so they cannot impersonate an agent or set statuses.
 type Store struct {
-	db      *sql.DB
-	publish eventlog.Publisher
-	now     func() time.Time
+	db        *sql.DB
+	publish   eventlog.Publisher
+	now       func() time.Time
+	proposals proposals // recent title proposals, for the rate limit (title.go)
 }
 
 func NewStore(db *sql.DB, publish eventlog.Publisher) *Store {
@@ -1051,11 +1070,6 @@ func (st *Store) TitlePending(workspaceID string, id int64) bool {
 	var auto int
 	err := st.db.QueryRow(`SELECT title_auto FROM agents WHERE workspace_id = ? AND id = ?`, workspaceID, id).Scan(&auto)
 	return err == nil && auto == 1
-}
-
-// TitleData is an agent.title event.
-type TitleData struct {
-	Title string `json:"title"`
 }
 
 // SetTitle replaces a pending title (once; a title the user or a parent gave

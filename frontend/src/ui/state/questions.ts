@@ -4,6 +4,7 @@ import { update, get, findAgentIn, pendingQuestions, focusLater, toast, errorTex
 import { focusComposer } from './composer.ts';
 import { call, connected, isSample } from './backend.ts';
 import { idempotencyKey } from '../../server-client.ts';
+import { questionsJSON, copyText } from '../../questions-json.ts';
 import type { Agent, Answer } from '../../types.ts';
 
 export const questionStepIn = (s: Pick<State, 'questionSteps'>, agent: Agent) => Math.min(s.questionSteps.get(questionStepKey(agent)) || 0, agent.questionBatch?.questions.length || 0);
@@ -54,4 +55,17 @@ export function advanceOrSubmit(agent: Agent) {
     if (pendingQuestions().length) focusLater('[data-questions-agent]'); else focusComposer();
     toast(`Answers saved for agent #${agent.id}.`);
   } catch (error) { toast(errorText(error)); }
+}
+
+// copyQuestions copies pending questions as JSON (questions-json.ts): one
+// agent's, or with all, every listed agent's. Call it from a click (Firefox
+// lets a page write the clipboard only within one).
+export async function copyQuestions(agents: Agent[], all = false) {
+  const { text, count } = questionsJSON(agents, { all });
+  if (!count) { toast('No pending questions to copy.'); return; }
+  try {
+    await copyText(text);
+    const from = all ? ` from ${agents.length} agent${agents.length === 1 ? '' : 's'}` : ` from #${agents[0].id}`;
+    toast(`Copied ${count} question${count === 1 ? '' : 's'}${from} as JSON.`);
+  } catch (error) { toast(`Could not copy: ${errorText(error)}`); }
 }

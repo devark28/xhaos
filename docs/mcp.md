@@ -34,13 +34,13 @@ A client sees only the tools its token's scopes allow. Give each token the least
 
 - `list_agents`: number (`#N`), title, status (`idle`, `running`, `attention` = waiting for you, `paused`, `complete`, `terminated`), parent, project, model, and how many questions or approvals each waits on.
 - `get_agent`: one agent's pending questions and approvals (every option included), its channels, and its recent messages and tool calls.
-- `list_questions`: every pending question and approval across all agents, each with its agent's number and title and an id (`<agent>/<call id>`), and whether this token may answer it (and why not).
+- `list_questions`: every pending question and approval across all agents, each with its agent's number and title and an id (`<agent>/<call id>`), and whether this token may answer it (and why not). A title an agent proposed for itself is listed too, as kind `rename` (id `<agent>/rename`, with `proposed_title` and `reason`); the agent does not wait for it.
 - `wait_for_events`: holds the call (up to 50 s) until something happens (a reply, a status change, a question, an approval, a channel message) and returns it. Call it once without `since` to get the current position, then pass the `seq` it returns. A token may hold 4 waiting calls at once (`wait_for_events` and `read_channel` with a wait), a workspace 16; more return at once with `too many waits`.
 - `list_projects`, `list_models`: the choices for `create_agent`, and the default model.
 - `create_agent`: a task, and optionally a title, project, provider and model, and a policy (`access` rw/ro, `review` manual/auto, `commit` review/blocked).
 - `send_message`, `start_agent`, `stop_agent`: as the page's composer, Continue, Stop and Terminate.
 - `list_channels`, `read_channel` (after a message id, optionally waiting up to 50 s), `post_channel`, `open_channel` (a channel with one agent, which answers there with `channel_send`).
-- `answer_question`: an `ask_user` question by option labels (or ids) and/or text, per question (`answers`) or with `choice`/`text` when there is one question, or `dismiss`; a commit or push with `decision` `allow` or `deny`.
+- `answer_question`: an `ask_user` question by option labels (or ids) and/or text, per question (`answers`) or with `choice`/`text` when there is one question, or `dismiss`; a commit or push with `decision` `allow` or `deny`; a `rename` with `decision` `rename` or `keep` (scope `answer`; the agent's history names the token).
 
 ## What stays the owner's
 

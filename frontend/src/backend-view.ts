@@ -19,6 +19,7 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
     modelLabel: modelLabel(agent.provider, agent.model),
     policy: agent.policy,
     danger: agent.danger || undefined,
+    titleProposal: agent.titleProposal || undefined,
     archivedAt: agent.status === 'terminated' ? agent.createdAt : undefined,
     activity: [],
     children: [],
@@ -219,10 +220,17 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
     agent.danger = event.data || undefined;
     return { tree: true, agentId: agent.id };
   }
-  if (event.kind === 'agent.title') { // the model's title replaces the prompt's first line
+  if (event.kind === 'agent.title') { // the model's title replaces the prompt's first line, or a rename the agent proposed
     const agent = byId.get(event.agentId);
     if (!agent || !event.data?.title) return null;
     agent.title = event.data.title;
+    if (event.data.by) delete agent.titleProposal; // a proposal applied
+    return { tree: true, agentId: agent.id };
+  }
+  if (event.kind === 'agent.title_proposal') { // a title the agent proposed (data), or its end (null)
+    const agent = byId.get(event.agentId);
+    if (!agent) return null;
+    if (event.data?.title) agent.titleProposal = event.data; else delete agent.titleProposal;
     return { tree: true, agentId: agent.id };
   }
   if (event.kind === 'agent.status') {

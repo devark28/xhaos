@@ -6,7 +6,7 @@ import { Button, Kbd, StatusDot } from './kit.tsx';
 import { activeAgents } from '../model.ts';
 import { hasPendingQuestions, OWN, ownChosen, finalAnswer } from '../questions.ts';
 import { useApp, workspaceOf, afterCommit } from './state/store.ts';
-import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit, dismissQuestions } from './state/questions.ts';
+import { questionStepIn, setQuestionStep, setQuestionAgent, setAnswer, advanceOrSubmit, dismissQuestions, copyQuestions } from './state/questions.ts';
 import type { Agent, Answer, Question as QuestionData } from '../types.ts';
 
 const emptyAnswer: Answer = { choices: [], text: '' };
@@ -152,7 +152,10 @@ export function QuestionInbox() {
           );
         })}
         <div {...stylex.props(styles.send)}>
-          <Button type="submit" data-question-next>{question ? (step + 1 < last ? 'Next question' : 'Review') : `Send answers to #${agent.id}`}</Button>
+          {/* JSON with the agent, ids and options, to answer elsewhere (a chat with Claude Code) and apply back, by hand or over MCP. */}
+          <Button data-copy-questions={agent.id} title={`Copy #${agent.id}'s pending questions as JSON (agent, ids, options), to answer them elsewhere`} onClick={() => void copyQuestions([agent])} sx={styles.copy}>Copy JSON</Button>
+          {others.length > 0 && <Button data-copy-all-questions title={`Copy the pending questions of all ${pending.length} waiting agents as one JSON array`} onClick={() => void copyQuestions(pending, true)} sx={styles.copy}>Copy all ({pending.length} agents)</Button>}
+          <Button type="submit" data-question-next sx={styles.submit}>{question ? (step + 1 < last ? 'Next question' : 'Review') : `Send answers to #${agent.id}`}</Button>
         </div>
       </form>
       <div aria-hidden="true" {...stylex.props(styles.hints)}>
@@ -179,7 +182,9 @@ const styles = stylex.create({
   rowTitle: { flexShrink: 0, maxWidth: '45%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: colors.textSoft },
   rowAnswer: { minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', color: colors.text },
   rowBody: { paddingInline: 10, paddingBottom: 10 },
-  send: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 },
+  send: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 },
+  copy: { flexShrink: 0, paddingBlock: 2, paddingInline: 6, borderRadius: 3, fontSize: 10, color: colors.textDim },
+  submit: { marginLeft: 'auto' },
   tick: { marginRight: 5, fontSize: 10, color: colors.brand },
   body: { flexGrow: 1, minHeight: 0, overflow: 'auto', paddingTop: 2, paddingInline: 2, paddingBottom: 4, borderRadius: 4, boxShadow: { default: null, ':focus-visible': `0 0 0 1px ${colors.brandLine}` } },
   question: { minWidth: 0, margin: 0, padding: 0, borderWidth: 0 },
