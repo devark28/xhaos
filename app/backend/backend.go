@@ -4,6 +4,7 @@
 package backend
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"github.com/devark28/xhaos/app/attachment"
@@ -21,6 +22,7 @@ import (
 	"github.com/devark28/xhaos/app/project"
 	"github.com/devark28/xhaos/app/tool"
 	"github.com/devark28/xhaos/app/usage"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -211,6 +213,13 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	counter := usage.NewRecorder(db)
 	runner.Usage = counter
 	runner.Classifier = classifier.New(db, opts.Classifier)
+	if opts.Classifier.URL != "" {
+		go func() { // in the background: the model may take a while to load
+			if err := runner.Classifier.Warm(context.Background()); err != nil {
+				slog.Warn("classifier: warm-up failed", "err", err)
+			}
+		}()
+	}
 	tools := mcp.NewManager(db, box, opts.Version)
 	channels := channel.NewService(db, agents, store, opts.Publish)
 	memories := memory.NewService(db, opts.Publish)

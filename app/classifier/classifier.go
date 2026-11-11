@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/devark28/xhaos/app/danger"
 	"github.com/devark28/xhaos/app/policy"
@@ -49,6 +50,10 @@ const By = "classifier"
 
 // ReasonPrefix starts the ToolData.Reason of calls the classifier allowed.
 const ReasonPrefix = "allowed by the local classifier: "
+
+// FallbackReason is the ToolData.Reason of a call the classifier allowed when
+// the model gives no reason for it.
+const FallbackReason = "allowed by the local model"
 
 // logFile is the developer log, in Config.Debug.
 const logFile = "log.jsonl"
@@ -82,11 +87,18 @@ func limits(c Call) bool {
 		FloorIn(c.Root, c.Command) == ""
 }
 
-// Eligible reports whether the model may be asked about c: limits hold, and
-// the command runs no npx-style runner (those are the list's job alone, see
-// runner.go). Otherwise the policy's verdict stands.
+// ModelMaxChars is the longest command the model is asked about. A longer one
+// asks without the model: the system prompt is cached, but the command's own
+// tokens process at about 30 a second, so a long one cannot finish within the
+// answer's limit (a 2,300-token command took about 73 s).
+const ModelMaxChars = 1500
+
+// Eligible reports whether the model may be asked about c: limits hold, the
+// command is at most ModelMaxChars long, and it runs no npx-style runner
+// (those are the list's job alone, see runner.go). Otherwise the policy's
+// verdict stands.
 func Eligible(c Call) bool {
-	return limits(c) && !hasRunner(c.Command)
+	return utf8.RuneCountInString(c.Command) <= ModelMaxChars && limits(c) && !hasRunner(c.Command)
 }
 
 // Allowed reports whether c is allowed by the built-in list with no model:
@@ -163,21 +175,25 @@ type Request struct {
 	Command   string
 }
 
-// Decide asks the model about an eligible call (see Eligible) and returns
-// whether it may run without the owner, with the reason. It returns false
-// when the classifier is off or not configured; failures return false with
-// the reason. Answers are cached per project and command; failures are not.
-func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason string) {
+// Decide asks the model about an eligible call (see Eligible). It returns
+// whether the call may run without the owner, and the text to show for it:
+// for an ask (or a failure, which asks) the reason, or "" when there is none;
+// for an allow, ReasonPrefix and the model's reason when it is already known,
+// or "" when it is not. An allow with "" is explained in the background
+// (see Explain). Verdicts are cached per project and command; failures are not.
+func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, text string) {
 	if c == nil || c.client == nil {
 		return false, ""
 	}
 	if on, err := c.on(); err != nil || !on {
 		return false, ""
 	}
-	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) { // Eligible checked it; checked again so Decide alone never passes the floor or sees a runner
+	// Eligible checked these; checked again so Decide alone never passes the
+	// floor, sees a runner, or asks about a command too long to answer in time.
+	if FloorIn(r.Project, r.Command) != "" || hasRunner(r.Command) || utf8.RuneCountInString(r.Command) > ModelMaxChars {
 		return false, ""
 	}
-	text, ok := modelText(r.Command)
+	model, ok := modelText(r.Command)
 	if !ok {
 		return false, "the command has a shell comment or a quoted string over 200 characters, which the classifier does not read"
 	}
@@ -187,19 +203,74 @@ func (c *Classifier) Decide(ctx context.Context, r Request) (allow bool, reason 
 	v, hit := c.cache.get(key)
 	c.mu.Unlock()
 	if !hit {
-		var err error
-		v.allow, v.reason, err = c.client.Ask(ctx, text)
+		yes, why, err := c.client.Ask(ctx, model)
 		if err != nil {
-			v.allow = false
 			log.Printf("WARN classifier: %v", err)
-		} else {
-			c.mu.Lock()
-			c.cache.put(key, v)
-			c.mu.Unlock()
+			c.record(r, verdict{reason: why}, c.now().Sub(started), false)
+			return false, why
 		}
+		v = verdict{allow: yes}
+		c.mu.Lock()
+		c.cache.put(key, v)
+		c.mu.Unlock()
 	}
 	c.record(r, v, c.now().Sub(started), hit)
-	return v.allow, v.reason
+	switch {
+	case !v.allow:
+		return false, ""
+	case v.reason != "":
+		return true, ReasonPrefix + v.reason
+	}
+	return true, ""
+}
+
+// Warm makes the model's warm-up request (see Client.Warm), so the first
+// command does not wait for the model to load. It does nothing with no model.
+func (c *Classifier) Warm(ctx context.Context) error {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	return c.client.Warm(ctx)
+}
+
+// Explain returns the text to show for an allowed call whose reason Decide
+// did not have: ReasonPrefix and the model's reason, or FallbackReason when
+// the model cannot give one. It asks the model once per command and project;
+// the answer is kept with the verdict. It runs in the background, after the
+// call was recorded as allowed.
+func (c *Classifier) Explain(ctx context.Context, r Request) string {
+	if c == nil || c.client == nil {
+		return FallbackReason
+	}
+	model, ok := modelText(r.Command)
+	if !ok {
+		return FallbackReason
+	}
+	key := cacheKey{r.Project, r.Command}
+	c.mu.Lock()
+	v, hit := c.cache.get(key)
+	c.mu.Unlock()
+	if !hit || !v.allow {
+		return FallbackReason
+	}
+	if v.reason != "" {
+		return ReasonPrefix + v.reason
+	}
+	started := c.now()
+	why, err := c.client.Explain(ctx, model)
+	if err != nil {
+		log.Printf("WARN classifier: %v", err)
+		return FallbackReason
+	}
+	if why == "" {
+		why = "an ordinary project command"
+	}
+	v.reason = why
+	c.mu.Lock()
+	c.cache.put(key, v)
+	c.mu.Unlock()
+	c.record(r, v, c.now().Sub(started), true)
+	return ReasonPrefix + why
 }
 
 // entry is one line of the developer log.

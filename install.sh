@@ -12,12 +12,13 @@
 # restarting.
 #
 # Options:
-#   --yes              answer yes to every question (unattended), except
-#                      adding the classifier model (needs --with classifier)
+#   --yes              answer yes to every question (unattended), including
+#                      adding the classifier model (2.1 GB)
 #   --with a,b,c       install these parts without asking: devtools, flutter,
 #                      browsers, podman, dictation, classifier (also to update
-#                      them). classifier is the optional command model, no by
-#                      default; the built-in command list needs no part.
+#                      them). classifier is the command model (2.1 GB), on by
+#                      default (--without classifier skips it); the built-in
+#                      command list needs no part.
 #   --without a,b      skip these parts, without asking. --without dictation
 #                      turns off the warm dictation service only (takes then
 #                      start the sidecar per take, as before); nothing is deleted.
@@ -51,12 +52,13 @@ usage() {
 Xhaos installer and updater.
   curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/main/install.sh | sh
 Options:
-  --yes              answer yes to every question (unattended), except
-                     adding the classifier model (needs --with classifier)
+  --yes              answer yes to every question (unattended), including
+                     adding the classifier model (2.1 GB)
   --with a,b,c       install or update these parts without asking:
                      devtools, flutter, browsers, podman, dictation,
-                     classifier (the optional command model; no by
-                     default, the built-in command list needs no part)
+                     classifier (the command model, 2.1 GB; on by
+                     default, --without skips it; the built-in command
+                     list needs no part)
   --without a,b      skip these parts, without asking. --without dictation
                      turns off the warm dictation service only (takes then
                      start the sidecar per take, as before); nothing is deleted
@@ -159,7 +161,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 DICT=$HOME_DIR/dictation
 MODEL_DIR=$DICT/models/whisper-large-v3-turbo
-# The command classifier model (optional, no by default): llama.cpp's
+# The command classifier model (on by default; --without classifier skips it): llama.cpp's
 # llama-server and a small model, as a service of its own on the loopback
 # (nothing else here uses port 8189). Xhaos's built-in list of build, test and
 # lint commands needs none of it.
@@ -178,9 +180,24 @@ DICT_UNIT=/etc/systemd/system/xhaos-dictation.service
 # Settings kept between runs (written back at the end).
 PROJECTS="" PUBLIC_HOST="" TRUSTED_PROXY="" LISTEN=127.0.0.1 PORT=5180 NODE_URL=""
 DEVTOOLS=no FLUTTER=no BROWSERS=no PODMAN=no DICTATION=no CLASSIFIER=no DICTATION_SERVICE=""
+# SAVED_PARTS lists the optional parts whose setting the settings file holds
+# (",classifier,"): a saved choice, yes or no, wins over --yes and the prompts.
+SAVED_PARTS=""
+# SAVED_OFF lists the parts a saved no left out in this run (for the summary).
+SAVED_OFF=""
+# UNDECIDED lists the optional parts this run neither installed nor refused: an
+# unattended run skipped them, or the install failed. Their settings line is
+# written only when they are yes, or when a saved choice holds (conf_part).
+UNDECIDED=""
 if [ -r "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
+  for p in devtools flutter browsers podman dictation classifier; do
+    if grep -q "^$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')=" "$CONF" 2>/dev/null; then
+      SAVED_PARTS="$SAVED_PARTS$p,"
+    fi
+  done
+  if [ -n "$SAVED_PARTS" ]; then SAVED_PARTS=",$SAVED_PARTS"; fi
   # Settings from before the warm service: installed dictation keeps it on (as
   # the classifier does). Only --without dictation stores 'no', so dictation
   # declined earlier and installed now still gets the service.
@@ -479,7 +496,12 @@ part() {
     *",$1,"*) ;;
     *)
       if [ "$2" = yes ]; then say "$1: installed (update it with --with $1)"; return 0; fi
+      case $SAVED_PARTS in *",$1,"*)
+        SAVED_OFF="$SAVED_OFF $1"
+        say "$1: not installed (the saved setting is no; add it with --with $1)"; return 0 ;;
+      esac
       if [ "$FIRST" = no ] && [ "$YES" = no ] && [ -z "$TTY" ]; then
+        UNDECIDED="$UNDECIDED $1 "
         say "$1: not installed (add it with --with $1)"; return 0
       fi
       want "$1" "$4" "$3" || return 0 ;;
@@ -493,6 +515,7 @@ part() {
   if [ "$rc" -eq 0 ]; then
     eval "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')=yes"
   else
+    UNDECIDED="$UNDECIDED $1 "
     say "  $1 failed (above); the rest of the installation goes on. Re-run with --with $1 to try again."
   fi
 }
@@ -518,22 +541,14 @@ if [ "$DICTATION" = yes ]; then
 fi
 WARM=no
 if [ "$DICTATION" = yes ] && [ "$DICTATION_SERVICE" = yes ]; then WARM=yes; fi
-# --yes answers yes to the other parts, but never adds the classifier model
-# (2.1 GB, and about 3.7 GB of RAM while it runs): only --with classifier or the terminal does.
-cls_yes_only() {
-  [ "$YES" = yes ] && [ "$CLASSIFIER" != yes ] || return 1
-  case $WITH$WITHOUT in *",classifier,"*) return 1 ;; esac
-}
-if cls_yes_only; then
-  say "classifier: not installed (--yes does not add it; add it with --with classifier)"
-else
-part classifier "$CLASSIFIER" n "Command classifier model (optional; most servers do not need it).
+# The classifier model is on by default, and --yes adds it too (2.1 GB, and
+# about 3.7 GB of RAM while it runs); --without classifier skips it.
+part classifier "$CLASSIFIER" y "Command classifier model (on by default; answer n or use --without classifier to skip it).
   Xhaos's built-in list of build, test and lint commands already runs those without asking, with no model (on by default; Settings → Tools → Commands turns it off).
   This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
   Dangerous commands still ask, and nothing leaves the server.
   Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 3B Instruct Q4_K_M (Hugging Face, 2.1 GB, Apache-2.0),
   both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
-fi
 case $WITHOUT in *",classifier,"*)
   if [ "$CLASSIFIER" = yes ]; then
     say "  It stays installed and on: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1)), service xhaos-classifier."
@@ -549,10 +564,24 @@ if [ "$DICTATION" = yes ]; then sync_stt; fi
 
 step "The service"
 run install -d -m 755 "$CONF_DIR"
+# conf_part PART VALUE NAME: the settings line of an optional part. An undecided
+# part gets no line unless it is yes, so the next run asks about it again.
+conf_part() {
+  case $UNDECIDED in *" $1 "*)
+    case $SAVED_PARTS in *",$1,"*) ;; *) [ "$2" = yes ] || return 0 ;; esac ;;
+  esac
+  printf "%s='%s'\n" "$3" "$2"
+}
 {
   printf '# Xhaos installer settings: edit, then re-run install.sh to apply.\n'
   printf "PROJECTS='%s'\nPUBLIC_HOST='%s'\nTRUSTED_PROXY='%s'\nLISTEN='%s'\nPORT='%s'\n" "$PROJECTS" "$PUBLIC_HOST" "$TRUSTED_PROXY" "$LISTEN" "$PORT"
-  printf "DEVTOOLS='%s'\nFLUTTER='%s'\nBROWSERS='%s'\nPODMAN='%s'\nDICTATION='%s'\nCLASSIFIER='%s'\nDICTATION_SERVICE='%s'\n" "$DEVTOOLS" "$FLUTTER" "$BROWSERS" "$PODMAN" "$DICTATION" "$CLASSIFIER" "$DICTATION_SERVICE"
+  conf_part devtools "$DEVTOOLS" DEVTOOLS
+  conf_part flutter "$FLUTTER" FLUTTER
+  conf_part browsers "$BROWSERS" BROWSERS
+  conf_part podman "$PODMAN" PODMAN
+  conf_part dictation "$DICTATION" DICTATION
+  conf_part classifier "$CLASSIFIER" CLASSIFIER
+  printf "DICTATION_SERVICE='%s'\n" "$DICTATION_SERVICE"
   printf '# The public HTTPS address nodes connect to (docs/nodes.md); empty: https:// and PUBLIC_HOST.\n'
   printf "NODE_URL='%s'\n" "$NODE_URL"
 } > "$TMP/install.conf"
@@ -698,4 +727,7 @@ if [ -z "$PUBLIC_HOST" ]; then
   say "  curl -fsSL -o expose-nodes.sh https://raw.githubusercontent.com/$REPO/main/scripts/expose-nodes.sh && sudo sh expose-nodes.sh <domain>"
   say "(it installs Caddy and makes only /xhaos/node public; see docs/nodes.md)."
 fi
+for p in $SAVED_OFF; do
+  say "Left out by its saved setting (no): $p. To add it, re-run this installer with --with $p"
+done
 say "Settings: $CONF. Re-run this installer to update, or to add parts (--with devtools,dictation…)."

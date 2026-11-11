@@ -74,7 +74,17 @@ type Status struct {
 	Mode   string `json:"mode"`
 	Active bool   `json:"active"` // commands actually run sandboxed
 	ABI    int    `json:"abi"`    // Landlock ABI version; 0 when unavailable
+	NoNet  bool   `json:"noNet"`  // commands the classifier allows cannot connect over TCP
 	Note   string `json:"note"`
+}
+
+// NoNetPossible reports whether commands the classifier allows can be given
+// no network connections: the sandbox is on, and the kernel's Landlock can
+// restrict TCP. Where it cannot, such commands must not run on the model's
+// say-so alone. Under bubblewrap it cannot: the helper applies only the
+// seccomp filter, and bubblewrap shares the network.
+func (c Config) NoNetPossible() bool {
+	return c.Mode != Off && c.Mode != "" && c.Enforcer != Bwrap && ABI() >= NetABI
 }
 
 // ABI is the kernel's Landlock ABI version, 0 when Landlock is unavailable.
@@ -89,6 +99,7 @@ func ABI() int {
 func (c Config) Status() Status {
 	abi := ABI()
 	s := Status{Mode: c.Mode, ABI: abi, Active: c.Mode != Off && (abi > 0 || c.Enforcer == Bwrap)}
+	s.NoNet = c.NoNetPossible()
 	switch {
 	case c.Mode == Off:
 		s.Note = "Off: agents' commands run with the server user's full access."
@@ -100,6 +111,11 @@ func (c Config) Status() Status {
 		s.Note = "This kernel has no Landlock: commands run with the server user's full access."
 	default:
 		s.Note = "Commands can read and write only their project folder (plus a shared cache), read system files and toolchains, and cannot see the rest of the home folder or Xhaos's data."
+		if s.NoNet {
+			s.Note += " Commands the classifier allows cannot open network connections."
+		} else {
+			s.Note += " This kernel's Landlock cannot block network connections (ABI 4 or newer is needed), so commands the classifier allows keep network access."
+		}
 	}
 	return s
 }
@@ -116,6 +132,8 @@ type policy struct {
 	// proxy), and no UDP (DNS lookups could carry a secret out).
 	Port    int  `json:"port,omitempty"`
 	DenyUDP bool `json:"denyUdp,omitempty"`
+	// NoNet: no TCP connections and no UDP (commands the classifier allows).
+	NoNet bool `json:"noNet,omitempty"`
 	// Bwrap: bubblewrap confines the helper already (its mounts are this
 	// policy); the helper only adds the seccomp filter.
 	Bwrap bool `json:"bwrap,omitempty"`
@@ -128,11 +146,18 @@ type policy struct {
 type Extra struct {
 	Read []string
 	Env  []string
-	Dir  string
+	// NoNet: the command may not connect over TCP. Ignored where Landlock
+	// cannot restrict the network (ABI below NetABI): it runs as before.
+	NoNet bool
+	Dir   string
 }
 
 func (x Extra) apply(env []string, p *policy) []string {
 	p.Read = append(p.Read, x.Read...)
+	if x.NoNet && ABI() >= NetABI {
+		// No TCP, and no UDP either: a datagram (a DNS lookup) could carry data out.
+		p.NoNet, p.DenyUDP = true, true
+	}
 	return append(env, x.Env...)
 }
 
@@ -365,16 +390,22 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 			env = append(env, k+"="+v)
 		}
 	}
+	// git's global config: the owner's file when there is one, read-only
+	// here. Without one, GIT_CONFIG_GLOBAL is /dev/null, so git never reads
+	// a config under the sandbox's home, which a command could have written
+	// (it would run in every later git command there).
+	global := "/dev/null"
 	if home != "" {
 		for _, f := range []string{".gitconfig", ".config/git/config"} {
 			if _, err := os.Stat(filepath.Join(home, f)); err == nil {
 				p.Files = append(p.Files, filepath.Join(home, f))
-				if f == ".gitconfig" {
-					env = append(env, "GIT_CONFIG_GLOBAL="+filepath.Join(home, f))
+				if global == "/dev/null" {
+					global = filepath.Join(home, f)
 				}
 			}
 		}
 	}
+	env = append(env, "GIT_CONFIG_GLOBAL="+global)
 	p.Read = slices.Compact(p.Read)
 	return env, p, nil
 }
@@ -446,6 +477,18 @@ func restrict(p policy) error {
 			return errors.New("landlock cannot restrict the network on this kernel")
 		}
 		if err := landlock.V6.RestrictNet(landlock.ConnectTCP(uint16(p.Port))); err != nil {
+			return fmt.Errorf("landlock network: %w", err)
+		}
+	}
+	if p.NoNet {
+		// Bind and connect, with no rule for any port: no TCP connection
+		// (this includes the server's own port on loopback) and no listening
+		// socket, which would take in connections.
+		if ABI() < NetABI {
+			return errors.New("landlock cannot restrict the network on this kernel")
+		}
+		none := landlock.Config{HandledAccessNet: landlock.AccessNetSet(llsys.AccessNetBindTCP | llsys.AccessNetConnectTCP)}
+		if err := none.RestrictNet(); err != nil {
 			return fmt.Errorf("landlock network: %w", err)
 		}
 	}

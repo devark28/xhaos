@@ -156,6 +156,172 @@ func TestModes(t *testing.T) {
 	}
 }
 
+// Commands the classifier allows run with no TCP connections; the same
+// command connects without that flag.
+func TestNoNetBlocksConnections(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	script := fmt.Sprintf("exec 3<>/dev/tcp/127.0.0.1/%d", ln.Addr().(*net.TCPAddr).Port)
+	if out, err := run(t, c, dir, script); err != nil {
+		t.Fatalf("without NoNet the connection failed: %q %v", out, err)
+	}
+	cmd, err := c.Command(context.Background(), dir, script, Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("with NoNet the connection worked: %q", out)
+	}
+	if s := c.Status(); !s.NoNet {
+		t.Errorf("status without NoNet: %+v", s)
+	}
+}
+
+// The no-network rule needs the sandbox on and Landlock ABI 4: with the
+// sandbox off (or unset) it is never possible, and the status says so.
+func TestNoNetPossibleNeedsSandboxAndABI(t *testing.T) {
+	for _, m := range []string{Off, ""} {
+		if (Config{Mode: m}).NoNetPossible() || (Config{Mode: m}).Status().NoNet {
+			t.Errorf("mode %q: no-network possible without the sandbox", m)
+		}
+	}
+	on := Config{Mode: Auto}
+	if on.NoNetPossible() != (ABI() >= NetABI) || on.Status().NoNet != on.NoNetPossible() {
+		t.Errorf("auto: NoNetPossible %v, status %v; want the kernel's ABI %d to decide", on.NoNetPossible(), on.Status().NoNet, ABI())
+	}
+	// Under bubblewrap the helper applies no Landlock rules, so TCP stays
+	// open: no-network must not be claimed there, whatever the kernel.
+	bw := Config{Mode: Auto, Enforcer: Bwrap}
+	if bw.NoNetPossible() || bw.Status().NoNet {
+		t.Errorf("bubblewrap: no-network claimed (NoNetPossible %v, status %v); it cannot restrict TCP", bw.NoNetPossible(), bw.Status().NoNet)
+	}
+}
+
+// Commands the classifier allows also get no UDP: a datagram to a local
+// listener (a DNS-style leak) must not arrive. The same command without
+// NoNet still sends it, so the listener works.
+func TestNoNetBlocksUDP(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	script := fmt.Sprintf("echo leak > /dev/udp/127.0.0.1/%d", port)
+	// received runs cmd, then reports whether a datagram arrived. Anything
+	// left from an earlier run is drained first, so it cannot count.
+	received := func(cmd *exec.Cmd) bool {
+		buf := make([]byte, 64)
+		// A deadline in the past fails before reading queued data, so drain
+		// with a short future one.
+		_ = pc.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		for {
+			if _, _, err := pc.ReadFrom(buf); err != nil {
+				break
+			}
+		}
+		_, _ = cmd.CombinedOutput()
+		_ = pc.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _, err := pc.ReadFrom(buf)
+		return err == nil && n > 0
+	}
+	plain, err := c.Command(context.Background(), dir, script, Extra{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !received(plain) {
+		t.Skip("the UDP listener got nothing even without NoNet: the test cannot tell")
+	}
+	cmd, err := c.Command(context.Background(), dir, script, Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received(cmd) {
+		t.Fatal("with NoNet a UDP datagram reached a local listener")
+	}
+}
+
+// Landlock's TCP rules do not cover other protocols on an IPv4 socket, so
+// SCTP (132) and MPTCP (262) connected out of a NoNet command and carried
+// data. The filter must refuse their socket() call (TCP still opens: it
+// only fails at connect, where Landlock applies).
+func TestNoNetBlocksOtherProtocols(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("needs Landlock ABI 4 (Linux 6.7+)")
+	}
+	probe := func(family string, proto int) string {
+		return fmt.Sprintf("python3 -c \"\nimport socket\ntry:\n    socket.socket(socket.%s, socket.SOCK_STREAM, %d)\n    print('opened')\nexcept PermissionError:\n    print('denied')\n\"", family, proto)
+	}
+	dir := t.TempDir()
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	ran := func(cmd *exec.Cmd) string {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("probe: %v: %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, family := range []string{"AF_INET", "AF_INET6"} {
+		for _, proto := range []int{132, 262} {
+			plain, err := c.Command(context.Background(), dir, probe(family, proto), Extra{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ran(plain) != "opened" {
+				t.Skipf("%s protocol %d cannot be opened even without NoNet: the test cannot tell", family, proto)
+			}
+			cmd, err := c.Command(context.Background(), dir, probe(family, proto), Extra{NoNet: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ran(cmd); got != "denied" {
+				t.Errorf("NoNet: %s protocol %d socket %q, want denied", family, proto, got)
+			}
+			// The proxy-only path (secrets) must refuse the same socket.
+			sealed, cleanup, err := c.CommandSealed(context.Background(), dir, probe(family, proto), Sealed{ProxyPort: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := ran(sealed)
+			cleanup()
+			if got != "denied" {
+				t.Errorf("sealed: %s protocol %d socket %q, want denied", family, proto, got)
+			}
+		}
+	}
+	// TCP keeps working: NoNet only blocks connects, and the test must not
+	// have passed by breaking every socket.
+	tcp, err := c.Command(context.Background(), dir, probe("AF_INET", 6), Extra{NoNet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ran(tcp); got != "opened" {
+		t.Errorf("NoNet: TCP socket %q, want opened", got)
+	}
+}
+
 // A submodule's (and a worktree's) .git is a file pointing into the parent
 // repository: git must work in the sandbox, the parent's files must not.
 func TestGitSubmodulesAndWorktrees(t *testing.T) {
@@ -261,4 +427,61 @@ func TestLimitDevices(t *testing.T) {
 	if out, err := run(t, open, root, "cat /dev/null && echo ok"); err != nil {
 		t.Errorf("open devices: %v %q", err, out)
 	}
+}
+
+// Without an owner's ~/.gitconfig, git must not read a global config from the
+// sandbox's home: a command could write one there, and every later git in
+// every project would run it. GIT_CONFIG_GLOBAL points at /dev/null then.
+func TestSandboxGitGlobalConfigPinned(t *testing.T) {
+	owner := t.TempDir()
+	t.Setenv("HOME", owner)
+	c := Config{Cache: t.TempDir()}
+	env, _, err := c.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "GIT_CONFIG_GLOBAL=/dev/null") {
+		t.Errorf("no owner ~/.gitconfig: want GIT_CONFIG_GLOBAL=/dev/null, env has %v", envWith(env, "GIT_CONFIG_"))
+	}
+	// With one, the owner's file is the global config, as before.
+	os.WriteFile(filepath.Join(owner, ".gitconfig"), []byte("[user]\n\tname = x\n"), 0o644)
+	env, _, err = c.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "GIT_CONFIG_GLOBAL="+filepath.Join(owner, ".gitconfig")) {
+		t.Errorf("owner ~/.gitconfig: want it as GIT_CONFIG_GLOBAL, env has %v", envWith(env, "GIT_CONFIG_"))
+	}
+}
+
+// A command plants a config in its home, and a git command in the same
+// command reads it: the planted fsmonitor hook must not run.
+func TestSandboxPlantedHomeConfigDoesNotRun(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	os.MkdirAll(root, 0o755)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "cache")}
+	command := `git init -q . && printf '[core]\n\tfsmonitor = touch PLANTED\n' > "$HOME/.gitconfig" && git status >/dev/null 2>&1 && echo GIT-RAN`
+	out, err := run(t, c, root, command)
+	if err != nil || !strings.Contains(out, "GIT-RAN") {
+		t.Fatalf("git did not run under the pin: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "PLANTED")); err == nil {
+		t.Error("a config planted in the sandbox home ran git's fsmonitor hook")
+	}
+}
+
+// envWith lists the variables in env that start with prefix (for messages).
+func envWith(env []string, prefix string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

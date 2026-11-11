@@ -144,6 +144,9 @@ type ToolData struct {
 	By      string `json:"by,omitempty"`     // "owner", "policy", "danger" or "classifier" for allowed/denied
 	Reason  string `json:"reason,omitempty"` // why it asks or was denied
 	Output  string `json:"output,omitempty"`
+	// ViaModel is set when the local model, not the built-in list, allowed the
+	// call: it then runs with no TCP connections.
+	ViaModel bool `json:"viaModel,omitempty"`
 }
 
 // StatusData is the payload of an agent.status event.
@@ -955,10 +958,38 @@ func (st *Store) Tools(workspaceID string, id int64) (map[string]ToolData, error
 	return toolStates(st.db, workspaceID, id)
 }
 
-// RecordTool appends one state of a tool call.
+// RecordTool appends one state of a tool call. A call the classifier allowed
+// with no reason yet keeps the reason SetToolReason gave it since: the runner
+// writes its states from copies taken before the reason came.
 func (st *Store) RecordTool(workspaceID string, id int64, d ToolData) error {
 	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		if d.By == "classifier" && d.Reason == "" {
+			states, err := toolStates(tx, workspaceID, id)
+			if err != nil {
+				return eventlog.Event{}, err
+			}
+			if prev, ok := states[d.CallID]; ok && prev.By == "classifier" {
+				d.Reason = prev.Reason
+			}
+		}
 		return eventlog.Append(tx, workspaceID, id, EventTool, d, at)
+	})
+}
+
+// SetToolReason sets the reason of a call the classifier allowed, as its
+// latest state with the reason changed. A call with no state is skipped.
+func (st *Store) SetToolReason(workspaceID string, id int64, callID, reason string) error {
+	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		states, err := toolStates(tx, workspaceID, id)
+		if err != nil {
+			return eventlog.Event{}, err
+		}
+		prev, ok := states[callID]
+		if !ok {
+			return eventlog.Event{}, errSkip
+		}
+		prev.Reason = reason
+		return eventlog.Append(tx, workspaceID, id, EventTool, prev, at)
 	})
 }
 

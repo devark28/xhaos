@@ -107,6 +107,7 @@ var commitRE = regexp.MustCompile(`\bgit\b[^\n;&|]*\b(commit|push)\b`)
 // so the answer is never weaker than commitRE alone. A word with spaces is
 // read as a command line of its own (sh -c 'git commit …'), up to three levels.
 func commitsOrPushes(line string, depth int) bool {
+	line = JoinLines(line)
 	if commitRE.MatchString(line) {
 		return true
 	}
@@ -166,6 +167,9 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		call.Summary = in.Command
 		call.Commit = commitsOrPushes(in.Command, 0)
 		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
+		if call.Effect == Read && GitDriverRisk(root, in.Command) {
+			call.Effect = Exec // git diff/log/show would run a driver the project's config names
+		}
 		for _, s := range in.Secrets {
 			if s = strings.TrimSpace(s); s != "" && !slices.Contains(call.Secrets, s) {
 				call.Secrets = append(call.Secrets, s)
@@ -285,6 +289,12 @@ func ExecuteWith(ctx context.Context, root string, sb sandbox.Config, extra sand
 		}
 		return "Edited " + in.Path + ".", nil
 	case "bash":
+		if call.Effect == Read {
+			// Every read-class command gets git's safe settings, whatever its
+			// text: git can be named through quotes, a backslash or a variable,
+			// so the raw text does not show that it runs git.
+			extra.Env = append(slicesClip(extra.Env), gitSafeEnv(root)...)
+		}
 		return bash(ctx, root, sb, extra, in.Command)
 	}
 	return "", fmt.Errorf("unknown tool %q", call.Name)
@@ -325,6 +335,8 @@ func Resolve(root, rel string) (string, error) {
 }
 
 // insideGit reports whether path is in the project's .git directory.
+// insideGit reports whether path is inside a .git folder or is one, at the
+// root or in any subfolder.
 func insideGit(root, path string) bool {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -334,8 +346,9 @@ func insideGit(root, path string) bool {
 	if err != nil {
 		return false
 	}
-	first := strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
-	return first == ".git"
+	// Any .git below the root counts: a repo in a subfolder has its own
+	// hooks and config.
+	return slices.Contains(strings.Split(filepath.ToSlash(rel), "/"), ".git")
 }
 
 func mustResolve(root, rel string) string { p, _ := Resolve(root, rel); return p }

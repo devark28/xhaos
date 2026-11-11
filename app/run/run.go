@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/devark28/xhaos/app/agent"
@@ -54,9 +55,10 @@ type key struct {
 }
 
 type Runner struct {
-	agents    *agent.Store
-	providers *provider.Store
-	notify    Notifier
+	explaining atomic.Bool // a classifier reason is being written (see explainSoon)
+	agents     *agent.Store
+	providers  *provider.Store
+	notify     Notifier
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
@@ -297,12 +299,46 @@ func sshSetup(scratch string, keys []string, values map[string]string, use secre
 	return env, nil
 }
 
-func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+// explainLater writes the classifier's reason for a call it allowed into the
+// call's tool state. It runs in the background, after the call was recorded
+// as allowed; the answer's time is not part of the call's wait.
+func (r *Runner) explainLater(ws string, agentID int64, callID string, req classifier.Request) {
+	text := r.Classifier.Explain(context.Background(), req)
+	if err := r.agents.SetToolReason(ws, agentID, callID, text); err != nil {
+		slog.Error("run: record the classifier's reason", "agent", agentID, "err", err)
+	}
+}
+
+// explainSoon starts explainLater unless one is still running: the classifier
+// answers one request at a time, so a reason that would queue behind another
+// is dropped (its card then says only that the model allowed the call).
+func (r *Runner) explainSoon(ws string, agentID int64, callID string, req classifier.Request) {
+	if !r.explaining.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer r.explaining.Store(false)
+		r.explainLater(ws, agentID, callID, req)
+	}()
+}
+
+// noNetReason is the card's reason when the model is not asked because its
+// allow could not be given the no-network rule.
+const noNetReason = "the local classifier does not decide it: a command it allows must run with no network, which needs the sandbox on a kernel with Landlock ABI 4 or newer"
+
+// noNetNote is added to the output of a command the local model allowed when
+// it fails: the failure may be for want of the network, which that command
+// does not get (the owner can run it with the network).
+const noNetNote = "(ran without network (allowed by the local model); ask the owner to run it with network)"
+
+// execute runs an allowed call. noNet is true when the local model allowed it
+// (ToolData.ViaModel): a bash command then runs with no TCP connections.
+func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	// While dangerously allowed, git is checked around each command: what it
 	// did to protected branches or the project's checkout is undone.
 	if call.Name == "bash" && r.Guard != nil && a.DangerActive(time.Now()) {
 		before, err := r.Guard.Capture(root)
-		out, runErr := r.run(ctx, root, ws, a, call)
+		out, runErr := r.run(ctx, root, ws, a, call, noNet)
 		if err == nil {
 			if note := r.Guard.Repair(root, before); note != "" {
 				out = strings.TrimRight(out, "\n") + "\n\n" + note
@@ -310,12 +346,12 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 		}
 		return out, runErr
 	}
-	return r.run(ctx, root, ws, a, call)
+	return r.run(ctx, root, ws, a, call, noNet)
 }
 
 // run runs a call: an extra tool, a sealed command (with secrets), or a
 // built-in tool.
-func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}
@@ -326,6 +362,7 @@ func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call t
 	if err != nil {
 		return "", err
 	}
+	extra.NoNet = noNet
 	return tool.ExecuteWith(ctx, root, r.Sandbox, extra, call)
 }
 
@@ -664,6 +701,8 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 		}
 		call, err := r.prepare(root, ws, a, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
+		explain := false // the classifier allowed it and its reason follows in the background
+		var creq classifier.Request
 		switch {
 		case reply.Stop == "max_tokens":
 			// The input may be cut off yet still parse; never run it.
@@ -687,15 +726,21 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				}
 			}
 			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy, Root: root}
-			creq := classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
+			creq = classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
 			if verdict == policy.Ask && r.Classifier != nil {
 				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model
 					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+classifier.ListReason(name), classifier.By
 				}
 			}
 			if verdict == policy.Ask && r.Classifier != nil && classifier.Eligible(cc) {
-				if ok, why := r.Classifier.Decide(ctx, creq); ok {
-					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+why, classifier.By
+				if !r.Sandbox.NoNetPossible() {
+					// A command the model allows runs with no network: without
+					// that, it asks.
+					reason = noNetReason
+				} else if ok, why := r.Classifier.Decide(ctx, creq); ok {
+					verdict, reason, by = policy.Allow, why, classifier.By
+					explain = why == ""
+					d.ViaModel = true
 				} else if why != "" {
 					reason = "the local classifier asks: " + why
 				}
@@ -712,6 +757,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			}
 		}
 		record(d)
+		if explain && d.State == agent.ToolAllowed {
+			r.explainSoon(ws, a.ID, c.ID, creq)
+		}
 	}
 	if waiting {
 		_ = r.agents.SetStatus(ws, a.ID, agent.StatusAttention)
@@ -733,7 +781,7 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				call, err := r.prepare(root, ws, a, c)
 				out := ""
 				if err == nil {
-					out, err = r.execute(ctx, root, ws, a, call)
+					out, err = r.execute(ctx, root, ws, a, call, d.ViaModel)
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {
@@ -741,6 +789,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					d.State, d.Output = agent.ToolFailed, "Stopped before it finished.\n"+out
 				case err != nil:
 					d.State, d.Output = agent.ToolFailed, err.Error()
+					if d.ViaModel { // it may have failed for want of the network
+						d.Output += "\n" + noNetNote
+					}
 				}
 			}
 			record(d)

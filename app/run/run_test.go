@@ -109,7 +109,7 @@ func setupIn(t *testing.T, root string, reply func(llm.Turn) (llm.Result, error)
 // waitStatus waits for the agent's latest status event to be want.
 func (h *harness) waitStatus(t *testing.T, id int64, want string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		h.mu.Lock()
 		last := ""

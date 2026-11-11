@@ -14,8 +14,18 @@ import (
 // command could reach the user's SSH agent (and push), the keyring, D-Bus
 // or the Docker socket by path. socketpair(2), which pipes between a
 // process and its children use, still works. With udp, IPv4 and IPv6
-// datagram sockets fail too (sealed commands: a DNS lookup could carry a
-// secret out; their proxy resolves names for them).
+// sockets fail too unless they are TCP (SOCK_STREAM with protocol 0 or
+// IPPROTO_TCP): a datagram, raw, SCTP or MPTCP socket could carry a secret
+// out, and Landlock's TCP rules do not cover them (sealed commands: a DNS
+// lookup could; their proxy resolves names for them). Where udp is set, only
+// TCP over IPv4 and IPv6 and NETLINK_ROUTE (the kernel's own interface
+// queries) may be opened: any other family (SMC, vsock, AF_ALG, packet, ...) could
+// reach the network past Landlock's TCP rules.
+//
+// io_uring (in every mode) is denied outright: it can create, connect and
+// send on sockets without a socket(2) call, so the filter cannot see them.
+// The kernel keyring calls (add_key, request_key, keyctl) are denied too: a
+// command could pass a secret through the keyring to another process.
 func denySockets(udp bool) error {
 	if sysSocket < 0 {
 		return fmt.Errorf("no seccomp filter for %s", runtime.GOARCH)
@@ -23,27 +33,47 @@ func denySockets(udp bool) error {
 	const (
 		allow  = 0x7fff0000
 		denied = unix.SECCOMP_RET_ERRNO | uint32(unix.EACCES)
+		// io_uring: ENOSYS, as on a kernel without it, so libraries fall back.
+		noURing = unix.SECCOMP_RET_ERRNO | uint32(unix.ENOSYS)
 	)
 	var a asm
 	a.ld(4)                       // arch
 	a.jeq(auditArch, "", "deny")  // another ABI (32-bit calls): deny
 	a.ld(0)                       // syscall number
 	a.jge(0x40000000, "deny", "") // x32 numbers: deny
+	a.jeq(sysIoUringSetup, "uring", "")
+	a.jeq(sysIoUringEnter, "uring", "")
+	a.jeq(sysIoUringRegister, "uring", "")
+	a.jeq(uint32(sysAddKey), "deny", "")
+	a.jeq(uint32(sysRequestKey), "deny", "")
+	a.jeq(uint32(sysKeyctl), "deny", "")
 	a.jeq(uint32(sysSocket), "", "allow")
 	a.ld(16) // domain (low half of the first argument)
 	a.jeq(unix.AF_UNIX, "deny", "")
 	if udp {
-		a.jeq(unix.AF_INET, "type", "")
-		a.jeq(unix.AF_INET6, "type", "allow")
-		a.label("type")
+		a.jeq(unix.AF_INET, "inet", "")
+		a.jeq(unix.AF_INET6, "inet", "")
+		a.jeq(unix.AF_NETLINK, "netlink", "deny")
+		a.label("inet")
 		a.ld(24)   // type (low half of the second argument)
 		a.and(0xf) // without SOCK_NONBLOCK / SOCK_CLOEXEC
-		a.jeq(unix.SOCK_DGRAM, "deny", "allow")
+		a.jeq(unix.SOCK_STREAM, "", "deny")
+		a.ld(32) // protocol (low half of the third argument)
+		a.jeq(0, "allow", "")
+		a.jeq(unix.IPPROTO_TCP, "allow", "deny")
+		// Netlink: only NETLINK_ROUTE (the kernel's interface and route
+		// queries). Other protocols reach user-space daemons (USERSOCK) or
+		// other kernel subsystems, so they are denied.
+		a.label("netlink")
+		a.ld(32) // protocol
+		a.jeq(unix.NETLINK_ROUTE, "allow", "deny")
 	}
 	a.label("allow")
 	a.ret(allow)
 	a.label("deny")
 	a.ret(denied)
+	a.label("uring")
+	a.ret(noURing)
 	prog, err := a.program()
 	if err != nil {
 		return err
@@ -58,6 +88,13 @@ func denySockets(udp bool) error {
 	}
 	return nil
 }
+
+// io_uring's system call numbers: the same on x86-64 and arm64.
+const (
+	sysIoUringSetup    = 425
+	sysIoUringEnter    = 426
+	sysIoUringRegister = 427
+)
 
 // asm builds a classic BPF program with named jump targets ("" means the
 // next instruction), so offsets are worked out rather than counted by hand.
