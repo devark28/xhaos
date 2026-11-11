@@ -287,6 +287,10 @@ func TestFloorGitTemplateCopies(t *testing.T) {
 		"git init --template ./tpl sub",
 		"git -C x init --template=./t",
 		"GIT_TEMPLATE_DIR=./tpl git init .",
+		// git takes any unambiguous abbreviation of --template: init accepts --t.
+		"git init -q --templ=./tpl sub",
+		"git init --temp=./tpl sub",
+		"git init --t ./tpl sub",
 	} {
 		if why := FloorIn(clean, line); why == "" {
 			t.Errorf("FloorIn(clean, %q) = \"\", want a refusal", line)
@@ -294,6 +298,12 @@ func TestFloorGitTemplateCopies(t *testing.T) {
 	}
 	if why := FloorIn(clean, "git init ."); why != "" {
 		t.Errorf("FloorIn(clean, \"git init .\") = %q, want \"\"", why)
+	}
+	// Other long options that start with -- t are not --template.
+	for _, line := range []string{"git log --tags", "git log --text"} {
+		if why := FloorIn(clean, line); why != "" {
+			t.Errorf("FloorIn(clean, %q) = %q, want \"\"", line, why)
+		}
 	}
 }
 

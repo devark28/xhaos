@@ -127,7 +127,7 @@ var floor = []rule{
 		return after(c, is("git"), flagIs("--ext-diff", "--textconv"))
 	}},
 	{"git init or clone --template copies hooks and config from a template folder into the repo (into .git/hooks of an existing one)", func(c parsed) bool {
-		return after(c, is("git"), flagPrefix("--template"))
+		return after(c, is("git"), templateFlag)
 	}},
 	{gitDriverWhy, func(c parsed) bool {
 		return c.root != "" && tool.GitDriverRisk(c.root, c.line)
@@ -951,6 +951,14 @@ func flagIs(names ...string) func(string) bool {
 		name, _, _ := strings.Cut(w, "=")
 		return word(names...)(name)
 	}
+}
+
+// templateFlag matches --template and any abbreviation of it that git takes
+// (git init accepts --t, --temp=...): the word, up to any =, is -- and a
+// prefix of template. Other long options (--tags, --text) do not match.
+func templateFlag(w string) bool {
+	name, _, _ := strings.Cut(w, "=")
+	return len(name) > 2 && strings.HasPrefix(name, "--") && strings.HasPrefix("--template", name)
 }
 
 // flagPrefix matches a word starting with p.
