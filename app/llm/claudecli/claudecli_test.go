@@ -208,7 +208,9 @@ func ask(text string) llm.Turn {
 }
 
 func TestTextTurn(t *testing.T) {
-	a, dir := adapter(t, "text", "ANTHROPIC_API_KEY=sk-leak", "ANTHROPIC_AUTH_TOKEN=tok-leak")
+	a, dir := adapter(t, "text", "ANTHROPIC_API_KEY=sk-leak", "ANTHROPIC_AUTH_TOKEN=tok-leak",
+		"ANTHROPIC_AWS_API_KEY=aws-leak", "ANTHROPIC_CUSTOM_HEADERS=X-Leak: 1", "CLAUDECODE=1",
+		"CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SESSION_ID=parent", "CLAUDE_CODE_MESSAGING_SOCKET=/run/parent.sock")
 	var deltas []string
 	res, err := a.Stream(context.Background(), llm.Credentials{}, ask("hi"), func(s string) { deltas = append(deltas, s) })
 	if err != nil {
@@ -244,6 +246,12 @@ func TestTextTurn(t *testing.T) {
 	}
 	if _, ok := got.env("ANTHROPIC_AUTH_TOKEN"); ok {
 		t.Error("the auth token reached Claude Code")
+	}
+	for _, k := range []string{"ANTHROPIC_AWS_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDECODE",
+		"CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET"} {
+		if _, ok := got.env(k); ok {
+			t.Errorf("%s reached Claude Code", k)
+		}
 	}
 	if v, _ := got.env("DISABLE_AUTO_COMPACT"); v != "1" {
 		t.Error("Claude Code may compact the history itself")
@@ -445,7 +453,8 @@ func TestFailures(t *testing.T) {
 }
 
 func TestRefusesOtherBackends(t *testing.T) {
-	for _, kv := range []string{"ANTHROPIC_BASE_URL=http://proxy", "CLAUDE_CODE_USE_BEDROCK=1"} {
+	for _, kv := range []string{"ANTHROPIC_BASE_URL=http://proxy", "CLAUDE_CODE_USE_BEDROCK=1",
+		"CLAUDE_CODE_USE_GATEWAY=1", "CLAUDE_CODE_USE_ANTHROPIC_AWS=true", "CLAUDE_CODE_USE_SOMETHING_NEW=yes"} {
 		a, _ := adapter(t, "text", kv)
 		if _, err := a.Stream(context.Background(), llm.Credentials{}, ask("hi"), nil); err == nil || !strings.Contains(err.Error(), "subscription") {
 			t.Errorf("%s: %v", kv, err)

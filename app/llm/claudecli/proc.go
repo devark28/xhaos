@@ -80,10 +80,19 @@ func envValue(env []string, key string) string {
 // usage instead of the subscription, so no child receives one.
 var apiCredentials = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_FOUNDRY_API_KEY"}
 
-// backendSwitches send Claude Code somewhere other than Anthropic's own
-// service, which is not the subscription either: refused, not stripped,
-// because the owner set them on purpose.
-var backendSwitches = []string{"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"}
+// Every CLAUDE_CODE_USE_* variable (Bedrock, Vertex, Foundry, a gateway,
+// AWS, Google Cloud, …, and ones later versions add) sends Claude Code
+// somewhere other than Anthropic's own service, which is not the
+// subscription either: refused, not stripped, because the owner set them on
+// purpose.
+const backendSwitchPrefix = "CLAUDE_CODE_USE_"
+
+// parentSession are what a Claude Code session sets for the programs it
+// starts. A server started from inside one would otherwise hand them on, and
+// the child would take on that session's identity and messaging socket.
+var parentSession = []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_EXECPATH"}
 
 // childEnv is the environment of a Claude Code child: the server's, without
 // API credentials, with what keeps a turn predictable.
@@ -91,22 +100,30 @@ func childEnv(base []string, extra ...string) ([]string, error) {
 	if v := envValue(base, "ANTHROPIC_BASE_URL"); v != "" {
 		return nil, errors.New("ANTHROPIC_BASE_URL is set in the server's environment, so Claude Code would not use the subscription; unset it")
 	}
-	for _, k := range backendSwitches {
-		switch strings.ToLower(envValue(base, k)) {
+	for _, kv := range base {
+		k, v, _ := strings.Cut(kv, "=")
+		if !strings.HasPrefix(k, backendSwitchPrefix) {
+			continue
+		}
+		switch strings.ToLower(v) {
 		case "", "0", "false", "no", "off":
 		default:
 			return nil, fmt.Errorf("%s is set in the server's environment, so Claude Code would not use the subscription; unset it", k)
 		}
 	}
 	drop := map[string]bool{}
-	for _, k := range append(apiCredentials, "CLAUDE_CODE_EXTRA_BODY", "CLAUDE_CODE_EFFORT_LEVEL") {
+	for _, k := range append(append(apiCredentials, parentSession...), "CLAUDE_CODE_EXTRA_BODY", "CLAUDE_CODE_EFFORT_LEVEL") {
 		drop[k] = true // the last two would override the effort and body Xhaos sets
 	}
 	var env []string
 	for _, kv := range base {
-		if k, _, _ := strings.Cut(kv, "="); !drop[k] {
-			env = append(env, kv)
+		k, _, _ := strings.Cut(kv, "=")
+		// Every ANTHROPIC_* (keys, tokens, identity files, custom headers,
+		// model overrides) is the API's, never the subscription's.
+		if drop[k] || strings.HasPrefix(k, "ANTHROPIC_") {
+			continue
 		}
+		env = append(env, kv)
 	}
 	// Without USER a logged-in Claude Code reports that it is logged out.
 	if envValue(env, "USER") == "" {
