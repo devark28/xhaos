@@ -93,3 +93,14 @@ The lightweight SVG sketchpad in the browser prototype is temporary. Target an E
 ## Skills
 
 User-defined instruction packages are a first-class requirement, separate from tools and execution permissions. See [skills](skills.md) for package discovery, per-agent activation, versioned loading, and the channels example. Skill loading belongs to the backend and must work with every model adapter.
+
+## Sealed commands: reaching only the proxy
+
+Status: open. A sealed command (one given secrets) may connect over TCP only to the egress proxy's port, by a Landlock rule. Landlock's network rules match the port alone, so the command can reach that port on any host and send a secret there. What was weighed, for servers without root on Ubuntu 24.04 and Debian:
+
+- A network namespace with only loopback (and the proxy reached through a socket passed in) is the clean fix, but needs an unprivileged user namespace; Ubuntu 24.04 denies its capabilities by AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`; `unshare -rn` fails with "write failed /proc/self/uid_map"). Usable where user namespaces are allowed (Debian, or a profile for the binary), so it could be an opt-in later.
+- A Unix socket to the proxy, with seccomp's AF_UNIX ban lifted for that one socket: seccomp cannot see the path, and the tools a sealed command runs (git, curl, npm, ssh's ProxyCommand aside) take an `http(s)://host:port` proxy, not a socket.
+- seccomp user notification on `connect()`: the server would read each address from the command's memory (racy: another thread can change it after the check), or connect a socket to the proxy itself and put it in place of the command's (`SECCOMP_IOCTL_NOTIF_ADDFD` with `SETFD`). The second is sound but drops the command's socket options (non-blocking, keepalive), needs the listener fd handed from the helper to the server, and a supervisor loop per command: a larger change than the rest of the sandbox.
+- No connect at all, with the proxy reached through a pre-opened fd: same problem as the socket, tools cannot use an fd for their proxy.
+
+So the gap stays, documented; ADDFD is the candidate when it is taken on. Done meanwhile: the scratch folder (HOME, TMPDIR, the SSH key) is in `/tmp/xhaos-<uid>/sealed/`, outside every other command's reach; only harmless devices are open (no `/dev/shm`, no terminals); listening is refused (Landlock's bind rule, autobind on `listen()` included); UDP is refused (seccomp). `.git` stays writable, because push and fetch write refs and objects there; anything a sealed command writes there can be read by later commands, so it is a channel too, accepted: approve each sealed command knowing that.

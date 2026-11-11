@@ -282,7 +282,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
-	sandbox.GuardPath(append([]string{dataDir, runner.Sandbox.Cache, sandbox.TempRoot()}, projects...)...)
+	sandbox.GuardPath(append([]string{dataDir, runner.Sandbox.Cache, sandbox.TempRoot(), sandbox.SealedRoot()}, projects...)...)
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {

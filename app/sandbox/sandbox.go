@@ -72,6 +72,10 @@ type Config struct {
 // commonDevices are open to every command, even with LimitDevices.
 var commonDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/ptmx", "/dev/pts"}
 
+// sealedDevices are the only devices a sealed command may open: none that
+// another process could read back (no /dev/shm, no other terminals).
+var sealedDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty"}
+
 // Status describes the sandbox for the Tools panel.
 type Status struct {
 	Mode   string `json:"mode"`
@@ -262,11 +266,13 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	if err != nil {
 		return nil, nil, err
 	}
-	project, err := TempDir(root)
+	// The scratch folder (HOME, TMPDIR: the SSH key goes there) is outside
+	// every other command's reach, the project's own TMPDIR included.
+	sealedRoot, err := privateDir(SealedRoot())
 	if err != nil {
 		return nil, nil, err
 	}
-	scratch, err := os.MkdirTemp(project, "sealed-")
+	scratch, err := os.MkdirTemp(sealedRoot, "sealed-")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -280,10 +286,12 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 		os.MkdirAll(filepath.Join(scratch, d), 0o700)
 	}
 	// The project and its cache become read-only; only the scratch
-	// folder, devices and the project's .git stay writable.
+	// folder, a few devices and the project's .git stay writable. Not all of
+	// /dev: /dev/shm and terminals are places other commands read.
 	p.Read = append(p.Read, root, c.ProjectCache(root))
 	p.Read = append(p.Read, c.toolDirs()...)
-	p.Write = append([]string{scratch, "/dev"}, GitDirs(root)...)
+	p.Write = append([]string{scratch}, GitDirs(root)...)
+	p.Devices = slices.Clone(sealedDevices)
 	p.Port, p.DenyUDP = s.ProxyPort, true
 	over := map[string]string{
 		"HOME": filepath.Join(scratch, "home"), "TMPDIR": filepath.Join(scratch, "tmp"),
@@ -372,7 +380,7 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	// The server's own PATH must not reach into anything a command can
 	// write (every project's temp folder included): it would run what a
 	// command planted there.
-	GuardPath(append(slices.Clone(p.Write), TempRoot(), c.Cache)...)
+	GuardPath(append(slices.Clone(p.Write), TempRoot(), SealedRoot(), c.Cache)...)
 	path := os.Getenv("PATH")
 	// Tools for commands only, in the cache: on their PATH, after the
 	// system's (a name found earlier wins).
@@ -444,15 +452,27 @@ func (c Config) ProjectCache(root string) string {
 
 // TempDir is the private temp folder for commands in root.
 func TempDir(root string) (string, error) {
-	dir := filepath.Join(TempRoot(), projectKey(root))
+	return privateDir(filepath.Join(TempRoot(), projectKey(root)))
+}
+
+// SealedRoot holds sealed commands' scratch folders, apart from every
+// project's TempDir: /tmp/xhaos-<uid>/sealed.
+func SealedRoot() string {
+	return filepath.Join(filepath.Dir(TempRoot()), "sealed")
+}
+
+// privateDir makes dir, under /tmp/xhaos-<uid>, and checks that folder is
+// this user's alone.
+func privateDir(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	// Another user could have made /tmp/xhaos-<uid> first: it must be ours.
-	if fi, err := os.Stat(filepath.Dir(filepath.Dir(dir))); err != nil {
+	top := filepath.Dir(TempRoot())
+	if fi, err := os.Stat(top); err != nil {
 		return "", err
 	} else if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("sandbox: %s is not private to this user", filepath.Dir(filepath.Dir(dir)))
+		return "", fmt.Errorf("sandbox: %s is not private to this user", top)
 	}
 	return dir, nil
 }
