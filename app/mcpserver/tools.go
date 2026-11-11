@@ -85,7 +85,7 @@ func (s *Server) tools() []toolDef {
 	return []toolDef{
 		def(s, "list_agents", "List the agents: number (#N), title, status (idle, running, attention = waiting for the owner, paused, complete, terminated), parent, project, model, and how many questions or approvals each is waiting on.", read, s.listAgents),
 		def(s, "get_agent", "One agent in detail: its status, its pending questions and approvals (with every option), its channels, and its recent messages and tool calls, oldest first.", read, s.getAgent),
-		def(s, "list_questions", "Every pending question (ask_user) and approval across all agents, each with its agent's number and title, its id for answer_question, and whether this token may answer it.", read, s.listQuestions),
+		def(s, "list_questions", "Every pending question (ask_user), approval, and rename an agent proposed for itself (kind rename: proposed_title and reason; the agent does not wait for it) across all agents, each with its agent's number and title, its id for answer_question, and whether this token may answer it.", read, s.listQuestions),
 		def(s, "wait_for_events", "Wait (up to timeout_seconds) until something happens: an agent replies, changes status, asks a question or waits for an approval, or a channel gets a message. Call it first without since to get the current seq, then pass the seq it returns each time. Returns at once when there is something new.", read, s.waitForEvents),
 		def(s, "list_projects", "The workspace's projects (the folders agents work in), for create_agent.", read, s.listProjects),
 		def(s, "list_models", "The model providers set up in the workspace and their models, for create_agent, and the default.", read, s.listModels),
@@ -97,7 +97,7 @@ func (s *Server) tools() []toolDef {
 		def(s, "stop_agent", "Stop an agent's running turn (it pauses; send_message or start_agent continues it). terminate: end it and its subagents for good (start_agent can bring it back).", drive, s.stopAgent),
 		def(s, "post_channel", "Post a message into a channel under this token's name; its agents get it and wake.", drive, s.postChannel),
 		def(s, "open_channel", "Open a channel with one agent, for an exchange you both read (it replies there with channel_send), and optionally post the first message.", drive, s.openChannel),
-		def(s, "answer_question", "Answer a pending question by its id (from list_questions). For ask_user questions (scope answer): give answers per question (choices by option label or id, and/or text), or choice/text when there is one question, or dismiss. For a git commit or push (scope approve-feature-branch): decision allow or deny; allow only works for plain git commands on branches that are not protected (main, integration, release…, tags stay the owner's). Other approvals are the owner's.", answers, s.answerQuestion),
+		def(s, "answer_question", "Answer a pending question by its id (from list_questions). For ask_user questions (scope answer): give answers per question (choices by option label or id, and/or text), or choice/text when there is one question, or dismiss. For a git commit or push (scope approve-feature-branch): decision allow or deny; allow only works for plain git commands on branches that are not protected (main, integration, release…, tags stay the owner's). For a rename an agent proposed for itself (kind rename, scope answer): decision rename or keep. Other approvals are the owner's.", answers, s.answerQuestion),
 	}
 }
 
@@ -258,7 +258,11 @@ const (
 	kindQuestion = "question" // ask_user
 	kindCommit   = "commit"   // a git commit or push waiting for review
 	kindApproval = "approval" // anything else waiting for the owner
+	kindRename   = "rename"   // a title the agent proposed for itself (it does not wait)
 )
+
+// renameCall is the call-id part of a rename proposal's question id.
+const renameCall = "rename"
 
 type pendingItem struct {
 	ID         string          `json:"id"`
@@ -273,10 +277,12 @@ type pendingItem struct {
 	Reason     string          `json:"reason,omitempty"`
 	// Intent is what allowing a commit or push does: Xhaos runs its own
 	// command for it (WillRun), never the agent's.
-	Intent    string `json:"intent,omitempty"`
-	WillRun   string `json:"will_run,omitempty"`
-	CanAnswer bool   `json:"you_can_answer"`
-	WhyNot    string `json:"why_not,omitempty"`
+	Intent  string `json:"intent,omitempty"`
+	WillRun string `json:"will_run,omitempty"`
+	// ProposedTitle is a rename's new title (the current one is AgentTitle).
+	ProposedTitle string `json:"proposed_title,omitempty"`
+	CanAnswer     bool   `json:"you_can_answer"`
+	WhyNot        string `json:"why_not,omitempty"`
 }
 
 func questionID(agentID int64, callID string) string {
@@ -293,10 +299,14 @@ func parseQuestionID(s string) (int64, string, error) {
 }
 
 // pending lists the calls of agents (only those that can be waiting) that
-// wait for the owner, oldest call id first per agent.
+// wait for the owner, oldest call id first per agent, and the agents' title
+// proposals.
 func (s *Server) pending(id identity, agents []agent.Agent) ([]pendingItem, error) {
 	out := []pendingItem{}
 	for _, a := range agents {
+		if a.TitleProposal != nil && a.Status != agent.StatusTerminated {
+			out = append(out, renameItem(id, a))
+		}
 		if a.Status != agent.StatusAttention && a.Status != agent.StatusPaused {
 			continue
 		}
@@ -316,6 +326,17 @@ func (s *Server) pending(id identity, agents []agent.Agent) ([]pendingItem, erro
 		}
 	}
 	return out, nil
+}
+
+// renameItem describes an agent's title proposal.
+func renameItem(id identity, a agent.Agent) pendingItem {
+	p := pendingItem{ID: questionID(a.ID, renameCall), Agent: a.ID, AgentTitle: a.Title, Kind: kindRename,
+		Title: "Rename #" + strconv.FormatInt(a.ID, 10) + "?", ProposedTitle: a.TitleProposal.Title, Reason: a.TitleProposal.Reason}
+	p.CanAnswer = id.has(ScopeAnswer)
+	if !p.CanAnswer {
+		p.WhyNot = "answering questions needs the answer scope"
+	}
+	return p
 }
 
 // item describes one waiting call, and whether id may answer it.
@@ -398,7 +419,7 @@ type answerIn struct {
 	Choice     string       `json:"choice,omitempty" jsonschema:"for an ask_user with one question: the chosen option's label or id"`
 	Text       string       `json:"text,omitempty" jsonschema:"for an ask_user with one question: a written answer"`
 	Dismiss    bool         `json:"dismiss,omitempty" jsonschema:"for ask_user: dismiss the questions without answering"`
-	Decision   string       `json:"decision,omitempty" jsonschema:"for a git commit or push: allow or deny"`
+	Decision   string       `json:"decision,omitempty" jsonschema:"for a git commit or push: allow or deny; for a rename: rename or keep"`
 }
 
 func (s *Server) answerQuestion(_ context.Context, id identity, in answerIn) (any, error) {
@@ -409,6 +430,9 @@ func (s *Server) answerQuestion(_ context.Context, id identity, in answerIn) (an
 	a, err := s.d.Store.Get(id.Workspace, agentID)
 	if err != nil {
 		return nil, err
+	}
+	if callID == renameCall {
+		return s.answerRename(id, a, in)
 	}
 	states, err := s.d.Store.Tools(id.Workspace, a.ID)
 	if err != nil {
@@ -481,6 +505,35 @@ func (s *Server) answerQuestion(_ context.Context, id identity, in answerIn) (an
 		return done("denied")
 	}
 	return nil, errors.New(it.WhyNot)
+}
+
+// answerRename renames an agent to its proposal (decision rename) or keeps
+// its title (decision keep).
+func (s *Server) answerRename(id identity, a agent.Agent, in answerIn) (any, error) {
+	if a.TitleProposal == nil || a.Status == agent.StatusTerminated {
+		return nil, fmt.Errorf("agent #%d has no title proposal waiting", a.ID)
+	}
+	it := renameItem(id, a)
+	if !it.CanAnswer {
+		return nil, errors.New(it.WhyNot)
+	}
+	var rename bool
+	switch strings.ToLower(strings.TrimSpace(in.Decision)) {
+	case "rename":
+		rename = true
+	case "keep":
+	default:
+		return nil, errors.New("a rename takes decision rename or keep")
+	}
+	if _, err := s.d.Agents.DecideTitle(agent.TitleDecisionRequest{IdempotencyKey: newKey(), WorkspaceID: id.Workspace, AgentID: a.ID,
+		Rename: rename, Title: a.TitleProposal.Title, Via: id.Name}); err != nil {
+		return nil, err
+	}
+	res := map[string]any{"ok": true, "agent": a.ID, "question_id": it.ID, "state": "kept", "agent_title": a.Title}
+	if rename {
+		res["state"], res["agent_title"], res["renamed_from"] = "renamed", a.TitleProposal.Title, a.Title
+	}
+	return res, nil
 }
 
 // buildAnswers turns the tool's answers into option IDs and text per
@@ -1035,6 +1088,12 @@ func summarize(e eventlog.Event, t *titles) (eventView, bool) {
 		var d agent.TitleData
 		_ = json.Unmarshal(e.Data, &d)
 		v.Kind, v.Text, v.AgentTitle = "title", d.Title, d.Title
+	case agent.EventTitleProposal:
+		var p *agent.TitleProposal
+		if json.Unmarshal(e.Data, &p) != nil || p == nil {
+			return v, false
+		}
+		v.Kind, v.Text, v.QuestionID = "rename_proposal", p.Title, questionID(e.AgentID, renameCall)
 	case agent.EventMessage:
 		var m agent.MessageData
 		if json.Unmarshal(e.Data, &m) != nil {
