@@ -222,3 +222,80 @@ func TestNoNetNetlinkOnlyRoute(t *testing.T) {
 		}
 	}
 }
+
+// keyProbe calls one kernel-keyring system call (argv[1] is its number)
+// and prints "denied" when it fails with EACCES (the filter's answer), else
+// "ok" and the result. A command could pass a secret through the keyring
+// (another process of the user reads it back), so the filter denies them.
+const keyProbe = `import ctypes, errno, sys
+libc = ctypes.CDLL(None, use_errno=True)
+nr = int(sys.argv[1])
+if sys.argv[2] == "add":
+    r = libc.syscall(nr, b"user", b"xhaos-probe", b"secret", 6, ctypes.c_long(-4))
+elif sys.argv[2] == "request":
+    r = libc.syscall(nr, b"user", b"xhaos-probe", None, ctypes.c_long(-4))
+else:
+    r = libc.syscall(nr, 0, ctypes.c_long(-4), 0)
+e = ctypes.get_errno()
+if r == -1 and e == errno.EACCES:
+    print("denied")
+else:
+    print("ok", r, "errno", e)
+`
+
+// The keyring system calls are denied in the sandboxed modes (not the
+// plain one, which has no filter).
+func TestSandboxDeniesKeyring(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "key.py"), []byte(keyProbe), 0o644)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	for _, call := range []struct {
+		name string
+		nr   int
+		kind string
+	}{{"add_key", unix.SYS_ADD_KEY, "add"}, {"request_key", unix.SYS_REQUEST_KEY, "request"}, {"keyctl", unix.SYS_KEYCTL, "keyctl"}} {
+		for _, mode := range []string{"nonet", "sealed"} {
+			if got := runIn(t, c, dir, mode, "key.py", strconv.Itoa(call.nr), call.kind); got != "denied" {
+				t.Errorf("%s: %s gave %q, want denied", mode, call.name, got)
+			}
+		}
+	}
+}
+
+// bindProbe binds and listens on a loopback TCP port, printing "bound" when
+// that works, "denied" on EACCES or EPERM.
+const bindProbe = `import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    print("bound")
+except PermissionError:
+    print("denied")
+except OSError as e:
+    print("error", e.errno)
+`
+
+// Under no-network a command may not accept connections either: a listening
+// socket takes in data (a control channel) that Landlock's connect rules do
+// not stop. The plain mode stays open.
+func TestNoNetDeniesBind(t *testing.T) {
+	if ABI() < NetABI {
+		t.Skip("this kernel's Landlock cannot restrict the network")
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "bind.py"), []byte(bindProbe), 0o644)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	if got := runIn(t, c, dir, "nonet", "bind.py"); got != "denied" {
+		t.Errorf("nonet: bind gave %q, want denied", got)
+	}
+	if got := runIn(t, c, dir, "sealed", "bind.py"); got != "denied" {
+		t.Errorf("sealed: bind gave %q, want denied", got)
+	}
+	if got := runIn(t, c, dir, "plain", "bind.py"); got != "bound" {
+		t.Errorf("plain: bind gave %q, want bound", got)
+	}
+}

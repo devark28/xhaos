@@ -481,12 +481,13 @@ func restrict(p policy) error {
 		}
 	}
 	if p.NoNet {
-		// Connect only: no rule for any port, so no TCP connection (this
-		// includes the server's own port on loopback). Binding stays allowed.
+		// Bind and connect, with no rule for any port: no TCP connection
+		// (this includes the server's own port on loopback) and no listening
+		// socket, which would take in connections.
 		if ABI() < NetABI {
 			return errors.New("landlock cannot restrict the network on this kernel")
 		}
-		none := landlock.Config{HandledAccessNet: landlock.AccessNetSet(llsys.AccessNetConnectTCP)}
+		none := landlock.Config{HandledAccessNet: landlock.AccessNetSet(llsys.AccessNetBindTCP | llsys.AccessNetConnectTCP)}
 		if err := none.RestrictNet(); err != nil {
 			return fmt.Errorf("landlock network: %w", err)
 		}
