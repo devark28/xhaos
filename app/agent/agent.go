@@ -130,6 +130,9 @@ type MessageData struct {
 	Sender  int64 `json:"sender,omitempty"`
 	// Attachments are files sent with an owner message.
 	Attachments []attachment.Ref `json:"attachments,omitempty"`
+	// Via names who sent an owner message on the owner's behalf: an MCP
+	// client, by its token's name (package mcpserver). Empty: the owner.
+	Via string `json:"via,omitempty"`
 }
 
 // ToolData is the payload of an agent.tool event: one state of one call.
@@ -147,6 +150,9 @@ type ToolData struct {
 	// ViaModel is set when the local model, not the built-in list, allowed the
 	// call: it then runs with no TCP connections.
 	ViaModel bool `json:"viaModel,omitempty"`
+	// Via names the MCP client (its token's name) that answered or decided
+	// the call on the owner's behalf; empty when the owner did.
+	Via string `json:"via,omitempty"`
 }
 
 // StatusData is the payload of an agent.status event.
@@ -199,6 +205,8 @@ type CreateRequest struct {
 	Model          string         `json:"model,omitempty"`
 	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else policy.Default
 	Attachments    []string       `json:"attachments,omitempty"` // uploaded attachment IDs, sent with Prompt
+	// Via: see MessageData.Via. Never read from a client call (json "-").
+	Via string `json:"-"`
 }
 
 type DecideRequest struct {
@@ -207,6 +215,7 @@ type DecideRequest struct {
 	AgentID        int64  `json:"agentId"`
 	CallID         string `json:"callId"`
 	Allow          bool   `json:"allow"`
+	Via            string `json:"-"` // see ToolData.Via
 }
 
 type MessageRequest struct {
@@ -216,6 +225,7 @@ type MessageRequest struct {
 	Body           string  `json:"body"`
 	// Attachments are uploaded attachment IDs sent with Body.
 	Attachments []string `json:"attachments,omitempty"`
+	Via         string   `json:"-"` // see MessageData.Via
 }
 
 const schema = `
@@ -546,7 +556,7 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 			if err != nil {
 				return err
 			}
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt, Attachments: files}, at)
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt, Attachments: files, Via: req.Via}, at)
 			if err != nil {
 				return err
 			}
@@ -602,7 +612,7 @@ func (s *Service) Decide(req DecideRequest) (eventlog.Event, error) {
 		if req.Allow {
 			call.State, call.Reason = ToolAllowed, ""
 		}
-		call.Output = ""
+		call.Output, call.Via = "", req.Via
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})
@@ -624,6 +634,7 @@ type AnswerRequest struct {
 	AgentID        int64                  `json:"agentId"`
 	CallID         string                 `json:"callId"`
 	Answers        map[string]tool.Answer `json:"answers"`
+	Via            string                 `json:"-"` // see ToolData.Via
 }
 
 // Answer records the user's answers to an ask_user call; they become the
@@ -657,7 +668,7 @@ func (s *Service) Answer(req AnswerRequest) (eventlog.Event, error) {
 		if err != nil {
 			return fmt.Errorf("%w: %v", apperr.Invalid, err)
 		}
-		call.State, call.By, call.Reason, call.Output = ToolDone, FromOwner, "", text
+		call.State, call.By, call.Reason, call.Output, call.Via = ToolDone, FromOwner, "", text, req.Via
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})
@@ -858,7 +869,7 @@ func (s *Service) Message(req MessageRequest) ([]eventlog.Event, error) {
 			if err != nil {
 				return err
 			}
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body, Attachments: files}, at)
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body, Attachments: files, Via: req.Via}, at)
 			if err != nil {
 				return err
 			}
