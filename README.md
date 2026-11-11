@@ -66,6 +66,7 @@ docker run -d --name xhaos -p 127.0.0.1:5180:5180 \
 - [Deploying](docs/deploy.md): servers, containers, reverse proxies.
 - [Architecture](docs/architecture.md): how the code is organized; [design notes](docs/design-notes.md): why.
 - [Permissions](docs/permissions.md) and [skills](docs/skills.md).
+- [MCP access](docs/mcp.md): drive agents from Claude Code (or any MCP client) with scoped tokens.
 
 ## Security
 

@@ -16,7 +16,8 @@
 //     and a small diagram to the first, plus the image at "image <path>"
 //     when the task names one, then read the board back.
 //
-// A message from another agent gets one reply on its channel; replies are
+// A message from another agent, or from an MCP client, gets one reply on
+// its channel; replies are
 // marked so two simulated agents never answer each other forever. A
 // subagent reads a file and reports back.
 package sim
@@ -54,6 +55,7 @@ var (
 	imageRE   = regexp.MustCompile(`(?i)\bimage\s+(\S+\.(?:png|jpe?g|gif|webp))\b`)
 	boardRE   = regexp.MustCompile(`#(\d+)`)
 	channelRE = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from agent #(\d+) \(([^)]*)\):\n`)
+	clientRE  = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from "([^"]*)", an MCP client[^\n]*\n`)
 )
 
 func (a Adapter) Stream(ctx context.Context, _ llm.Credentials, turn llm.Turn, onDelta func(string)) (llm.Result, error) {
@@ -187,6 +189,16 @@ func next(turn llm.Turn) llm.Result {
 				call(id("reply"), "channel_send", map[string]any{"channel": atoi(m[1]), "message": replyMark + "Thanks, noted: " + firstLine(body)}))
 		}
 		return say(fmt.Sprintf("Replied to agent #%s on channel #%s.", m[2], m[1]))
+	}
+
+	// A message from an MCP client acting for the user: one reply there.
+	if m := clientRE.FindStringSubmatch(e.trigger); m != nil {
+		body := e.trigger[len(m[0]):]
+		if len(e.called("channel_send")) == 0 && has(turn, "channel_send") {
+			return use(fmt.Sprintf("%s wrote on channel #%s. Replying there.", m[2], m[1]),
+				call(id("reply"), "channel_send", map[string]any{"channel": atoi(m[1]), "message": replyMark + "Got it: " + firstLine(body)}))
+		}
+		return say(fmt.Sprintf("Replied to %s on channel #%s.", m[2], m[1]))
 	}
 
 	task := e.trigger

@@ -29,6 +29,9 @@ const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read',
   board_list: 'List', board_read: 'Read', board_create: 'Create board', board_add_note: 'Add a note to', board_add_image: 'Add an image to', board_add_shapes: 'Add shapes to' };
 const stateNotes: Record<string, string> = { pending: 'waiting for you', allowed: 'allowed', denied: 'denied', done: '', failed: 'failed' };
 
+// viaNote names the MCP client that decided a call for the owner, if one did.
+export const viaNote = (via?: string) => (via ? ` via MCP (${via})` : '');
+
 // toolEntry renders one tool call's latest state. Pending calls show as an
 // approval with the command or diff; the rest as a collapsible tool entry.
 function toolEntry(data: ToolData, seq: number): Entry {
@@ -45,13 +48,15 @@ function toolEntry(data: ToolData, seq: number): Entry {
     return { kind: 'approval', callId: data.callId, state: data.state, text: what, command: write ? data.preview || '' : data.summary, language: write ? 'diff' : 'bash', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
   }
   // A call the local classifier allowed says so, with its reason (see docs/guide.md).
-  const note = data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : data.by === 'classifier' && data.reason ? data.reason : stateNotes[data.state] || data.state;
+  const note = (data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : data.by === 'classifier' && data.reason ? data.reason : stateNotes[data.state] || (data.via ? 'allowed' : data.state)) + viaNote(data.via)
+    + (data.run && data.state !== 'denied' ? ", ran Xhaos's own command for it" : '');
   const output = data.state === 'denied' ? '' : data.output || '';
   return {
     kind: write && data.preview && data.state !== 'failed' ? 'diff' : 'tool',
     callId: data.callId, state: data.state,
     text: `${verb}${note ? ` · ${note}` : ''}`,
-    command: data.summary || '',
+    // A commit or push an MCP client allowed: what ran is Xhaos's command.
+    command: (data.state !== 'denied' && data.run) || data.summary || '',
     output: write && data.preview && data.state !== 'failed' ? data.preview : output,
     seq,
   };
@@ -82,7 +87,7 @@ function mcpEntry(data: ToolData, seq: number): Entry {
 // ask_user: the questions themselves are answered in the Questions panel;
 // the transcript notes them and, once answered, shows the answers.
 function askEntry(data: ToolData, seq: number): Entry {
-  const note = data.state === 'pending' ? 'waiting for your answers' : data.state === 'denied' ? 'dismissed' : 'answered';
+  const note = (data.state === 'pending' ? 'waiting for your answers' : data.state === 'denied' ? 'dismissed' : 'answered') + viaNote(data.via);
   let questions = '';
   try { questions = (JSON.parse(data.preview || '{}').questions || []).map((q: { prompt: string }) => `- ${q.prompt}`).join('\n'); } catch { /* shown without */ }
   return { kind: 'tool', ask: true, callId: data.callId, state: data.state, text: `Asked you: ${data.summary} · ${note}`, command: '', output: data.state === 'done' ? data.output || '' : questions, seq };
@@ -122,7 +127,9 @@ function entry(event: BackendEvent): Entry | null {
     if (from === 'agent' && !text) return null; // a reply that only called tools
     const kind = from === 'owner' ? 'user' : from === 'system' ? 'system' : 'assistant';
     const files = (event.data?.attachments || []).map((f: Attachment) => ({ ...f, server: true }));
-    return files.length ? { kind, text, seq: event.seq, attachments: files } : { kind, text, seq: event.seq };
+    const item: Entry = files.length ? { kind, text, seq: event.seq, attachments: files } : { kind, text, seq: event.seq };
+    if (event.data?.via) item.via = event.data.via;
+    return item;
   }
   if (event.kind === 'agent.tool') return event.data?.name === 'ask_user' ? askEntry(event.data, event.seq) : toolEntry(event.data || {}, event.seq);
   return null; // kinds this view doesn't render yet are kept in the log only
@@ -258,7 +265,7 @@ export const pickerChoices = (providers: Provider[]): ModelChoice[] => providers
 // ---- channels -------------------------------------------------------------------
 
 const toMessage = (c: { members: number[] }, m: BackendChannel['messages'][number]): ChannelMessage => ({
-  id: String(m.id), timestamp: m.createdAt, writer: m.senderId || `outside:${m.senderName || 'unnamed'}`, readers: c.members.filter(id => id !== m.senderId), text: m.body,
+  id: String(m.id), timestamp: m.createdAt, writer: m.senderId || `${m.via === 'mcp' ? 'mcp' : 'outside'}:${m.senderName || 'unnamed'}`, readers: c.members.filter(id => id !== m.senderId), text: m.body,
 });
 
 // channelsFromBackend maps channel.Service.Channels into the view's channels.

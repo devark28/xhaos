@@ -17,6 +17,7 @@ import (
 	"github.com/devark28/xhaos/app/llm/openai"
 	"github.com/devark28/xhaos/app/llm/sim"
 	"github.com/devark28/xhaos/app/mcp"
+	"github.com/devark28/xhaos/app/mcpserver"
 	"github.com/devark28/xhaos/app/memory"
 	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/project"
@@ -104,8 +105,12 @@ type Services struct {
 	// Classifier decides ordinary commands for the runner; the page binds
 	// its Owner view.
 	Classifier *classifier.Classifier
-	mcp        *mcp.Manager
-	egress     *egress.Proxy
+	// MCPTokens are the MCP access tokens (bound to the page); MCPEndpoint
+	// serves MCP clients with them (auth.MCPPaths).
+	MCPTokens   *mcpserver.Service
+	MCPEndpoint *mcpserver.Server
+	mcp         *mcp.Manager
+	egress      *egress.Proxy
 	// Vault is the passphrase guard (nil without Options.Passphrase).
 	Vault *auth.Vault
 }
@@ -142,6 +147,7 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 		{"prefs", prefs.Migrate},
 		{"dictation", dictation.Migrate},
 		{"classifier", classifier.Migrate},
+		{"mcpserver", mcpserver.Migrate},
 	}
 	for _, step := range steps {
 		if err := step.migrate(db); err != nil {
@@ -333,34 +339,45 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 			ready(w.ID)
 		}
 	}
+	mcpTokens := mcpserver.NewService(db)
+	endpoint := mcpserver.Deps{
+		Agents: agents, Store: store, Channels: channels, Projects: project.NewService(db), Events: eventlog.NewService(db),
+		Providers: providers.List, ProjectRoot: runner.ProjectRoot, Version: opts.Version,
+	}
+	if vault != nil {
+		mcpTokens.Verify = vault.Verify
+		endpoint.State = vault.State
+	}
 	return &Services{
-		db:         db,
-		runner:     runner,
-		Workspaces: workspace.NewService(db),
-		Agents:     agents,
-		Events:     eventlog.NewService(db),
-		Providers:  provider.NewService(providers),
-		Btw:        side,
-		Tools:      catalog,
-		Projects:   project.NewService(db),
-		MCP:        mcp.NewService(tools),
-		Channels:   channels,
-		Files:      attachment.NewService(files),
-		Memories:   memories,
-		Boards:     boards,
-		Usage:      spend,
-		Prefs:      prefs.NewService(db),
-		Secrets:    secrets,
-		Danger:     risky,
-		Skills:     skills,
-		Web:        webs,
-		Dictation:  dictation.NewService(db, opts.Dictation),
-		Nodes:      nodes,
-		NodeHub:    nodeHub,
-		Classifier: runner.Classifier,
-		mcp:        tools,
-		egress:     out,
-		Vault:      vault,
+		MCPTokens:   mcpTokens,
+		MCPEndpoint: mcpserver.NewServer(mcpTokens, endpoint),
+		db:          db,
+		runner:      runner,
+		Workspaces:  workspace.NewService(db),
+		Agents:      agents,
+		Events:      eventlog.NewService(db),
+		Providers:   provider.NewService(providers),
+		Btw:         side,
+		Tools:       catalog,
+		Projects:    project.NewService(db),
+		MCP:         mcp.NewService(tools),
+		Channels:    channels,
+		Files:       attachment.NewService(files),
+		Memories:    memories,
+		Boards:      boards,
+		Usage:       spend,
+		Prefs:       prefs.NewService(db),
+		Secrets:     secrets,
+		Danger:      risky,
+		Skills:      skills,
+		Web:         webs,
+		Dictation:   dictation.NewService(db, opts.Dictation),
+		Nodes:       nodes,
+		NodeHub:     nodeHub,
+		Classifier:  runner.Classifier,
+		mcp:         tools,
+		egress:      out,
+		Vault:       vault,
 	}, nil
 }
 

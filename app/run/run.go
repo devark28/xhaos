@@ -777,11 +777,20 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			if ctx.Err() != nil {
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {
+				// An MCP client allowed a commit or push: Xhaos's own command for
+				// it runs, not the agent's (package mcpserver).
+				run := c
+				if d.Run != "" {
+					run = withCommand(c, d.Run)
+				}
 				// Prepare again: files may have changed while the call waited.
-				call, err := r.prepare(root, ws, a, c)
+				call, err := r.prepare(root, ws, a, run)
 				out := ""
 				if err == nil {
 					out, err = r.execute(ctx, root, ws, a, call, d.ViaModel)
+				}
+				if d.Run != "" {
+					out = "Allowed via MCP; Xhaos ran its own command for it instead of yours:\n" + d.Run + "\n\n" + out
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {
@@ -1105,4 +1114,17 @@ func attachmentChars(f attachment.Ref) int {
 		return previewText
 	}
 	return int(f.Size)
+}
+
+// withCommand is a bash call with its command replaced (its secrets and
+// skills kept).
+func withCommand(c llm.ToolCall, command string) llm.ToolCall {
+	var in map[string]any
+	if json.Unmarshal(c.Input, &in) != nil || in == nil {
+		in = map[string]any{}
+	}
+	in["command"] = command
+	raw, _ := json.Marshal(in)
+	c.Input = raw
+	return c
 }

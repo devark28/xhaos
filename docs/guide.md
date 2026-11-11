@@ -131,6 +131,10 @@ Within an agent's family (its subagents, its parent, its siblings) a channel ope
 
 `spawn_agent` starts a subagent in the parent's project, with the parent's policy and, unless it names another, the parent's model. It may name any model configured for the parent's provider (the same key); `models_list` lists them cheapest first with their prices, and the tool asks agents to pick the cheapest model that can do the task. The approval card shows the model. Its review mode is the same as the parent's write gate, so under manual review you approve each spawn. The subagent gets a channel with its parent, and its final answer is posted there automatically, waking the parent. A channel accepts at most 30 messages per 10 minutes, so two agents can't keep answering each other forever. Subagents nest at most three levels deep, and an agent can have at most eight unfinished subagents at once. An agent you paused still receives channel messages but stays paused until you resume it. Settings → Tools lists these tools, and the memory tools, next to the built-in ones. The Channels tab shows every channel and its messages live.
 
+## Driving Xhaos from Claude Code
+
+Settings → **MCP access** issues tokens that let an MCP client, such as Claude Code, reach this workspace at `/mcp` and list, start and stop agents, give them tasks, read and answer their questions, approve commits to feature branches, and talk in channels, within the scopes you choose. What it does shows as *via MCP* with the token's name. See [mcp.md](mcp.md).
+
 ## Secrets
 
 Settings → Secrets is the workspace's vault: named values such as a GitHub token, each with what it is for and the hosts it may reach. Values are encrypted with the key your passphrase unlocks (like provider keys) and never shown again, except with Reveal, which asks for the passphrase. Agents never see a value: `secrets_list` shows names, purposes, hosts and whether they may use each one.
