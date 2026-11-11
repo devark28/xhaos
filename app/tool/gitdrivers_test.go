@@ -70,6 +70,10 @@ func TestConfigRunsDrivers(t *testing.T) {
 		{"a ] in a subsection, same-line key", "[diff \"a]b\"] external = x\n", true},
 		{"an escaped quote and ] in a subsection", "[diff \"a\\\"]\"] external = x\n", true},
 		{"a clean subsection with a ]", "[diff \"a]b\"]\n\tbinary = true\n", false},
+		// git reads every header on a line: a second one may hold the driver.
+		{"two headers on one line", "[core][diff]external=/abs/x.sh\n", true},
+		{"two headers with spaces", "[core]  [diff \"x\"] [diff]external=/x\n", true},
+		{"two headers, a clean key", "[core][core]bare = false\n", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -280,16 +280,19 @@ func configRuns(r io.Reader) bool {
 			continue
 		}
 		if line[0] == '[' {
-			var rest string
-			var ok bool
-			section, rest, ok = parseHeader(line)
-			if !ok {
-				return true // a header git may read another way
+			// Several headers may share a line ([core][diff]external = x).
+			for line != "" && line[0] == '[' {
+				var rest string
+				var ok bool
+				section, rest, ok = parseHeader(line)
+				if !ok {
+					return true // a header git may read another way
+				}
+				if runSections[section] {
+					return true
+				}
+				line = strings.TrimSpace(rest)
 			}
-			if runSections[section] {
-				return true
-			}
-			line = strings.TrimSpace(rest)
 			if line == "" {
 				continue
 			}
