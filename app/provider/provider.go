@@ -172,7 +172,7 @@ func (st *Store) Credentials(ws, id string) (Provider, llm.Credentials, error) {
 
 // DefaultContext is each kind's context budget when a provider sets none:
 // conservative, since one value covers all of a provider's models.
-var DefaultContext = map[string]int64{"anthropic": 200_000, "openai": 128_000}
+var DefaultContext = map[string]int64{"anthropic": 200_000, "claude-cli": 200_000, "openai": 128_000}
 
 // Budget is how many input tokens an agent on this provider may use before
 // older messages are compacted.
@@ -296,7 +296,9 @@ func (s *Service) Test(workspaceID, id string) (TestResult, error) {
 		return TestResult{Message: err.Error()}, nil
 	}
 	what := "Key works"
-	if !p.HasKey {
+	if v, ok := s.st.adapters[p.Kind].(interface{ Verified() string }); ok {
+		what = v.Verified()
+	} else if !p.HasKey {
 		what = "Endpoint works"
 	}
 	return TestResult{OK: true, Message: fmt.Sprintf("%s; %d models available.", what, len(models)), Models: models}, nil
