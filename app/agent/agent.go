@@ -153,6 +153,9 @@ type ToolData struct {
 	// Via names the MCP client (its token's name) that answered or decided
 	// the call on the owner's behalf; empty when the owner did.
 	Via string `json:"via,omitempty"`
+	// Run, on a call an MCP client allowed under approve-feature-branch, is
+	// the command Xhaos runs instead of the agent's (package mcpserver).
+	Run string `json:"run,omitempty"`
 }
 
 // StatusData is the payload of an agent.status event.
@@ -216,6 +219,7 @@ type DecideRequest struct {
 	CallID         string `json:"callId"`
 	Allow          bool   `json:"allow"`
 	Via            string `json:"-"` // see ToolData.Via
+	Run            string `json:"-"` // see ToolData.Run; only with Allow
 }
 
 type MessageRequest struct {
@@ -612,7 +616,10 @@ func (s *Service) Decide(req DecideRequest) (eventlog.Event, error) {
 		if req.Allow {
 			call.State, call.Reason = ToolAllowed, ""
 		}
-		call.Output, call.Via = "", req.Via
+		call.Output, call.Via, call.Run = "", req.Via, ""
+		if req.Allow {
+			call.Run = req.Run
+		}
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})

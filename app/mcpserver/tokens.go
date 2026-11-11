@@ -193,6 +193,9 @@ func (s *Service) Revoke(req RevokeRequest) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("%w: token %d", apperr.NotFound, req.ID)
 	}
+	s.mu.Lock()
+	delete(s.used, req.ID)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -243,6 +246,15 @@ func (s *Service) lookup(secret string) (identity, error) {
 	id.Scopes = strings.Fields(scopes)
 	s.touch(id.TokenID)
 	return id, nil
+}
+
+// known reports whether secret is a token, without noting its use.
+func (s *Service) known(secret string) bool {
+	if !strings.HasPrefix(secret, TokenPrefix) {
+		return false
+	}
+	var n int
+	return s.db.QueryRow(`SELECT COUNT(*) FROM mcp_tokens WHERE hash = ?`, hashToken(secret)).Scan(&n) == nil && n > 0
 }
 
 // live reports whether a token still exists (not revoked).

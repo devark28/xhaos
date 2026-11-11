@@ -271,9 +271,12 @@ type pendingItem struct {
 	Command    string          `json:"command,omitempty"`
 	Preview    string          `json:"preview,omitempty"`
 	Reason     string          `json:"reason,omitempty"`
-	Branches   []string        `json:"branches,omitempty"`
-	CanAnswer  bool            `json:"you_can_answer"`
-	WhyNot     string          `json:"why_not,omitempty"`
+	// Intent is what allowing a commit or push does: Xhaos runs its own
+	// command for it (WillRun), never the agent's.
+	Intent    string `json:"intent,omitempty"`
+	WillRun   string `json:"will_run,omitempty"`
+	CanAnswer bool   `json:"you_can_answer"`
+	WhyNot    string `json:"why_not,omitempty"`
 }
 
 func questionID(agentID int64, callID string) string {
@@ -336,8 +339,10 @@ func (s *Server) item(id identity, a agent.Agent, d agent.ToolData) pendingItem 
 		}
 	case d.Commit && d.Name == "bash":
 		p.Kind, p.Command = kindCommit, d.Summary
-		branches, err := s.featureBranches(a, d)
-		p.Branches = branches
+		in, err := s.featureBranches(a, d)
+		if err == nil {
+			p.Intent, p.WillRun = in.String(), in.Run
+		}
 		switch {
 		case !id.has(ScopeApprove):
 			p.WhyNot = "approving commits and pushes needs the approve-feature-branch scope"
@@ -353,19 +358,20 @@ func (s *Server) item(id identity, a agent.Agent, d agent.ToolData) pendingItem 
 	return p
 }
 
-// featureBranches checks a waiting commit or push for approve-feature-branch.
-func (s *Server) featureBranches(a agent.Agent, d agent.ToolData) ([]string, error) {
+// featureBranches reads a waiting commit or push as the intent
+// approve-feature-branch may allow (see branch.go).
+func (s *Server) featureBranches(a agent.Agent, d agent.ToolData) (intent, error) {
 	if d.Effect == policy.EffectSecret {
-		return nil, errors.New("the command uses secrets the owner has not trusted to this agent")
+		return intent{}, errors.New("the command uses secrets the owner has not trusted to this agent")
 	}
 	if a.ProjectID == 0 || s.d.ProjectRoot == nil {
-		return nil, errors.New("the agent has no project")
+		return intent{}, errors.New("the agent has no project")
 	}
 	root, err := s.d.ProjectRoot(a.WorkspaceID, a.ProjectID)
 	if err != nil {
-		return nil, err
+		return intent{}, err
 	}
-	return featureBranchOnly(root, d.Summary)
+	return planner{root: root, local: s.LocalRemotes}.plan(d.Summary)
 }
 
 func (s *Server) listQuestions(_ context.Context, id identity, _ struct{}) (any, error) {
@@ -446,21 +452,31 @@ func (s *Server) answerQuestion(_ context.Context, id identity, in answerIn) (an
 			return nil, errors.New(it.WhyNot)
 		}
 		var allow bool
+		var run string
 		switch strings.ToLower(strings.TrimSpace(in.Decision)) {
 		case "allow":
 			allow = true
 			if !it.CanAnswer {
 				return nil, errors.New(it.WhyNot)
 			}
+			// Planned again here: what runs is what was checked just now.
+			plan, err := s.featureBranches(a, d)
+			if err != nil {
+				return nil, fmt.Errorf("only the owner can allow this: %v", err)
+			}
+			run = plan.Run
 		case "deny":
 		default:
 			return nil, errors.New("a commit or push takes decision allow or deny")
 		}
-		if _, err := s.d.Agents.Decide(agent.DecideRequest{IdempotencyKey: newKey(), WorkspaceID: id.Workspace, AgentID: a.ID, CallID: callID, Allow: allow, Via: id.Name}); err != nil {
+		if _, err := s.d.Agents.Decide(agent.DecideRequest{IdempotencyKey: newKey(), WorkspaceID: id.Workspace, AgentID: a.ID, CallID: callID, Allow: allow, Via: id.Name, Run: run}); err != nil {
 			return nil, err
 		}
 		if allow {
-			return done("allowed")
+			out, _ := done("allowed")
+			res := out.(map[string]any)
+			res["intent"], res["xhaos_runs"] = it.Intent, run
+			return res, nil
 		}
 		return done("denied")
 	}
@@ -849,6 +865,13 @@ func (s *Server) readChannel(ctx context.Context, id identity, in readChannelIn)
 	}
 	limit = min(limit, 200)
 	deadline := s.now().Add(min(time.Duration(max(in.WaitSeconds, 0))*time.Second, s.MaxWait))
+	if in.WaitSeconds > 0 {
+		done, err := s.startWait(id)
+		if err != nil {
+			return nil, err
+		}
+		defer done()
+	}
 	for {
 		msgs, err := s.d.Channels.MessagesAfter(id.Workspace, c.ID, in.After, limit)
 		if err != nil {
@@ -963,6 +986,11 @@ func (s *Server) waitForEvents(ctx context.Context, id identity, in waitIn) (any
 		timeout = 30 * time.Second
 	}
 	deadline := s.now().Add(min(timeout, s.MaxWait))
+	done, err := s.startWait(id)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	since := max(*in.Since, 0)
 	t := &titles{s: s, ws: id.Workspace}
 	for {

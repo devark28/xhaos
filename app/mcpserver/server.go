@@ -50,16 +50,21 @@ type Server struct {
 
 	mu      sync.Mutex
 	servers map[string]*sdk.Server // by scope set: a client sees only the tools its token allows
+	waits   map[int64]int          // long polls running, per token
+	wsWaits map[string]int         // and per workspace
 
 	// MaxWait bounds the long-polling tools (wait_for_events, read_channel).
 	MaxWait time.Duration
 	// Poll is how often a waiting tool looks again.
 	Poll time.Duration
-	now  func() time.Time
+	// LocalRemotes lets an approved push go to a local path (tests only:
+	// otherwise only https and ssh remotes).
+	LocalRemotes bool
+	now          func() time.Time
 }
 
 func NewServer(tokens *Service, d Deps) *Server {
-	s := &Server{tokens: tokens, d: d, servers: map[string]*sdk.Server{}, MaxWait: 50 * time.Second, Poll: 500 * time.Millisecond, now: time.Now}
+	s := &Server{tokens: tokens, d: d, servers: map[string]*sdk.Server{}, waits: map[int64]int{}, wsWaits: map[string]int{}, MaxWait: 50 * time.Second, Poll: 500 * time.Millisecond, now: time.Now}
 	inner := sdk.NewStreamableHTTPHandler(s.serverFor, &sdk.StreamableHTTPOptions{
 		Stateless:    true,
 		JSONResponse: true,
@@ -83,19 +88,54 @@ func NewServer(tokens *Service, d Deps) *Server {
 
 type idKey struct{}
 
-// ServeHTTP checks the bearer token (wrong ones are counted per address and
-// slowed down like sign-in attempts), then serves MCP.
+// Long polls (wait_for_events, read_channel with a wait) running at once:
+// beyond these a call returns at once, refused.
+const (
+	MaxWaitsPerToken     = 4
+	MaxWaitsPerWorkspace = 16
+)
+
+// ErrTooManyWaits is what a long poll over the limits returns.
+var ErrTooManyWaits = fmt.Errorf("too many waits: this token already has %d waiting calls (or the workspace %d); let one return first", MaxWaitsPerToken, MaxWaitsPerWorkspace)
+
+// startWait counts a long poll; done must be called when it ends.
+func (s *Server) startWait(id identity) (done func(), err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.waits[id.TokenID] >= MaxWaitsPerToken || s.wsWaits[id.Workspace] >= MaxWaitsPerWorkspace {
+		return nil, ErrTooManyWaits
+	}
+	s.waits[id.TokenID]++
+	s.wsWaits[id.Workspace]++
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.waits[id.TokenID]--; s.waits[id.TokenID] <= 0 {
+			delete(s.waits, id.TokenID)
+		}
+		if s.wsWaits[id.Workspace]--; s.wsWaits[id.Workspace] <= 0 {
+			delete(s.wsWaits, id.Workspace)
+		}
+	}, nil
+}
+
+// ServeHTTP checks the bearer token, then serves MCP. A valid token is
+// always served; only failures are slowed down, per address, like sign-in
+// attempts (so wrong guesses from an address never lock out good tokens,
+// even behind a proxy that is not trusted to name the client).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	secret := ""
+	if f := strings.Fields(r.Header.Get("Authorization")); len(f) == 2 && strings.EqualFold(f[0], "Bearer") {
+		secret = f[1]
+	}
 	addr := auth.ClientAddr(r)
-	if d := s.limits.Wait(addr, s.now()); d > 0 {
+	// A guess is refused before the lookup while the address must wait, so
+	// the wait limits guessing; a token's own lookup is the same cost.
+	if d := s.limits.Wait(addr, s.now()); d > 0 && !s.tokens.known(secret) {
 		secs := int(d.Seconds()) + 1
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		replyJSON(w, http.StatusTooManyRequests, map[string]any{"error": fmt.Sprintf("too many wrong tokens; try again in %d s", secs)})
 		return
-	}
-	secret := ""
-	if f := strings.Fields(r.Header.Get("Authorization")); len(f) == 2 && strings.EqualFold(f[0], "Bearer") {
-		secret = f[1]
 	}
 	id, err := s.tokens.lookup(secret)
 	if err != nil {
@@ -105,7 +145,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		replyJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error() + "; create one in Settings → MCP access"})
 		return
 	}
-	s.limits.Clear(addr)
 	// Long polls outlast the HTTP server's 30-second write timeout.
 	_ = http.NewResponseController(w).SetWriteDeadline(s.now().Add(s.MaxWait + 30*time.Second))
 	s.sdk.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), idKey{}, id)))
@@ -131,7 +170,11 @@ func (s *Server) serverFor(r *http.Request) *sdk.Server {
 	if srv := s.servers[key]; srv != nil {
 		return srv
 	}
-	srv := sdk.NewServer(&sdk.Implementation{Name: "xhaos", Title: "Xhaos", Version: s.d.Version}, &sdk.ServerOptions{Instructions: instructions})
+	srv := sdk.NewServer(&sdk.Implementation{Name: "xhaos", Title: "Xhaos", Version: s.d.Version}, &sdk.ServerOptions{
+		Instructions: instructions,
+		// The tool list depends on the token's scopes: never shared.
+		SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope, c.TTLMs = "private", 0 },
+	})
 	for _, t := range s.tools() {
 		if t.allowed(id) {
 			t.add(srv)
