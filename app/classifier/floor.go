@@ -54,8 +54,14 @@ var floor = []rule{
 	{"sudo runs commands as another user", func(c parsed) bool { return anyWord(c, is("sudo", "su", "doas")) }},
 	{"rm -r deletes whole folders", func(c parsed) bool { return after(c, is("rm"), recursiveFlag("r", "R")) }},
 	{"git clean deletes untracked files", func(c parsed) bool { return after(c, is("git"), word("clean")) }},
-	{"git reset --hard discards changes", func(c parsed) bool { return after2(c, is("git"), word("reset"), word("--hard")) }},
+	{"git reset --hard discards changes", func(c parsed) bool { return after2(c, is("git"), word("reset"), longFlags("--hard")) }},
 	{"git checkout -- discards changes", func(c parsed) bool { return after2(c, is("git"), word("checkout"), word("--")) }},
+	{"git checkout . or -f, git restore (worktree), git switch -f or --discard-changes, git checkout-index -f and git read-tree -u or --reset discard local changes", func(c parsed) bool {
+		return after2(c, is("git"), word("checkout"), checkoutDiscards) || gitRestoreDiscards(c) ||
+			after2(c, is("git"), word("switch"), switchDiscards) ||
+			after2(c, is("git"), word("checkout-index"), shortFlagWith('f')) ||
+			after2(c, is("git"), word("read-tree"), readTreeDiscards)
+	}},
 	{"find -delete deletes files", func(c parsed) bool { return after(c, is("find"), word("-delete")) }},
 	{"dd writes raw data", func(c parsed) bool { return anyWord(c, is("dd")) }},
 	{"mkfs formats a file system", func(c parsed) bool { return anyWord(c, mkfs) }},
@@ -87,7 +93,7 @@ var floor = []rule{
 	{"git ls-remote, git remote update and git submodule update --remote contact a remote", func(c parsed) bool {
 		return after(c, is("git"), word("ls-remote")) ||
 			after2(c, is("git"), word("remote"), word("update")) ||
-			(after2(c, is("git"), word("submodule"), word("update")) && anyWord(c, flagIs("--remote")))
+			(after2(c, is("git"), word("submodule"), word("update")) && anyWord(c, longFlags("--remote")))
 	}},
 	{"it looks up or contacts a host (dig, nslookup, host, ping, traceroute, whois, telnet, ftp, socat), even behind time, nice or a variable", func(c parsed) bool {
 		return commandIs(c, hostTools...)
@@ -118,13 +124,13 @@ var floor = []rule{
 	}},
 	{"it changes project files in bulk (go fmt, go fix, --write, --fix, -w, -o, --output, --outdir)", func(c parsed) bool {
 		return sub(c, is("go"), "fmt", "fix") || after(c, is("prettier", "gofmt", "goimports"), word("-w")) ||
-			anyWord(c, flagIs("--write", "--fix", "--outdir", "--output")) || outputFlag(c)
+			anyWord(c, longFlags("--write", "--fix", "--outdir", "--output")) || outputFlag(c)
 	}},
 	{"sed -i and --in-place change files in place", func(c parsed) bool { return after(c, is("sed"), inPlace) }},
-	{"rg --pre and --pre-glob run a program on each file", func(c parsed) bool { return after(c, is("rg", "ripgrep"), flagIs("--pre", "--pre-glob")) }},
-	{"sort --compress-program runs a program", func(c parsed) bool { return after(c, is("sort"), flagIs("--compress-program")) }},
+	{"rg --pre and --pre-glob run a program on each file", func(c parsed) bool { return after(c, is("rg", "ripgrep"), longFlags("--pre", "--pre-glob")) }},
+	{"sort --compress-program runs a program", func(c parsed) bool { return after(c, is("sort"), longFlags("--compress-program")) }},
 	{"git --ext-diff and --textconv run a diff program named by the project's git config", func(c parsed) bool {
-		return after(c, is("git"), flagIs("--ext-diff", "--textconv"))
+		return after(c, is("git"), gitDiffFlag)
 	}},
 	{"git init or clone --template copies hooks and config from a template folder into the repo (into .git/hooks of an existing one)", func(c parsed) bool {
 		return after(c, is("git"), templateFlag)
@@ -149,7 +155,7 @@ var floor = []rule{
 			goListUpdates(c)
 	}},
 	{"git gc --prune and git reflog expire delete history that git could restore", func(c parsed) bool {
-		return after(c, is("git"), word("gc")) && anyWord(c, flagPrefix("--prune")) || after2(c, is("git"), word("reflog"), word("expire"))
+		return after(c, is("git"), word("gc")) && anyWord(c, longFlags("--prune")) || after2(c, is("git"), word("reflog"), word("expire"))
 	}},
 	{"git stash drop and git stash clear delete stashed work", gitStashDelete},
 	{"env with an argument runs a program in a changed environment, and go env -w or -u writes the Go environment file", envRows},
@@ -220,7 +226,7 @@ func releaseName(w string) bool {
 
 // compileFlag matches file's -C (a short-flag cluster containing C) and --compile.
 func compileFlag(w string) bool {
-	if w == "--compile" {
+	if longFlags("--compile")(w) {
 		return true
 	}
 	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "C")
@@ -239,7 +245,7 @@ func envRows(c parsed) bool {
 			if is("env")(w) && envRuns(seg[i+1:]) {
 				return true
 			}
-			if w == "go" && i+1 < len(seg) && seg[i+1] == "env" && hasWord(seg[i+2:], word("-w", "-u")) {
+			if w == "go" && i+1 < len(seg) && seg[i+1] == "env" && hasWord(seg[i+2:], goEnvWrite) {
 				return true
 			}
 		}
@@ -249,6 +255,7 @@ func envRows(c parsed) bool {
 
 // parse splits a line for the floor (see the comment at the top).
 func parse(line string) parsed {
+	line = tool.JoinLines(line)
 	plain := strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(line)
 	var segs [][]string
 	for _, s := range strings.FieldsFunc(plain, func(r rune) bool {
@@ -302,7 +309,7 @@ func mkfs(w string) bool {
 // (-r, -rf, -fR, …).
 func recursiveFlag(letters ...string) func(string) bool {
 	return func(w string) bool {
-		if w == "--recursive" {
+		if longFlags("--recursive")(w) {
 			return true
 		}
 		if !strings.HasPrefix(w, "-") || strings.HasPrefix(w, "--") {
@@ -592,7 +599,7 @@ func copyToProtected(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "-t" || a == "--target-directory":
+		case a == "--target-directory":
 			i++
 			if i < len(args) && protectedFile.MatchString(args[i]) {
 				return true
@@ -603,9 +610,18 @@ func copyToProtected(args []string) bool {
 				return true
 			}
 			continue
-		case strings.HasPrefix(a, "-t") && !strings.HasPrefix(a, "--"):
-			if protectedFile.MatchString(a[2:]) {
-				return true
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "t"):
+			// -t takes the folder, glued (-tDIR) or as the next word; bundled
+			// into other short options (-vt DIR, -Dt DIR, -ft DIR) too.
+			if k := strings.IndexByte(a, 't'); k < len(a)-1 {
+				if protectedFile.MatchString(a[k+1:]) {
+					return true
+				}
+			} else {
+				i++
+				if i < len(args) && protectedFile.MatchString(args[i]) {
+					return true
+				}
 			}
 			continue
 		case strings.HasPrefix(a, "-"):
@@ -632,7 +648,7 @@ func anyProtected(args []string) bool {
 func tarExtracts(args []string) bool {
 	for i, a := range args {
 		switch {
-		case a == "--extract" || a == "--get":
+		case longFlags("--extract", "--get")(a):
 			return true
 		case strings.HasPrefix(a, "--"):
 		case i == 0 || strings.HasPrefix(a, "-"):
@@ -695,7 +711,7 @@ func shellReadsStdin(args []string) bool {
 
 // redirTarget is the file a redirect writes to: > x, >> x, >| x, &> x. A
 // descriptor (2>&1, >&2) is not a file.
-var redirTarget = regexp.MustCompile(`>>?\|?\s*([^\s;&|)<>]\S*)`)
+var redirTarget = regexp.MustCompile(`>>?\|?&?\s*([^\s;&|)<>]\S*)`)
 
 // protectedFile matches a path inside .git or node_modules, or a tool config
 // file (.npmrc, .gitattributes, .gitconfig, Makefile) anywhere.
@@ -761,10 +777,49 @@ func shellRunsText(args []string) bool {
 
 // inPlace matches sed's -i (also -ni, -i.bak) and --in-place (also with =).
 func inPlace(w string) bool {
-	if w == "--in-place" || strings.HasPrefix(w, "--in-place=") {
+	if longFlags("--in-place")(w) {
 		return true
 	}
 	return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.ContainsRune(w[1:], 'i')
+}
+
+// checkoutDiscards matches the checkout words that overwrite the worktree:
+// a "." path and -f.
+func checkoutDiscards(w string) bool { return w == "." || w == "-f" || longFlags("--force")(w) }
+
+// switchDiscards matches git switch's -f and --discard-changes.
+func switchDiscards(w string) bool { return w == "-f" || longFlags("--force", "--discard-changes")(w) }
+
+// readTreeDiscards matches read-tree's --reset and -u (in a short cluster):
+// both update the worktree to the tree, which discards local changes.
+func readTreeDiscards(w string) bool {
+	return longFlags("--reset")(w) || shortFlagWith('u')(w)
+}
+
+// shortFlagWith matches a short-flag cluster (-f, -af) containing letter.
+func shortFlagWith(letter rune) func(string) bool {
+	return func(w string) bool {
+		return strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.ContainsRune(w[1:], letter)
+	}
+}
+
+// gitRestoreDiscards is git restore that changes the worktree: restore
+// without --staged, or with --worktree too (-W, -S are the short forms).
+func gitRestoreDiscards(c parsed) bool {
+	for _, seg := range c.segments {
+		for i, w := range seg {
+			if !is("git")(w) || !hasWord(seg[i+1:], word("restore")) {
+				continue
+			}
+			rest := seg[i+1:]
+			staged := hasWord(rest, longFlags("--staged")) || hasWord(rest, word("-S"))
+			worktree := hasWord(rest, longFlags("--worktree")) || hasWord(rest, word("-W"))
+			if !staged || worktree {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // gitStashDelete is git stash followed, in the same command, by drop or clear
@@ -945,6 +1000,46 @@ func goListUpdates(c parsed) bool {
 	return false
 }
 
+// longFlag matches the long option full, or an abbreviation of it of at
+// least two letters (--rec for --recursive), with an optional =value. git,
+// sed and the other tools take unique abbreviations; a prefix that another
+// option also starts is refused too, which only costs a question.
+func longFlag(full string) func(string) bool {
+	return func(w string) bool {
+		name, _, _ := strings.Cut(w, "=")
+		return len(name) > 2 && strings.HasPrefix(name, "--") && strings.HasPrefix(full, name)
+	}
+}
+
+// gitDiffFlag matches --ext-diff and --textconv, or an abbreviation of them.
+// --text is git's own option (log -a), not an abbreviation, so it does not count.
+func gitDiffFlag(w string) bool {
+	name, _, _ := strings.Cut(w, "=")
+	return name != "--text" && longFlags("--ext-diff", "--textconv")(w)
+}
+
+// longFlags is longFlag for any of the names.
+func longFlags(names ...string) func(string) bool {
+	return func(w string) bool {
+		for _, n := range names {
+			if longFlag(n)(w) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// goEnvWrite matches go env's -w and -u as go's flag package reads them: one
+// or two dashes, with an optional =value (-w=true, --w).
+func goEnvWrite(w string) bool {
+	if !strings.HasPrefix(w, "-") {
+		return false
+	}
+	name, _, _ := strings.Cut(strings.TrimLeft(w, "-"), "=")
+	return name == "w" || name == "u"
+}
+
 // flagIs matches a word that is one of names, or name=value.
 func flagIs(names ...string) func(string) bool {
 	return func(w string) bool {
@@ -1017,7 +1112,17 @@ func bareYarn(c parsed) bool {
 func cdHome(c parsed) bool {
 	for _, seg := range c.segments {
 		for i, w := range seg {
-			if w == "cd" && (i == len(seg)-1 || seg[i+1] == "-") {
+			if w != "cd" {
+				continue
+			}
+			// cd's options (-L, -P, -e, --) come before the folder; with no
+			// folder, or cd -, it goes to $HOME or the last folder.
+			rest := seg[i+1:]
+			j := 0
+			for j < len(rest) && strings.HasPrefix(rest[j], "-") && rest[j] != "-" {
+				j++
+			}
+			if j == len(rest) || rest[j] == "-" {
 				return true
 			}
 		}

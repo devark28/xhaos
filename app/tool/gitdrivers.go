@@ -197,7 +197,7 @@ func reachesOutside(plain string) bool {
 // unquoted drops the quote marks and backslashes of a command line, as the
 // shell does before it runs a word (the same text the floor reads as plain).
 func unquoted(line string) string {
-	return strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(line)
+	return strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(JoinLines(line))
 }
 
 // ConfigRunsDrivers reports whether a git repo under root (the .git folder or

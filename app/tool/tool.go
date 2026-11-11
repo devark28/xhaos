@@ -107,6 +107,7 @@ var commitRE = regexp.MustCompile(`\bgit\b[^\n;&|]*\b(commit|push)\b`)
 // so the answer is never weaker than commitRE alone. A word with spaces is
 // read as a command line of its own (sh -c 'git commit …'), up to three levels.
 func commitsOrPushes(line string, depth int) bool {
+	line = JoinLines(line)
 	if commitRE.MatchString(line) {
 		return true
 	}

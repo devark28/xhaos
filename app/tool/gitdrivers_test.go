@@ -586,6 +586,24 @@ func TestGitDriverRiskCdOptions(t *testing.T) {
 
 // Another program may have git as an argument, and an option that is not
 // git's: without a -C on the line, git does not move, so the line is not risky.
+// A backslash at the end of a line joins it to the next (the shell removes
+// both), so a word split over two lines is one word: the git scan, the
+// commit check and the text check all read the joined line.
+func TestJoinedLinesAreOneCommand(t *testing.T) {
+	if !GitDriverRisk(t.TempDir(), "git --exec-pa\\\nth=. status") {
+		t.Error("a --exec-path split over two lines was not read as --exec-path")
+	}
+	if !commitsOrPushes("gi\\\nt commit -m x", 0) {
+		t.Error("gi\\ newline t commit is a commit")
+	}
+	if !commitsOrPushes("gi\\\nt push origin feat/x", 0) {
+		t.Error("gi\\ newline t push is a push")
+	}
+	if commitsOrPushes("git status", 0) {
+		t.Error("git status is not a commit or a push")
+	}
+}
+
 func TestGitDriverRiskOtherProgramsNamingGit(t *testing.T) {
 	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
 		t.Skip("symlinks need a platform that has them")

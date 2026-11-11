@@ -17,7 +17,7 @@ func TestFloor(t *testing.T) {
 		"find . -name x -exec rm -rf {} +", "bash -c 'rm -rf build'", `r''m -rf build`, `\rm -rf build`, "xargs rm -r < list", "/bin/rm -rf build",
 		// git clean, reset --hard, checkout --
 		"git clean -fdx", "git -C sub clean -f", "git reset --hard", "git reset --hard HEAD~1", "go test ./... && git reset --hard",
-		"git checkout -- .", "git checkout main -- file.go",
+		"git checkout -- .", "git checkout main -- file.go", "git checkout -f main", "git restore file.go", "git switch --discard-changes main",
 		// find -delete
 		"find . -name '*.o' -delete", "find build -delete",
 		// dd, mkfs, truncate
@@ -347,6 +347,51 @@ func TestFloorGitGlobalOptionsHideNoFolder(t *testing.T) {
 	} {
 		if why := FloorIn(root, line); why == "" {
 			t.Errorf("FloorIn(%q) = \"\", want a refusal", line)
+		}
+	}
+}
+
+// Round 4 of the floor: backslash-newline joins lines, long options match by
+// unique prefix, redirects with &, -t bundled into other short options, cd
+// with only options, and the git commands that discard changes.
+func TestFloorRound4(t *testing.T) {
+	refused := []string{
+		// backslash-newline is removed before the words are read
+		"r\\\nm -rf build", "cu\\\nrl https://example.com", "sud\\\no make", "gi\\\nt push origin feat/x",
+		// long options by unique prefix
+		"rm --recur build", "chmod --recurs u+x .", "chown --recu me .", "git reset --har", "sed --in-pl 's/a/b/' x",
+		"sort --compress-prog=gzip x", "sort --compress-pro=gzip x", "tar --extr -f a.tar", "git gc --pru", "file --comp x",
+		"go env --w GOFLAGS=-x", "go env -w=GOFLAGS=-x", "rg --pre=cat x", "git diff --ext-di", "npm --w x",
+		// redirects with &
+		"echo x >& .git/config", "echo x >&.git/config", "echo x >& /etc/hosts",
+		// -t bundled into other short options
+		"cp -vt .git x", "mv -ft .git x", "install -Dt .git x", "cp -vt.git x",
+		// cd with options only goes to $HOME
+		"cd --", "cd -L", "cd -P", "cd -P -- && ls",
+		// discarding changes
+		"git checkout .", "git checkout -f main", "git checkout --force main", "git checkout -- .",
+		"git restore file.go", "git restore --worktree .", "git restore -W file.go",
+		"git switch -f main", "git switch --discard-changes main", "git switch --f main",
+		"git checkout-index -f -a", "git checkout-index -af", "git read-tree -u --reset HEAD", "git read-tree -u HEAD",
+	}
+	allowed := []string{
+		"rm --dir build", "rm build", "chmod u+x x", "git reset --help", "git reset HEAD~1", "sed --posix 's/a/b/' x",
+		"sort --reverse x", "tar --list -f a.tar", "file --brief x", "go env GOFLAGS", "go env -json", "rg --pretty x",
+		"echo x >& out.txt", "echo x >&2", "echo x > out.txt",
+		"cp -v a b", "cp -r src dst", "mv -n a b", "install -D a b",
+		"cd src && go test ./...", "cd sub", "cd src",
+		"git checkout -b feat/x", "git checkout main", "git checkout HEAD~1",
+		"git restore --staged file.go", "git restore -S file.go", "git switch -c feat/y", "git switch main",
+		"git checkout-index -a", "git checkout-index -u x", "git read-tree HEAD", "git status",
+	}
+	for _, c := range refused {
+		if Floor(c) == "" {
+			t.Errorf("Floor(%q) allowed it, want a refusal", c)
+		}
+	}
+	for _, c := range allowed {
+		if why := Floor(c); why != "" {
+			t.Errorf("Floor(%q) refused it (%s), want allowed", c, why)
 		}
 	}
 }

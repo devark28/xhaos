@@ -265,6 +265,11 @@ func splitCommands(line string) []string {
 	return append(parts, cur.String())
 }
 
+// JoinLines removes each backslash-newline: the shell reads a line ending in
+// a backslash as joined to the next, so gi\<newline>t is git. Every reader of
+// a command line in this package and in the floor applies it first.
+func JoinLines(line string) string { return strings.ReplaceAll(line, "\\\n", "") }
+
 // SimpleCommands splits a command line into its simple commands, each as
 // shell words with the quotes removed (so g'i't and "git" read as git). ok is
 // false when the line cannot be read safely (see shellWords); callers must then
