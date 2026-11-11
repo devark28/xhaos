@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -508,7 +507,7 @@ func (t *Tools) copy(ctx context.Context, ws string, a agent.Agent, in copyInput
 			mode uint32
 		)
 		if fi.IsDir() {
-			files, err := projectFiles(ctx, src)
+			files, err := projectFiles(ctx, root, src)
 			if err != nil {
 				return "", err
 			}
@@ -566,11 +565,13 @@ func copied(from, to string, size int64, sum string) string {
 	return fmt.Sprintf("Copied %s → %s: %d bytes, SHA-256 %s (checked).", from, to, size, sum)
 }
 
-// projectFiles lists a project folder's files for a copy: git's view
-// (tracked and untracked, without ignored files) when it is in a git
-// repository, else everything but .git.
-func projectFiles(ctx context.Context, dir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
+// projectFiles lists a folder of the project at root for a copy: git's
+// view (tracked and untracked, without ignored files) when it is in a git
+// repository, else everything but .git. Commands can write the folder (and
+// make a repo in it), and git runs here as the server, outside the sandbox:
+// it gets the safe settings that stop it running any program.
+func projectFiles(ctx context.Context, root, dir string) ([]string, error) {
+	cmd := tool.GitSafeCommand(ctx, root, dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
 	out, err := cmd.Output()
 	if err != nil {
 		return wire.WalkFiles(dir)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -31,7 +32,24 @@ var gitSafePairs = [][2]string{
 // gitSafeEnv returns the environment for a read-class command that runs git
 // in root. The drivers git lists (filter clean, smudge and process; textconv
 // and command for diff) are blanked, so no attribute can run them.
-func gitSafeEnv(root string) []string {
+func gitSafeEnv(root string) []string { return gitSafeEnvIn(root, root) }
+
+// GitSafeCommand is git with args, run by the server itself (outside the
+// sandbox) in dir, a folder of the project at root: with the same safe
+// settings as read-class commands, so a repo a command made there (core.
+// fsmonitor, hooks, drivers) cannot run a program as the server, and no
+// repo above the project is used.
+func GitSafeCommand(ctx context.Context, root, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	cmd.Env = append(env, gitSafeEnvIn(root, dir)...)
+	return cmd
+}
+
+// gitSafeEnvIn is gitSafeEnv for git run in dir, inside the project at
+// root: the ceiling is above root; the drivers blanked are dir's repo's.
+func gitSafeEnvIn(root, dir string) []string {
 	home, _ := os.UserHomeDir()
 	global := "/dev/null"
 	for _, f := range []string{".gitconfig", ".config/git/config"} {
@@ -51,7 +69,7 @@ func gitSafeEnv(root string) []string {
 		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
 	}
 	pairs := slicesClone(gitSafePairs)
-	for _, k := range gitDriverNames(root, home, env) {
+	for _, k := range gitDriverNames(dir, home, env) {
 		pairs = append(pairs, [2]string{k, ""})
 	}
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(pairs)))
