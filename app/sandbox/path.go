@@ -36,6 +36,7 @@ func TempRoot() string {
 // looks a name up on PATH (claude, git, an MCP server's command). It logs
 // and returns what it removed.
 func GuardPath(writable ...string) []string {
+	noteWritable(writable) // CheckProgram refuses programs in them too
 	var keep, dropped []string
 	for _, e := range filepath.SplitList(os.Getenv("PATH")) {
 		if e != "" && inAny(e, writable) {

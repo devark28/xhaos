@@ -62,6 +62,7 @@ import (
 
 	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/localhttp"
+	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/workspace"
 )
 
@@ -273,6 +274,10 @@ func (s *Service) argv(wav, language, prompt string) []string {
 // killed when ctx ends.
 func (s *Service) run(ctx context.Context, dir, wav, language, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, s.cfg.Program, s.argv(wav, language, prompt)...)
+	// The server runs it unsandboxed: never from a folder commands can write.
+	if err := sandbox.CheckProgram(cmd.Path); err != nil {
+		return "", fmt.Errorf("dictation: %w", err)
+	}
 	cmd.Dir = dir
 	// Own process group, so a timeout kills the sidecar's children too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // Read-class commands that run git get git's settings through the
@@ -40,7 +42,7 @@ func gitSafeEnv(root string) []string { return gitSafeEnvIn(root, root) }
 // fsmonitor, hooks, drivers) cannot run a program as the server, and no
 // repo above the project is used.
 func GitSafeCommand(ctx context.Context, root, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := serverGit(ctx, args...)
 	cmd.Dir = dir
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
 	cmd.Env = append(env, gitSafeEnvIn(root, dir)...)
@@ -110,7 +112,7 @@ func gitConfigRuns(root string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	home, _ := os.UserHomeDir()
-	cmd := exec.CommandContext(ctx, "git", "config", "-z", "--list")
+	cmd := serverGit(ctx, "config", "-z", "--list")
 	cmd.Dir = root
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1"}
 	if parent := filepath.Dir(root); parent != root {
@@ -147,7 +149,7 @@ func gitConfigRuns(root string) bool {
 func gitOutput(root, home string, env []string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := serverGit(ctx, args...)
 	cmd.Dir = root
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}, env...)
 	var out bytes.Buffer
@@ -156,6 +158,17 @@ func gitOutput(root, home string, env []string, args ...string) string {
 		return ""
 	}
 	return out.String()
+}
+
+// serverGit is git run by the server itself, outside the sandbox: a git
+// found in a folder commands can write is refused (Start and Output return
+// the error).
+func serverGit(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if err := sandbox.CheckProgram(cmd.Path); err != nil {
+		cmd.Err = err
+	}
+	return cmd
 }
 
 func fileExists(path string) bool {
