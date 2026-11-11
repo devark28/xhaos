@@ -12,7 +12,7 @@ import { colors } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { Toggle } from './AppearanceSettings.tsx';
 
-const HINT = 'Lets agents on auto review run ordinary build, test and lint commands (go test, npm test, make, pytest, ruff check...) without asking you. The list is fixed: no model, nothing new to install. Anything it does not list goes to the local model when one is set up, and asks otherwise; every dangerous command still asks (sudo, deletes, installs, publishes, network tools, anything outside the project). Commands with secrets are never listed. It can only make a command run, never stop one. Off: every command asks, as before. Only agents on auto review with read-write access use it; read-only and manual agents are unchanged. Put new agents on auto review in Settings → Agents, and an existing one from the policy chip on its card. An allowed command’s card gives the reason.';
+const HINT = 'Lets agents on auto review run ordinary build, test and lint commands (go test, npm test, make, pytest, ruff check...) without asking you. The list is fixed: no model, nothing new to install. Anything it does not list goes to the local model when one is set up, and asks otherwise; every dangerous command still asks (sudo, deletes, installs, publishes, network tools, anything outside the project). Commands with secrets are never listed. It can only make a command run, never stop one. Off: every command asks, as before. Only agents on auto review with read-write access use it; read-only and manual agents are unchanged. Put new agents on auto review in Settings → Agents, and an existing one with Auto in its menu. An allowed command’s card gives the reason.';
 
 interface Health { ok: boolean; detail?: string }
 
@@ -77,7 +77,7 @@ export function ClassifierSettings() {
 // review) and how many it never sees (manual review).
 function ReviewCounts() {
   const text = useApp(s => countsText(reviewCounts(workspaceOf(s).agents)));
-  return <p data-review-counts {...stylex.props(s.muted)}>{text} It decides only for those on auto review: change an agent’s from the policy chip on its card.</p>;
+  return <p data-review-counts {...stylex.props(s.muted)}>{text} It decides only for those on auto review: pick Auto in an agent’s menu (⋯ on its card).</p>;
 }
 
 const s = stylex.create({

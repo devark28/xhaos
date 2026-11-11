@@ -1,15 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { basePolicy, countsText, isPolicy, optionsFor, policyMenu, policyText, reviewCounts, suggestAuto, withField, within } from './policy.ts';
+import { approvalOf, basePolicy, countsText, isPolicy, optionsFor, pickReview, policyLabel, policyMenu, policyText, reviewChoices, reviewCounts, suggestAuto, withField, within } from './policy.ts';
 import { applyEvent, viewFromSnapshot } from './backend-view.ts';
 import type { Agent, Policy } from './types.ts';
 
 const auto: Policy = { access: 'rw', review: 'auto', commit: 'review' };
 const ro: Policy = { access: 'ro', review: 'manual', commit: 'blocked' };
 
-test('the chip text names access, review and commits', () => {
+test('the card shows one label: manual, auto, or danger with the time left', () => {
+  assert.equal(policyLabel(basePolicy), 'manual');
+  assert.equal(policyLabel(auto), 'auto');
+  assert.equal(policyLabel(ro), 'read-only');
+  assert.equal(policyLabel(auto, 42 * 60_000 - 5_000), 'danger 42m');
+  assert.equal(policyLabel(ro, 90_000, () => '1m 30s'), 'danger 1m 30s');
+  assert.equal(policyLabel(auto, -1), 'auto', 'danger that ran out falls back to the stored mode');
   assert.equal(policyText(basePolicy), 'rw · manual · commits review');
   assert.equal(policyText(ro), 'ro · manual · commits blocked');
+});
+
+test('the ladder: danger is a timed override on top of the stored mode', () => {
+  assert.equal(approvalOf(basePolicy, 0), 'manual');
+  assert.equal(approvalOf(auto, 0), 'auto');
+  assert.equal(approvalOf(basePolicy, 1000), 'danger');
+});
+
+test("the menu's main choices are manual then auto, in the owner's words", () => {
+  assert.deepEqual(reviewChoices.map(c => c.value), ['manual', 'auto']);
+  assert.equal(reviewChoices[0].hint, 'everything except reads asks you');
+  assert.match(reviewChoices[1].hint, /the classifier decides other commands \(asks if the classifier is off\)/);
+});
+
+test('picking manual or auto ends danger, and stores the mode only when it changes', () => {
+  assert.deepEqual(pickReview(basePolicy, true, 'manual'), { endDanger: true, policy: null });
+  assert.deepEqual(pickReview(basePolicy, true, 'auto'), { endDanger: true, policy: auto });
+  assert.deepEqual(pickReview(auto, false, 'manual'), { endDanger: false, policy: basePolicy });
+  assert.deepEqual(pickReview(auto, false, 'auto'), { endDanger: false, policy: null });
 });
 
 test('isPolicy accepts known values only', () => {

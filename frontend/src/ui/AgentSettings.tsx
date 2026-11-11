@@ -1,6 +1,6 @@
 // Settings → Agents: how much agents may do without asking. The default
 // policy of new top-level agents (subagents inherit their parent's; change
-// one agent's from the chip on its card), and renaming: an agent that
+// one agent's with Approvals in its menu), and renaming: an agent that
 // proposes a new title (propose_title) asks you on its card, unless the
 // switch is on.
 import { useEffect, useState } from 'react';
@@ -17,7 +17,7 @@ interface AgentSettingsData { selfRename: boolean; defaultPolicy: Policy }
 
 const HINT = 'An agent proposes a new title when it starts a new task or its focus changes. Off: the proposal waits on its card (Rename or Keep) and the agent keeps working meanwhile. On: it is renamed at once, for every agent; the history notes each rename. An agent that is dangerously allowed renames itself either way.';
 
-const POLICY_HINT = 'The policy of each new agent you start here or an MCP client starts without naming one. Subagents take their parent’s. Agents already running keep theirs: change one from the policy chip on its card.';
+const POLICY_HINT = 'The policy of each new agent you start here or an MCP client starts without naming one. Subagents take their parent’s. Agents already running keep theirs: change one with Approvals in its menu (⋯), which also has Dangerously allow….';
 
 export function AgentSettings() {
   const [st, setSt] = useState<AgentSettingsData | null>(null);

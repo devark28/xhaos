@@ -36,7 +36,7 @@ Reconnecting fetches the current snapshot and replays missed events and pending 
 
 Changing access or approval settings is an explicit owner action, available through any authenticated client. For example, the owner can make an agent read-only or require manual approval before leaving; absence itself does not make that change. Recheck policy immediately before each side effect, and invalidate stale approvals/classifier results using policy versions. Permission changes cannot undo effects of an already-running process; termination/cancellation handles stopping that work separately.
 
-As built: the owner changes an existing agent's policy on the page (the policy chip on its card; `agent.Service.SetPolicy`), and sets the default for new top-level agents in Settings → Agents. MCP tokens cannot change an existing agent's policy (no owner-only scope exists yet). A change applies from the agent's next tool call: approvals already pending are kept for the owner to decide, not re-gated or revoked.
+As built: the owner changes an existing agent's policy on the page (Approvals in the agent's menu: Manual, Auto or Dangerously allow…, then access and commits; `agent.Service.SetPolicy`), and sets the default for new top-level agents in Settings → Agents. MCP tokens cannot change an existing agent's policy (no owner-only scope exists yet). A change applies from the agent's next tool call: approvals already pending are kept for the owner to decide, not re-gated or revoked.
 
 ## Termination
 
