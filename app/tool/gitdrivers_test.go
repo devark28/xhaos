@@ -464,3 +464,50 @@ func TestConfigRunsDriversSymlinkedRoot(t *testing.T) {
 		t.Error("a project folder that is a link to a repo with a driver: want risky")
 	}
 }
+
+// git -C is read only before the subcommand, and a revision range is not a
+// folder: these lines have no folder outside the project, so they are not
+// risky with a clean project config.
+func TestGitDriverRiskNoFalseAsks(t *testing.T) {
+	root := repo(t, "[core]\n\tbare = false\n")
+	for _, line := range []string{
+		"git log -C",
+		"git diff -C HEAD~1..HEAD",
+		"git log -C main..feature -- x",
+		"git diff -C --stat A..B",
+		"git -C sub log -C A..B",
+		"cd sub && git diff A..B",
+		"git log A..B",
+	} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false (clean project, no folder outside)", line)
+		}
+	}
+	// A second -C, after the first, still names a folder: it must be read.
+	if !GitDriverRisk(root, "git -C sub -C .. status") {
+		t.Error("GitDriverRisk(git -C sub -C ..) = false, want true")
+	}
+}
+
+// A link to a folder outside the project counts only when the command moves
+// git into it (cd or -C). A plain git command runs in the project.
+func TestGitDriverRiskLinksOutsideOnlyWhenMoved(t *testing.T) {
+	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	root := repo(t, "[core]\n\tbare = false\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
+	for _, line := range []string{"git status", "git log A..B", "git -C sub status", "cd sub && git status"} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false: no move into the outside link", line)
+		}
+	}
+	for _, line := range []string{"cd link && git status", "git -C link status"} {
+		if !GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = false, want true: git enters the outside link", line)
+		}
+	}
+}

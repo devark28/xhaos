@@ -42,26 +42,101 @@ func GitDriverRisk(root, line string) bool {
 	if strings.Contains(plain, "GIT_") || strings.Contains(plain, "--exec-path") || reachesOutside(plain) {
 		return true
 	}
-	return ConfigRunsDrivers(root)
+	drivers, links := scanRepos(root)
+	if drivers {
+		return true
+	}
+	// A link to a folder outside the project matters only when the command
+	// moves git into it (cd or -C): a plain git command runs in the project.
+	moves := movedTo(plain)
+	if !links || len(moves) == 0 {
+		return false
+	}
+	// One move is resolved from the project root (through any links). Chained
+	// moves are not resolved step by step, so they count as risky.
+	return len(moves) > 1 || entersOutside(root, moves[0])
 }
 
-// movesGit matches a command that changes folder: cd, pushd or git -C.
-// outsideTarget matches a target that may be outside the project: a path that
-// starts with /, ~, $ or a backquote, a .. part, or cd - (the last folder).
-var (
-	movesGit      = regexp.MustCompile(`(^|[\s;&|(])(cd|pushd)(\s|$)|(^|\s)-C(\s|=|$)`)
-	outsideTarget = regexp.MustCompile("(^|[\\s=:(])[/~$`]|\\.\\.|(cd|pushd)\\s+-(\\s|$)")
-)
+// entersOutside reports whether folder d, taken from root, is or leads
+// through a link to a folder outside the project. A folder that does not
+// resolve counts as outside.
+func entersOutside(root, d string) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return true
+	}
+	target, err := filepath.EvalSymlinks(filepath.Join(root, d))
+	if err != nil {
+		return true
+	}
+	rel, err := filepath.Rel(realRoot, target)
+	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// cdTarget matches a cd or pushd and the word after it (empty for a bare cd).
+var cdTarget = regexp.MustCompile(`(?:^|[\s;&|(])(?:cd|pushd)(?:[ \t]+([^\s;&|()]*))?`)
+
+// movedTo lists the folders a command line moves git or the shell to: each
+// cd or pushd target, and each folder git -C names before its subcommand. A
+// bare cd goes to $HOME, so its target is "".
+func movedTo(plain string) []string {
+	var dirs []string
+	for _, m := range cdTarget.FindAllStringSubmatch(plain, -1) {
+		dirs = append(dirs, m[1])
+	}
+	return append(dirs, gitDirs(plain)...)
+}
+
+// gitDirs lists the folders that git -C names before the subcommand (git -C
+// a -C b log): the options before it are read, and -C after the subcommand
+// is a flag of that subcommand (git log -C copies), not a folder.
+func gitDirs(plain string) []string {
+	words := strings.Fields(strings.NewReplacer(";", " ", "&", " ", "|", " ", "(", " ", ")", " ").Replace(plain))
+	var dirs []string
+	for i, w := range words {
+		if w != "git" && !strings.HasSuffix(w, "/git") {
+			continue
+		}
+	options:
+		for j := i + 1; j < len(words); j++ {
+			switch v := words[j]; {
+			case v == "-C" && j+1 < len(words):
+				dirs = append(dirs, words[j+1])
+				j++
+			case strings.HasPrefix(v, "-C="):
+				dirs = append(dirs, v[3:])
+			case v == "-c" || v == "--namespace" || v == "--super-prefix" || v == "--config-env":
+				j++ // its value is the next word
+			case strings.HasPrefix(v, "-"):
+			default:
+				break options // the subcommand
+			}
+		}
+	}
+	return dirs
+}
+
+// outsideDir reports a folder that may lie outside the project: a leading /,
+// ~, $ or backquote, a .. part, cd - (the last folder), or a bare cd (home).
+func outsideDir(d string) bool {
+	return d == "" || d == "-" || strings.ContainsAny(d[:1], "/~$`") || strings.Contains(d, "..")
+}
 
 // reachesOutside reports whether a git command line points git at config
 // outside the project: HOME or XDG_CONFIG_HOME (git reads ~/.gitconfig and
 // $XDG_CONFIG_HOME/git/config), a git dir or a work tree named on the line,
-// or a cd or -C to a folder that may lie outside the project.
+// or a cd, pushd or git -C to a folder that may lie outside the project.
+// Only those folders count: a revision range (A..B) or git log -C is not one.
 func reachesOutside(plain string) bool {
 	if strings.Contains(plain, "HOME=") || strings.Contains(plain, "--git-dir") || strings.Contains(plain, "--work-tree") {
 		return true
 	}
-	return movesGit.MatchString(plain) && outsideTarget.MatchString(plain)
+	for _, d := range movedTo(plain) {
+		if outsideDir(d) {
+			return true
+		}
+	}
+	return false
 }
 
 // unquoted drops the quote marks and backslashes of a command line, as the
@@ -79,16 +154,24 @@ func unquoted(line string) string {
 // tree too large to check, or an empty root counts as yes; a folder with no
 // repo counts as no.
 func ConfigRunsDrivers(root string) bool {
+	drivers, links := scanRepos(root)
+	return drivers || links
+}
+
+// scanRepos walks root for repos. drivers reports config that could run a
+// program (see ConfigRunsDrivers); links reports a link to a folder outside
+// the project, which git can enter only by a cd or -C into it.
+func scanRepos(root string) (drivers, links bool) {
 	if root == "" {
-		return true
+		return true, true
 	}
 	// The walk starts at the real folder: a root that is a link would not be
 	// walked at all.
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return true
+		return true, false
 	}
-	risky, scanned := false, 0
+	risky, outside, scanned := false, false, 0
 	err = filepath.WalkDir(realRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			risky = true // a folder that cannot be read may hold a repo
@@ -99,7 +182,7 @@ func ConfigRunsDrivers(root string) bool {
 			return fs.SkipAll
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
-			risky = risky || linksOutside(realRoot, p)
+			outside = outside || linksOutside(realRoot, p)
 			return nil
 		}
 		if d.IsDir() && d.Name() == "objects" && isGitDir(filepath.Dir(p)) {
@@ -120,7 +203,7 @@ func ConfigRunsDrivers(root string) bool {
 		risky = risky || dotGitFileRuns(filepath.Dir(p), p)
 		return nil
 	})
-	return risky || err != nil
+	return risky || err != nil, outside
 }
 
 // linksOutside reports whether the link at p leads to a folder outside
