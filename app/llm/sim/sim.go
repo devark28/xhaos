@@ -9,7 +9,10 @@
 //     final answers when both arrive;
 //   - "contact #N" or "talk to #N": open a channel with agent #N (another
 //     top-level agent's channel waits for your approval);
-//   - "ask": ask you a question with ask_user;
+//   - "ask": ask you a question with ask_user; "questions": three of them
+//     (one multi-select, one free text);
+//   - "rename to <title>": propose that title for itself with propose_title
+//     (it never waits), then go on;
 //   - "write" or "note": write sim-notes.md (gated like any write);
 //   - "run": run `git status` (a read-only command);
 //   - "board": list the boards (creating one if there are none), add a note
@@ -55,6 +58,7 @@ var (
 	imageRE   = regexp.MustCompile(`(?i)\bimage\s+(\S+\.(?:png|jpe?g|gif|webp))\b`)
 	boardRE   = regexp.MustCompile(`#(\d+)`)
 	channelRE = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from agent #(\d+) \(([^)]*)\):\n`)
+	renameRE  = regexp.MustCompile(`(?i)\brename to\s+"?([^"\n]+?)"?\s*(?:[.;]|$)`)
 	clientRE  = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from "([^"]*)", an MCP client[^\n]*\n`)
 )
 
@@ -242,6 +246,24 @@ func next(turn llm.Turn) llm.Result {
 			call(id("contact"), "channel_create", map[string]any{"subject": "coordination: " + firstLine(task), "members": []int{atoi(m[1])},
 				"message": "Hi, I'm working on: " + firstLine(task) + ". Anything I should know before I start?"}))
 	}
+	if m := renameRE.FindStringSubmatch(task); m != nil && has(turn, "propose_title") && len(e.called("propose_title")) == 0 {
+		return use("My task changed; proposing a title that fits it.", call(id("title"), "propose_title", map[string]any{"title": strings.TrimSpace(m[1]), "reason": "the task changed"}))
+	}
+	if wants(low, "questions") && has(turn, "ask_user") && len(e.called("ask_user")) == 0 {
+		return use("A few decisions before I go on.", call(id("ask"), "ask_user", map[string]any{
+			"title": "A few decisions",
+			"questions": []map[string]any{
+				{"prompt": "Which approach should I take?", "options": []map[string]any{
+					{"label": "The small change", "description": "touch as little as possible"},
+					{"label": "The thorough one", "description": "refactor while I am there"},
+				}},
+				{"prompt": "Which checks should I run?", "multiple": true, "options": []map[string]any{
+					{"label": "Unit tests"}, {"label": "Lint", "description": "gofmt and go vet"}, {"label": "Browser tests", "description": "Chrome and Firefox"},
+				}},
+				{"prompt": "Anything else I should know?", "required": false},
+			},
+		}))
+	}
 	if wants(low, "ask") && has(turn, "ask_user") && len(e.called("ask_user")) == 0 {
 		return use("I need a decision before going on.", call(id("ask"), "ask_user", map[string]any{
 			"title": "Before I continue",
@@ -266,7 +288,7 @@ func next(turn llm.Turn) llm.Result {
 	}
 	// What it did, as a Markdown table (it also shows tables rendering).
 	rows := ""
-	for _, name := range []string{"list_dir", "read_file", "channel_create", "ask_user", "write_file", "bash"} {
+	for _, name := range []string{"list_dir", "read_file", "propose_title", "channel_create", "ask_user", "write_file", "bash"} {
 		if r, ok := e.result(name); ok {
 			state := "done"
 			if r.IsError {

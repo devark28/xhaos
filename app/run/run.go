@@ -120,7 +120,7 @@ type ExternalTools interface {
 
 // specs lists every tool an agent in the workspace can call.
 func (r *Runner) specs(ws string) []llm.Tool {
-	specs := append(tool.Specs(), attachTools{r}.Specs(ws)...)
+	specs := append(append(tool.Specs(), attachTools{r}.Specs(ws)...), titleTools{r}.Specs(ws)...)
 	for _, x := range r.Extras {
 		specs = append(specs, x.Specs(ws)...)
 	}
@@ -130,6 +130,9 @@ func (r *Runner) specs(ws string) []llm.Tool {
 func (r *Runner) extra(name string) ExternalTools {
 	if (attachTools{r}).Owns(name) {
 		return attachTools{r}
+	}
+	if (titleTools{r}).Owns(name) {
+		return titleTools{r}
 	}
 	for _, x := range r.Extras {
 		if x.Owns(name) {
@@ -366,9 +369,11 @@ func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call t
 	return tool.ExecuteWith(ctx, root, r.Sandbox, extra, call)
 }
 
-// Catalog lists the runner's own tools beyond tool.Specs (read_attachment),
-// for the Tools panel.
-func (r *Runner) Catalog() []tool.Info { return attachTools{r}.Catalog() }
+// Catalog lists the runner's own tools beyond tool.Specs (read_attachment,
+// propose_title), for the Tools panel.
+func (r *Runner) Catalog() []tool.Info {
+	return append(attachTools{r}.Catalog(), titleTools{r}.Catalog()...)
+}
 
 // rootFor is the folder an agent's tools work in.
 func (r *Runner) rootFor(a agent.Agent) (string, error) {
@@ -481,6 +486,7 @@ func SystemPrompt(a agent.Agent, root string) string {
 		"When you need a decision or information only the user has, ask with ask_user instead of guessing. "+
 		"Other agents work in this workspace, some in other projects; you cannot see their files, so coordinate through channels (agents_list, channel_create, channel_send). "+
 		"Messages from other agents arrive marked [channel #N]. Use spawn_agent to hand a self-contained task to a subagent. "+
+		"When you start a new task or your focus clearly changes, so that your title in the user's list no longer fits, propose a new one with propose_title (not every turn); it returns at once, so keep working. "+
 		"Read before you edit, keep changes small, and reply to the user in concise Markdown.",
 		a.ID, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
 }
