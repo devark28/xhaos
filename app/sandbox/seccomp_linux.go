@@ -25,7 +25,8 @@ import (
 // io_uring (in every mode) is denied outright: it can create, connect and
 // send on sockets without a socket(2) call, so the filter cannot see them.
 // The kernel keyring calls (add_key, request_key, keyctl) are denied too: a
-// command could pass a secret through the keyring to another process.
+// command could pass a secret through the keyring to another process. Where
+// udp is set, listen(2) is denied as well (see below).
 func denySockets(udp bool) error {
 	if sysSocket < 0 {
 		return fmt.Errorf("no seccomp filter for %s", runtime.GOARCH)
@@ -47,6 +48,11 @@ func denySockets(udp bool) error {
 	a.jeq(uint32(sysAddKey), "deny", "")
 	a.jeq(uint32(sysRequestKey), "deny", "")
 	a.jeq(uint32(sysKeyctl), "deny", "")
+	if udp {
+		// listen(2) on an unbound socket binds it to a free port by itself,
+		// which Landlock's bind rule never sees: no listening under no network.
+		a.jeq(uint32(unix.SYS_LISTEN), "deny", "")
+	}
 	a.jeq(uint32(sysSocket), "", "allow")
 	a.ld(16) // domain (low half of the first argument)
 	a.jeq(unix.AF_UNIX, "deny", "")

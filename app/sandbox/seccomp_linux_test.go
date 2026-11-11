@@ -299,3 +299,35 @@ func TestNoNetDeniesBind(t *testing.T) {
 		t.Errorf("plain: bind gave %q, want bound", got)
 	}
 }
+
+// listenProbe calls listen(2) on a socket it never bound: the kernel then
+// binds it to a free port by itself, which Landlock's bind rule does not
+// see. It prints "denied" on EACCES or EPERM, else "listening" and the port.
+const listenProbe = `import socket, sys
+s = socket.socket(socket.AF_INET6 if sys.argv[1] == "6" else socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.listen(1)
+    print("listening", s.getsockname()[1])
+except PermissionError:
+    print("denied")
+except OSError as e:
+    print("error", e.errno)
+`
+
+// A no-network or sealed command cannot take in connections through a
+// listen(2) without bind(2).
+func TestNoNetDeniesListenWithoutBind(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "listen.py"), []byte(listenProbe), 0o644)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	for _, mode := range []string{"nonet", "sealed"} {
+		for _, fam := range []string{"4", "6"} {
+			if got := runIn(t, c, dir, mode, "listen.py", fam); got != "denied" {
+				t.Errorf("%s: listen() without bind on IPv%s gave %q, want denied", mode, fam, got)
+			}
+		}
+	}
+}
