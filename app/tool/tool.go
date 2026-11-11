@@ -288,6 +288,12 @@ func ExecuteWith(ctx context.Context, root string, sb sandbox.Config, extra sand
 		}
 		return "Edited " + in.Path + ".", nil
 	case "bash":
+		if call.Effect == Read {
+			// Every read-class command gets git's safe settings, whatever its
+			// text: git can be named through quotes, a backslash or a variable,
+			// so the raw text does not show that it runs git.
+			extra.Env = append(slicesClip(extra.Env), gitSafeEnv(root)...)
+		}
 		return bash(ctx, root, sb, extra, in.Command)
 	}
 	return "", fmt.Errorf("unknown tool %q", call.Name)

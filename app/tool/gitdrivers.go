@@ -43,7 +43,10 @@ func GitDriverRisk(root, line string) bool {
 		return true
 	}
 	drivers, links := scanRepos(root)
-	if drivers {
+	// The scan reads the config files it can find; git's own parse of the
+	// repo's config (gitConfigRuns) also sees what it cannot, such as a .git
+	// link's target. Either one names a program: the command is risky.
+	if drivers || gitConfigRuns(root) {
 		return true
 	}
 	// An option the parser does not know may take the next word as its value,
@@ -393,7 +396,8 @@ var runKeys = map[string]bool{
 	"core.sshcommand": true, "core.askpass": true, "core.gitproxy": true,
 	"credential.helper": true, "gpg.program": true, "sequence.editor": true,
 	"remote.uploadpack": true, "remote.receivepack": true, "remote.vcs": true,
-	"init.templatedir": true, // git init copies the folder's hooks and config into the repo
+	"init.templatedir":           true, // git init copies the folder's hooks and config into the repo
+	"uploadpack.packobjectshook": true,
 }
 
 // configRuns reports whether a git config file could make git run a program:
