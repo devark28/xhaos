@@ -621,9 +621,9 @@ type createIn struct {
 	Project  string `json:"project,omitempty" jsonschema:"project id, name or path (default: the workspace's first project)"`
 	Provider string `json:"provider,omitempty" jsonschema:"provider id from list_models (default: the one with the model, else the first)"`
 	Model    string `json:"model,omitempty" jsonschema:"model name from list_models (default: the provider's first)"`
-	Access   string `json:"access,omitempty" jsonschema:"rw (default) or ro"`
-	Review   string `json:"review,omitempty" jsonschema:"manual (default: file changes wait for approval) or auto (file changes run; other commands still ask)"`
-	Commit   string `json:"commit,omitempty" jsonschema:"review (default: commits and pushes wait for approval) or blocked; allowed is the owner's choice only"`
+	Access   string `json:"access,omitempty" jsonschema:"rw or ro (default: the workspace's default policy, rw unless the owner changed it)"`
+	Review   string `json:"review,omitempty" jsonschema:"manual (file changes and commands wait for approval) or auto (file changes and local git run; other commands go to the owner's command classifier when it is on, else ask). Default: the workspace's default policy, manual unless the owner changed it"`
+	Commit   string `json:"commit,omitempty" jsonschema:"review (commits and pushes wait for approval) or blocked; allowed is the owner's choice only. Default: the workspace's default policy, review unless the owner changed it"`
 }
 
 func (s *Server) createAgent(_ context.Context, id identity, in createIn) (any, error) {
@@ -638,7 +638,13 @@ func (s *Server) createAgent(_ context.Context, id identity, in createIn) (any, 
 	if err != nil {
 		return nil, err
 	}
-	p := policy.Default()
+	// What the arguments leave out comes from the workspace's default
+	// (Settings → Agents), which never allows commits without review.
+	settings, err := s.d.Agents.Settings(id.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	p := settings.DefaultPolicy
 	if in.Access != "" {
 		p.Access = in.Access
 	}

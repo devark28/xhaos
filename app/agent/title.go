@@ -14,7 +14,6 @@ import (
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/idempotency"
 	"github.com/devark28/xhaos/app/sqlitedb"
-	"github.com/devark28/xhaos/app/workspace"
 )
 
 // An agent may propose a new title for itself (propose_title, package run).
@@ -312,43 +311,4 @@ func (s *Service) DecideTitle(req TitleDecisionRequest) ([]eventlog.Event, error
 		s.emit(out)
 	}
 	return out, nil
-}
-
-// AgentSettings are a workspace's settings for its agents.
-type AgentSettings struct {
-	// SelfRename lets agents rename themselves without asking.
-	SelfRename bool `json:"selfRename"`
-}
-
-// SaveSettingsRequest sets a workspace's AgentSettings.
-type SaveSettingsRequest struct {
-	WorkspaceID string `json:"workspaceId"`
-	AgentSettings
-}
-
-// Settings returns a workspace's agent settings (all off until changed).
-func (s *Service) Settings(workspaceID string) (AgentSettings, error) {
-	return AgentSettings{SelfRename: selfRename(s.db, workspaceID)}, nil
-}
-
-// SaveSettings stores a workspace's agent settings.
-func (s *Service) SaveSettings(req SaveSettingsRequest) (AgentSettings, error) {
-	if _, err := workspace.Get(s.db, req.WorkspaceID); err != nil {
-		return AgentSettings{}, err
-	}
-	on := 0
-	if req.SelfRename {
-		on = 1
-	}
-	if _, err := s.db.Exec(`INSERT INTO agent_settings (workspace_id, self_rename) VALUES (?, ?)
-		ON CONFLICT (workspace_id) DO UPDATE SET self_rename = excluded.self_rename`, req.WorkspaceID, on); err != nil {
-		return AgentSettings{}, err
-	}
-	return s.Settings(req.WorkspaceID)
-}
-
-func selfRename(q sqlitedb.Querier, workspaceID string) bool {
-	var on int
-	err := q.QueryRow(`SELECT self_rename FROM agent_settings WHERE workspace_id = ?`, workspaceID).Scan(&on)
-	return err == nil && on == 1
 }
