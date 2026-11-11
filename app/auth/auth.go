@@ -657,6 +657,19 @@ const LinkPrefix = "/xhaos/channel/"
 // their key, or join with a one-time code). Same as node/wire.Path.
 const NodePath = "/xhaos/node"
 
+// MCPPaths are where MCP clients connect (package mcpserver): they carry an
+// MCP access token instead of a session, checked by that handler.
+var MCPPaths = []string{"/xhaos/mcp", "/mcp", "/mcp/"}
+
+func isMCP(path string) bool {
+	for _, p := range MCPPaths {
+		if path == p {
+			return true
+		}
+	}
+	return false
+}
+
 type ctxKey struct{}
 
 // WorkspaceOf is the signed-in workspace of a request that passed
@@ -672,8 +685,9 @@ func WorkspaceOf(ctx context.Context) string {
 // the workspace (WorkspaceOf) for the event stream. guarded handles /xhaos/
 // paths behind the session check; links handles LinkPrefix, which checks
 // its own passphrases; nodes handles NodePath, where machines joined to a
-// workspace connect with their own keys (package node).
-func (v *Vault) Middleware(guarded, links, nodes http.Handler) func(http.Handler) http.Handler {
+// workspace connect with their own keys (package node); mcp handles
+// MCPPaths, which check their own tokens (package mcpserver).
+func (v *Vault) Middleware(guarded, links, nodes, mcp http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
@@ -692,6 +706,10 @@ func (v *Vault) Middleware(guarded, links, nodes http.Handler) func(http.Handler
 			}
 			if nodes != nil && path == NodePath {
 				nodes.ServeHTTP(w, r)
+				return
+			}
+			if mcp != nil && isMCP(path) {
+				mcp.ServeHTTP(w, r)
 				return
 			}
 			if public(path) {

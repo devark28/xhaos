@@ -192,7 +192,7 @@ func main() {
 			Handler: noCache(application.AssetFileServerFS(page)),
 			// Sign-in, and a session for every runtime call and the event
 			// stream; responses compressed, static files revalidated by ETag.
-			Middleware: middleware(services.Vault.Middleware(guarded, services.Channels.Links(), services.NodeHub)),
+			Middleware: middleware(services.Vault.Middleware(guarded, services.Channels.Links(), services.NodeHub, services.MCPEndpoint)),
 		},
 	})
 
@@ -263,7 +263,7 @@ func pageFiles(dir string) (fs.FS, string, error) {
 // per-user data are never tagged.
 func middleware(authed func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	dynamic := func(p string) bool {
-		return strings.HasPrefix(p, "/xhaos/") || p == "/wails/runtime" || p == "/wails/events" || p == "/health"
+		return strings.HasPrefix(p, "/xhaos/") || p == "/wails/runtime" || p == "/wails/events" || p == "/health" || p == "/mcp" || p == "/mcp/"
 	}
 	return func(next http.Handler) http.Handler {
 		h := serve.Compress(authed(serve.ETag(dynamic, next)))
@@ -321,5 +321,6 @@ func bindings(s *backend.Services) []application.Service {
 		application.NewService(s.Dictation),
 		application.NewService(s.Nodes),
 		application.NewService(s.Classifier.Owner()),
+		application.NewService(s.MCPTokens),
 	}
 }
