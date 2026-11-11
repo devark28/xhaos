@@ -71,3 +71,24 @@ func abs(f float64) float64 {
 	}
 	return f
 }
+
+func TestSubscriptionUseHasNoCost(t *testing.T) {
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "x.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	rec, svc := NewRecorder(db), NewService(db)
+	// Opus has a built-in API price, but a Claude subscription is flat-rate.
+	rec.Record("w", 1, "claude", "claude-cli", "claude-opus-5-5", Turn, llm.Result{InputTokens: 1_000_000, OutputTokens: 10_000})
+	rep, err := svc.Usage("w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Models) != 1 || rep.Models[0].Tokens.Cost != nil || rep.Models[0].Price != nil || rep.Total.Cost != nil || rep.Unpriced != 0 || rep.Total.Input != 1_000_000 {
+		t.Fatalf("report = %+v", rep)
+	}
+}

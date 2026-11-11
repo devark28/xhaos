@@ -84,7 +84,7 @@ export function UsagePanel() {
     <table data-usage-models {...stylex.props(s.table)}>{head}<tbody>
       {usage.models.map(m => {
         const p = m.price;
-        const priced = p ? `$${p.input}/$${p.output} per MTok${p.cacheRead ? `, cache $${p.cacheRead}` : ''}${p.longAfter ? `, $${p.longInput}/$${p.longOutput} above ${tokens(p.longAfter)}` : ''} · ${p.source}` : m.kind === 'sim' ? 'simulated, free' : 'no price';
+        const priced = p ? `$${p.input}/$${p.output} per MTok${p.cacheRead ? `, cache $${p.cacheRead}` : ''}${p.longAfter ? `, $${p.longInput}/$${p.longOutput} above ${tokens(p.longAfter)}` : ''} · ${p.source}` : m.kind === 'sim' ? 'simulated, free' : m.kind === 'claude-cli' ? 'included in your Claude subscription' : 'no price';
         const purposes = Object.entries(m.purposes).map(([k, n]) => `${n} ${k}`).join(', ');
         return [
           <Row key={m.provider + m.model} name={m.model} t={m.tokens} sub={`${m.provider} · ${priced} · ${purposes}`} />,
