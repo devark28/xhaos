@@ -63,6 +63,9 @@ export interface QuestionBatch {
 // A title the agent proposed for itself, waiting for the owner (app/agent/title.go).
 export interface TitleProposal { title: string; reason?: string; at: string }
 
+// An agent's policy (app/policy): what it may do without asking (policy.ts).
+export interface Policy { access: 'ro' | 'rw'; review: 'manual' | 'auto'; commit: 'blocked' | 'review' | 'allowed' }
+
 // Dangerously allow (package danger): until when, and the branch git is locked to.
 export interface Danger { until: string; branch?: string; calls?: number } // calls: 0 or absent = the normal limit, -1 = none
 
@@ -79,7 +82,7 @@ export interface Agent {
   modelId?: string;
   modelLabel?: string;
   agentType?: string;
-  policy?: unknown;
+  policy?: Policy;
   prompt?: string;
   time?: string;
   progress?: number;
@@ -181,7 +184,7 @@ export interface BackendAgent {
   status: string;
   provider?: string;
   model?: string;
-  policy: unknown;
+  policy: Policy;
   createdAt: string;
   danger?: Danger;
   titleProposal?: TitleProposal;

@@ -18,6 +18,7 @@ import { DangerBadge, dangerLeft, dangerOff, openDanger } from './Danger.tsx';
 import { ConfirmDialog } from './Confirm.tsx';
 import { terminatePrompt } from '../terminate-confirm.ts';
 import { TitleProposal } from './TitleProposal.tsx';
+import { PolicyChip } from './PolicyChip.tsx';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 
@@ -127,6 +128,7 @@ function Header({ agent, closed, nested }: { agent: Agent; closed: boolean; nest
       {nested && <span aria-hidden="true" {...stylex.props(header.branch)} />}
       <HeaderButton agent={agent} closed={closed} nested={nested} attached={attached} />
       <SubagentChips agent={agent} />
+      <PolicyChip agent={agent} nested={nested} />
       {!['idle', 'paused', 'terminated'].includes(agent.status) && <span {...stylex.props(header.status, nested && header.statusNested)}><Badge agent={agent} /></span>}
       <Disclosure agent={agent} closed={closed} />
       {nested && decision && <DecisionButtons agent={agent} />}
