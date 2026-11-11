@@ -294,6 +294,7 @@ USER xhaos
 What Xhaos protects, and what you need to:
 
 - **Agents run commands.** In the sandbox, a command reads and writes only its project (and a shared cache), reads system files and toolchains, and cannot see the rest of the home folder, other projects, Xhaos's data, SSH keys or the SSH agent. Its network is not restricted, except for commands holding secrets. So treat agents like a junior colleague with shell access to their project and the internet: run Xhaos as its own user (or container), never as root, and keep anything sensitive out of the projects you give it.
+- **Known sandbox gaps, not fixed yet.** Reported in review and not re-measured for this note: in sealed mode (commands with secrets), Landlock's connect rule matches only the port, not the address, and the command's scratch folder, `/dev/shm` and `.git` can still carry data out. The command floor in the guide is a best-effort filter, not a boundary, so these gaps matter more than its rules.
 - **The passphrase** signs browsers in and unlocks the key that encrypts provider keys, MCP secrets and the secrets vault. It is never stored; a lost passphrase cannot be recovered (enter the API keys again in a fresh database). Use a long one. After every restart the server is locked until someone signs in: agents wait until then.
 - **Sessions** last 30 days and live in server memory: a restart signs every browser out.
 - **HTTPS** only, via the reverse proxy; the server itself should listen on localhost (or the container's network) only.
