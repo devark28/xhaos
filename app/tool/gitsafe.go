@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // Read-class commands that run git get git's settings through the
@@ -31,7 +34,24 @@ var gitSafePairs = [][2]string{
 // gitSafeEnv returns the environment for a read-class command that runs git
 // in root. The drivers git lists (filter clean, smudge and process; textconv
 // and command for diff) are blanked, so no attribute can run them.
-func gitSafeEnv(root string) []string {
+func gitSafeEnv(root string) []string { return gitSafeEnvIn(root, root) }
+
+// GitSafeCommand is git with args, run by the server itself (outside the
+// sandbox) in dir, a folder of the project at root: with the same safe
+// settings as read-class commands, so a repo a command made there (core.
+// fsmonitor, hooks, drivers) cannot run a program as the server, and no
+// repo above the project is used.
+func GitSafeCommand(ctx context.Context, root, dir string, args ...string) *exec.Cmd {
+	cmd := serverGit(ctx, args...)
+	cmd.Dir = dir
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	cmd.Env = append(env, gitSafeEnvIn(root, dir)...)
+	return cmd
+}
+
+// gitSafeEnvIn is gitSafeEnv for git run in dir, inside the project at
+// root: the ceiling is above root; the drivers blanked are dir's repo's.
+func gitSafeEnvIn(root, dir string) []string {
 	home, _ := os.UserHomeDir()
 	global := "/dev/null"
 	for _, f := range []string{".gitconfig", ".config/git/config"} {
@@ -51,7 +71,7 @@ func gitSafeEnv(root string) []string {
 		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
 	}
 	pairs := slicesClone(gitSafePairs)
-	for _, k := range gitDriverNames(root, home, env) {
+	for _, k := range gitDriverNames(dir, home, env) {
 		pairs = append(pairs, [2]string{k, ""})
 	}
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(pairs)))
@@ -92,7 +112,7 @@ func gitConfigRuns(root string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	home, _ := os.UserHomeDir()
-	cmd := exec.CommandContext(ctx, "git", "config", "-z", "--list")
+	cmd := serverGit(ctx, "config", "-z", "--list")
 	cmd.Dir = root
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1"}
 	if parent := filepath.Dir(root); parent != root {
@@ -129,7 +149,7 @@ func gitConfigRuns(root string) bool {
 func gitOutput(root, home string, env []string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := serverGit(ctx, args...)
 	cmd.Dir = root
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}, env...)
 	var out bytes.Buffer
@@ -138,6 +158,17 @@ func gitOutput(root, home string, env []string, args ...string) string {
 		return ""
 	}
 	return out.String()
+}
+
+// serverGit is git run by the server itself, outside the sandbox: a git
+// found in a folder commands can write is refused (Start and Output return
+// the error).
+func serverGit(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if err := sandbox.CheckProgram(cmd.Path); err != nil {
+		cmd.Err = err
+	}
+	return cmd
 }
 
 func fileExists(path string) bool {

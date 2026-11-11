@@ -57,7 +57,7 @@ func TestCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("write and read in the project", "echo hello > notes.txt && cat notes.txt && mkdir -p a/b && mv notes.txt a/b/ && ls a/b", "notes.txt")
 	ok("read system files", "head -c 0 /etc/hostname && ls /usr/bin | head -1 && echo fine", "fine")
 	ok("run tools from PATH", "git --version", "git version")
-	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(dir, "cache", "home"))
+	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(c.ProjectCache(root), "home"))
 	ok("temp files in the project's own temp folder", "mktemp && echo $TMPDIR", filepath.Join(os.TempDir(), fmt.Sprintf("xhaos-%d", os.Getuid()), "sandboxes", "project-"))
 	// Agents are told $TMPDIR is kept between commands: a log written by one
 	// command is there for the next, outside the project.

@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/devark28/xhaos/app/localhttp"
 )
 
 // Client asks a local llama-server for a verdict on one command. It knows
@@ -51,13 +53,17 @@ const (
 	allowPrefill   = `{"verdict": "allow", "reason": "`
 )
 
-// NewClient returns a client for the llama-server at url (for example
-// http://127.0.0.1:8081). Each verdict or reason is cut off after timeout (0: 15 s).
+// NewClient returns a client for the llama-server at url: a Unix socket
+// (unix:/run/xhaos-classifier/classifier.sock, what the installer sets up)
+// or an HTTP base URL (http://127.0.0.1:8081; a command could squat that
+// port while the server is down, see localhttp). Each verdict or reason is
+// cut off after timeout (0: 15 s).
 func NewClient(url string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &Client{url: strings.TrimRight(url, "/"), timeout: timeout, http: &http.Client{}}
+	base, client := localhttp.New(url)
+	return &Client{url: base, timeout: timeout, http: client}
 }
 
 // completionRequest is llama-server's /completion body. The seed and top_k

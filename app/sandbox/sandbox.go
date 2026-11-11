@@ -9,8 +9,9 @@
 //
 // Inside, a command can:
 //   - read and write its project folder, a temp folder of its own under
-//     /tmp/xhaos-<uid>/sandboxes/ (TMPDIR), and a shared cache beside the
-//     database (HOME, Go, npm and other tool caches; never the real home);
+//     /tmp/xhaos-<uid>/sandboxes/ (TMPDIR), and a cache folder of its own
+//     beside the database (HOME, Go, npm and other tool caches; never the
+//     real home), Cache/projects/<project>-<hash>;
 //   - read and run system files (/usr, /etc, …) and the toolchains on PATH;
 //   - read the git identity (~/.gitconfig), but not ~/.ssh or credentials.
 //
@@ -54,8 +55,10 @@ const (
 
 // Config is set once at startup.
 type Config struct {
-	Mode  string
-	Cache string // writable directory shared by sandboxed commands (HOME, tool caches)
+	Mode string
+	// Cache holds each project's HOME and tool caches (ProjectCache), and
+	// the tools commands share (toolFolders).
+	Cache string
 	// LimitDevices closes /dev except the harmless devices (null, zero,
 	// random, tty, shm) and Devices (xhaos-node: hardware is opt-in). Off,
 	// commands may use every device the user may (the server's commands).
@@ -68,6 +71,10 @@ type Config struct {
 
 // commonDevices are open to every command, even with LimitDevices.
 var commonDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/ptmx", "/dev/pts"}
+
+// sealedDevices are the only devices a sealed command may open: none that
+// another process could read back (no /dev/shm, no other terminals).
+var sealedDevices = []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty"}
 
 // Status describes the sandbox for the Tools panel.
 type Status struct {
@@ -104,13 +111,13 @@ func (c Config) Status() Status {
 	case c.Mode == Off:
 		s.Note = "Off: agents' commands run with the server user's full access."
 	case c.Enforcer == Bwrap:
-		s.Note = "Commands run under bubblewrap: they see only their project folder (plus a shared cache), system files and toolchains, and their own processes."
+		s.Note = "Commands run under bubblewrap: they see only their project folder (plus a cache of its own), system files and toolchains, and their own processes."
 	case abi == 0 && c.Mode == On:
 		s.Note = "Required, but this kernel has no Landlock: commands are refused."
 	case abi == 0:
 		s.Note = "This kernel has no Landlock: commands run with the server user's full access."
 	default:
-		s.Note = "Commands can read and write only their project folder (plus a shared cache), read system files and toolchains, and cannot see the rest of the home folder or Xhaos's data."
+		s.Note = "Commands can read and write only their project folder (plus a cache of its own), read system files and toolchains, and cannot see the rest of the home folder or Xhaos's data."
 		if s.NoNet {
 			s.Note += " Commands the classifier allows cannot open network connections."
 		} else {
@@ -259,11 +266,13 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	if err != nil {
 		return nil, nil, err
 	}
-	project, err := TempDir(root)
+	// The scratch folder (HOME, TMPDIR: the SSH key goes there) is outside
+	// every other command's reach, the project's own TMPDIR included.
+	sealedRoot, err := privateDir(SealedRoot())
 	if err != nil {
 		return nil, nil, err
 	}
-	scratch, err := os.MkdirTemp(project, "sealed-")
+	scratch, err := os.MkdirTemp(sealedRoot, "sealed-")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -276,10 +285,13 @@ func (c Config) CommandSealed(ctx context.Context, root, command string, s Seale
 	for _, d := range []string{"home", "tmp", "cache", "go-build"} {
 		os.MkdirAll(filepath.Join(scratch, d), 0o700)
 	}
-	// The project and the shared cache become read-only; only the scratch
-	// folder, devices and the project's .git stay writable.
-	p.Read = append(p.Read, root, c.Cache)
-	p.Write = append([]string{scratch, "/dev"}, GitDirs(root)...)
+	// The project and its cache become read-only; only the scratch
+	// folder, a few devices and the project's .git stay writable. Not all of
+	// /dev: /dev/shm and terminals are places other commands read.
+	p.Read = append(p.Read, root, c.ProjectCache(root))
+	p.Read = append(p.Read, c.toolDirs()...)
+	p.Write = append([]string{scratch}, GitDirs(root)...)
+	p.Devices = slices.Clone(sealedDevices)
 	p.Port, p.DenyUDP = s.ProxyPort, true
 	over := map[string]string{
 		"HOME": filepath.Join(scratch, "home"), "TMPDIR": filepath.Join(scratch, "tmp"),
@@ -325,9 +337,13 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	if c.Cache == "" {
 		return nil, policy{}, errors.New("sandbox: no cache folder configured")
 	}
+	// HOME and every tool cache are the project's own: a file one project's
+	// command leaves there (usercustomize.py, .npmrc, Go's env file, Cargo's
+	// config, a poisoned cache entry) must never run in another project's.
+	own := c.ProjectCache(root)
 	dirs := map[string]string{}
 	for _, d := range []string{"home", "cache", "go-build", "go-mod", "npm"} {
-		dirs[d] = filepath.Join(c.Cache, d)
+		dirs[d] = filepath.Join(own, d)
 		if err := os.MkdirAll(dirs[d], 0o700); err != nil {
 			return nil, policy{}, err
 		}
@@ -342,12 +358,15 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	home, _ := os.UserHomeDir()
 	p := policy{
 		Read:  []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/proc", "/sys", "/snap", "/nix", "/run/systemd/resolve", "/var/lib/ca-certificates"},
-		Write: []string{root, c.Cache, tmp, "/dev"},
+		Write: []string{root, own, tmp, "/dev"},
 	}
 	if c.LimitDevices {
-		p.Write = []string{root, c.Cache, tmp, "/dev/shm"}
+		p.Write = []string{root, own, tmp, "/dev/shm"}
 		p.Devices = append(slices.Clone(commonDevices), c.Devices...)
 	}
+	// Tools that write into their own folder (Flutter) are shared by every
+	// project: the one part of the cache that is.
+	p.Write = append(p.Write, c.toolDirs()...)
 	// A submodule's or worktree's git data can live outside the project.
 	p.Write = append(p.Write, GitDirs(root)...)
 	// DNS: /etc/resolv.conf is often a link into /run (NetworkManager's,
@@ -358,7 +377,16 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
 	// never the home folder itself or ~/.local (that holds Xhaos's data).
+	// The server's own PATH must not reach into anything a command can
+	// write (every project's temp folder included): it would run what a
+	// command planted there.
+	GuardPath(append(slices.Clone(p.Write), TempRoot(), SealedRoot(), c.Cache)...)
 	path := os.Getenv("PATH")
+	// Tools for commands only, in the cache: on their PATH, after the
+	// system's (a name found earlier wins).
+	for _, d := range c.toolDirs() {
+		path += string(os.PathListSeparator) + filepath.Join(d, "bin")
+	}
 	for _, entry := range filepath.SplitList(path) {
 		if entry == "" || !filepath.IsAbs(entry) {
 			continue
@@ -410,18 +438,41 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	return env, p, nil
 }
 
+// projectKey names root's own folders: <base name>-<hash of the path>.
+func projectKey(root string) string {
+	sum := sha256.Sum256([]byte(root))
+	return fmt.Sprintf("%s-%x", filepath.Base(root), sum[:4])
+}
+
+// ProjectCache is the folder in the cache that holds the HOME and tool
+// caches of commands in root (Cache/projects/<project>-<hash>).
+func (c Config) ProjectCache(root string) string {
+	return filepath.Join(c.Cache, "projects", projectKey(root))
+}
+
 // TempDir is the private temp folder for commands in root.
 func TempDir(root string) (string, error) {
-	sum := sha256.Sum256([]byte(root))
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("xhaos-%d", os.Getuid()), "sandboxes", fmt.Sprintf("%s-%x", filepath.Base(root), sum[:4]))
+	return privateDir(filepath.Join(TempRoot(), projectKey(root)))
+}
+
+// SealedRoot holds sealed commands' scratch folders, apart from every
+// project's TempDir: /tmp/xhaos-<uid>/sealed.
+func SealedRoot() string {
+	return filepath.Join(filepath.Dir(TempRoot()), "sealed")
+}
+
+// privateDir makes dir, under /tmp/xhaos-<uid>, and checks that folder is
+// this user's alone.
+func privateDir(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	// Another user could have made /tmp/xhaos-<uid> first: it must be ours.
-	if fi, err := os.Stat(filepath.Dir(filepath.Dir(dir))); err != nil {
+	top := filepath.Dir(TempRoot())
+	if fi, err := os.Stat(top); err != nil {
 		return "", err
 	} else if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("sandbox: %s is not private to this user", filepath.Dir(filepath.Dir(dir)))
+		return "", fmt.Errorf("sandbox: %s is not private to this user", top)
 	}
 	return dir, nil
 }

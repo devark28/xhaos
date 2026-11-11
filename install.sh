@@ -30,8 +30,8 @@
 # release archives are downloaded from), XHAOS_MODEL_BASE (the dictation
 # model's folder), XHAOS_LLAMA_BASE (where the llama.cpp release tarball is
 # downloaded from), XHAOS_CLASSIFIER_MODEL_BASE (the classifier model's folder).
-# The dictation part also runs the speech model as a warm service on the
-# loopback (xhaos-dictation.service, port 8190); Xhaos sends takes there.
+# The dictation part also runs the speech model as a warm service on a private
+# Unix socket (xhaos-dictation.service, /run/xhaos-dictation); Xhaos sends takes there.
 # Checksums are pinned in this file: a download from elsewhere must match them.
 set -eu
 
@@ -162,8 +162,8 @@ trap 'rm -rf "$TMP"' EXIT
 DICT=$HOME_DIR/dictation
 MODEL_DIR=$DICT/models/whisper-large-v3-turbo
 # The command classifier model (on by default; --without classifier skips it): llama.cpp's
-# llama-server and a small model, as a service of its own on the loopback
-# (nothing else here uses port 8189). Xhaos's built-in list of build, test and
+# llama-server and a small model, as a service of its own on a private Unix socket.
+# Xhaos's built-in list of build, test and
 # lint commands needs none of it.
 CLS=$HOME_DIR/classifier
 LLAMA_TAG=b12110
@@ -171,10 +171,16 @@ LLAMA_DIR=$CLS/llama-$LLAMA_TAG
 LLAMA_SUMS=$CLS/llama-$LLAMA_TAG.sha256sums
 CLS_MODEL_FILE=qwen2.5-coder-3b-instruct-q4_k_m.gguf
 CLS_MODEL=$CLS/models/$CLS_MODEL_FILE
-CLS_PORT=8189
+# Both services listen on a Unix socket in a folder only the xhaos user can
+# reach (systemd's RuntimeDirectory, made fresh at each start): on a loopback
+# port, a sandboxed command could listen while one is down and answer in its
+# place (an "allow" from the classifier).
+CLS_RUN=/run/xhaos-classifier
+CLS_SOCK=$CLS_RUN/classifier.sock
 CLS_UNIT=/etc/systemd/system/xhaos-classifier.service
-# The warm dictation service: the speech model loaded once, on the loopback.
-DICT_PORT=8190
+# The warm dictation service: the speech model loaded once, on a Unix socket.
+DICT_RUN=/run/xhaos-dictation
+DICT_SOCK=$DICT_RUN/dictation.sock
 DICT_UNIT=/etc/systemd/system/xhaos-dictation.service
 
 # Settings kept between runs (written back at the end).
@@ -305,6 +311,7 @@ install_flutter() {
   apt_update; apt_install xz-utils zip unzip libglu1-mesa git
   # The flutter tool writes into its own folder, so agents get a copy in the
   # sandbox's shared cache (writable by their commands), you one of your own.
+  # It goes on the commands' PATH only, never on the server's.
   sb=$DATA/sandbox
   run install -d -m 700 -o xhaos -g xhaos "$sb" "$sb/home"
   flutter_at() {
@@ -530,7 +537,7 @@ part browsers "$BROWSERS" n "Google Chrome and Firefox (not snaps), their WebDri
 part podman "$PODMAN" n "Rootless Podman with Docker Compose.
   To run compose.yaml / docker-compose.yml stacks as your user (not for agents). From Ubuntu's apt and GitHub (checksum verified)."
 part dictation "$DICTATION" y "Speech dictation: talk instead of type, transcribed on this server (nothing leaves it).
-  The speech model stays loaded in a service on 127.0.0.1:$DICT_PORT (xhaos-dictation), so a take does not wait for it to load.
+  The speech model stays loaded in a service on this server (xhaos-dictation, on a private socket), so a take does not wait for it to load.
   Downloads faster-whisper (PyPI, ~470 MB) and the Whisper large-v3-turbo model (Hugging Face, 823 MB, MIT license)."
 # The warm service follows the part: on when dictation is installed, unless
 # --without dictation turned it off (kept in $CONF, so a re-run keeps it off).
@@ -548,7 +555,7 @@ part classifier "$CLASSIFIER" y "Command classifier model (on by default; answer
   This adds a small model on this server for the long tail: commands the list does not match, for agents on auto review.
   Dangerous commands still ask, and nothing leaves the server.
   Downloads llama.cpp $LLAMA_TAG (GitHub, ~20 MB, MIT license) and Qwen2.5-Coder 3B Instruct Q4_K_M (Hugging Face, 2.1 GB, Apache-2.0),
-  both checked against pinned SHA-256 sums; runs as the service xhaos-classifier on 127.0.0.1:$CLS_PORT."
+  both checked against pinned SHA-256 sums; runs as the service xhaos-classifier, on a socket only Xhaos can reach."
 case $WITHOUT in *",classifier,"*)
   if [ "$CLASSIFIER" = yes ]; then
     say "  It stays installed and on: $CLS ($(run du -sh "$CLS" 2>/dev/null | cut -f1)), service xhaos-classifier."
@@ -594,10 +601,12 @@ flags="-db $DATA/xhaos.db -sandbox on"
 if [ "$DICTATION" = yes ]; then
   flags="$flags -dictation-cmd $DICT/venv/bin/python -dictation-model $MODEL_DIR -dictation-args \"$DICT/stt.py {wav} --model {model} --language={language} --prompt={prompt}\""
 fi
-[ "$WARM" = yes ] && flags="$flags -dictation-url http://127.0.0.1:$DICT_PORT"
-[ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url http://127.0.0.1:$CLS_PORT"
+[ "$WARM" = yes ] && flags="$flags -dictation-url unix:$DICT_SOCK"
+[ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url unix:$CLS_SOCK"
+# Never a folder sandboxed commands can write (the cache's Flutter is one):
+# the server would run what a command planted there. Commands find Flutter
+# on their own PATH (the sandbox adds it).
 path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-[ "$FLUTTER" = yes ] && path="$path:$DATA/sandbox/flutter/bin"
 {
   printf '%s\n' "$MARK"
   printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n'
@@ -615,13 +624,14 @@ path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # The classifier's service, set up before Xhaos's (which wants it).
 if [ "$CLASSIFIER" = yes ]; then
-  cls_cmd="$LLAMA_DIR/llama-server --host 127.0.0.1 --port $CLS_PORT -m $CLS_MODEL -t 4 -c 4096"
+  cls_cmd="$LLAMA_DIR/llama-server --host $CLS_SOCK -m $CLS_MODEL -t 4 -c 4096"
   {
     printf '%s\n' "$MARK"
-    printf '[Unit]\nDescription=Xhaos command classifier (llama.cpp server, loopback only)\n\n'
+    printf '[Unit]\nDescription=Xhaos command classifier (llama.cpp server, private Unix socket)\n\n'
     printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\n' "$CLS"
     printf '# It logs "no API key is set and CORS allows all origins" at start: expected,\n'
-    printf '# it listens on 127.0.0.1 only, for Xhaos on this server.\n'
+    printf '# it listens only on a Unix socket in %s (0700, the xhaos user), for Xhaos.\n' "$CLS_RUN"
+    printf 'RuntimeDirectory=%s\nRuntimeDirectoryMode=0700\n' "${CLS_RUN#/run/}"
     printf 'ExecStart=%s\nRestart=on-failure\n' "$cls_cmd"
     printf 'ProtectSystem=strict\nReadWritePaths=%s\nPrivateTmp=yes\nNoNewPrivileges=yes\n' "$CLS"
     printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
@@ -629,7 +639,7 @@ if [ "$CLASSIFIER" = yes ]; then
   if [ "$SYSTEMD" = no ]; then
     run install -m 644 "$TMP/xhaos-classifier.service" "$CONF_DIR/xhaos-classifier.service.example"
     say "No systemd here: start the classifier yourself, as the xhaos user, before Xhaos:"
-    say "  sudo -u xhaos $cls_cmd"
+    say "  sudo install -d -o xhaos -g xhaos -m 700 $CLS_RUN && sudo -u xhaos rm -f $CLS_SOCK && sudo -u xhaos $cls_cmd"
   else
     cls_changed=no
     [ -f "$TMP/classifier-changed" ] && cls_changed=yes
@@ -637,7 +647,7 @@ if [ "$CLASSIFIER" = yes ]; then
       run install -m 644 "$TMP/xhaos-classifier.service" "$CLS_UNIT"; run systemctl daemon-reload; cls_changed=yes
     fi
     if ! systemctl is-enabled xhaos-classifier >/dev/null 2>&1 || ! systemctl is-active xhaos-classifier >/dev/null 2>&1; then
-      run systemctl enable --now xhaos-classifier; say "Classifier started (127.0.0.1:$CLS_PORT; it loads its model in a few seconds)."
+      run systemctl enable --now xhaos-classifier; say "Classifier started ($CLS_SOCK; it loads its model in a few seconds)."
     elif [ "$cls_changed" = yes ]; then
       run systemctl restart xhaos-classifier; say "Classifier restarted."
     fi
@@ -656,17 +666,18 @@ fi
 if [ "$WARM" = yes ]; then
   {
     printf '%s\n' "$MARK"
-    printf '[Unit]\nDescription=Xhaos dictation (speech model loaded once, loopback only)\n\n'
+    printf '[Unit]\nDescription=Xhaos dictation (speech model loaded once, private Unix socket)\n\n'
     printf '[Service]\nUser=xhaos\nGroup=xhaos\nWorkingDirectory=%s\n' "$DICT"
+    printf 'RuntimeDirectory=%s\nRuntimeDirectoryMode=0700\n' "${DICT_RUN#/run/}"
     printf '# Restart=always: if it stops, takes fall back to the command until it is back.\n'
-    printf 'ExecStart=%s %s --serve --model %s --host 127.0.0.1 --port %s\nRestart=always\nRestartSec=5\n' "$DICT/venv/bin/python" "$DICT/stt.py" "$MODEL_DIR" "$DICT_PORT"
+    printf 'ExecStart=%s %s --serve --model %s --socket %s\nRestart=always\nRestartSec=5\n' "$DICT/venv/bin/python" "$DICT/stt.py" "$MODEL_DIR" "$DICT_SOCK"
     printf 'ProtectSystem=strict\nPrivateTmp=yes\nNoNewPrivileges=yes\n'
     printf 'ProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\n\n[Install]\nWantedBy=multi-user.target\n'
   } > "$TMP/xhaos-dictation.service"
   if [ "$SYSTEMD" = no ]; then
     run install -m 644 "$TMP/xhaos-dictation.service" "$CONF_DIR/xhaos-dictation.service.example"
     say "No systemd here: start the dictation service yourself, as the xhaos user, before Xhaos:"
-    say "  sudo -u xhaos $DICT/venv/bin/python $DICT/stt.py --serve --model $MODEL_DIR --host 127.0.0.1 --port $DICT_PORT"
+    say "  sudo install -d -o xhaos -g xhaos -m 700 $DICT_RUN && sudo -u xhaos $DICT/venv/bin/python $DICT/stt.py --serve --model $MODEL_DIR --socket $DICT_SOCK"
   else
     dict_changed=no
     [ -f "$TMP/dictation-changed" ] && dict_changed=yes
@@ -674,7 +685,7 @@ if [ "$WARM" = yes ]; then
       run install -m 644 "$TMP/xhaos-dictation.service" "$DICT_UNIT"; run systemctl daemon-reload; dict_changed=yes
     fi
     if ! systemctl is-enabled xhaos-dictation >/dev/null 2>&1 || ! systemctl is-active xhaos-dictation >/dev/null 2>&1; then
-      run systemctl enable --now xhaos-dictation; say "Dictation service started (127.0.0.1:$DICT_PORT; it loads the speech model in a few seconds)."
+      run systemctl enable --now xhaos-dictation; say "Dictation service started ($DICT_SOCK; it loads the speech model in a few seconds)."
     elif [ "$dict_changed" = yes ]; then
       run systemctl restart xhaos-dictation; say "Dictation service restarted."
     fi
