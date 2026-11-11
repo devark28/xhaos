@@ -390,16 +390,22 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 			env = append(env, k+"="+v)
 		}
 	}
+	// git's global config: the owner's file when there is one, read-only
+	// here. Without one, GIT_CONFIG_GLOBAL is /dev/null, so git never reads
+	// a config under the sandbox's home, which a command could have written
+	// (it would run in every later git command there).
+	global := "/dev/null"
 	if home != "" {
 		for _, f := range []string{".gitconfig", ".config/git/config"} {
 			if _, err := os.Stat(filepath.Join(home, f)); err == nil {
 				p.Files = append(p.Files, filepath.Join(home, f))
-				if f == ".gitconfig" {
-					env = append(env, "GIT_CONFIG_GLOBAL="+filepath.Join(home, f))
+				if global == "/dev/null" {
+					global = filepath.Join(home, f)
 				}
 			}
 		}
 	}
+	env = append(env, "GIT_CONFIG_GLOBAL="+global)
 	p.Read = slices.Compact(p.Read)
 	return env, p, nil
 }

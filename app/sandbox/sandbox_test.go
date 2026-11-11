@@ -428,3 +428,60 @@ func TestLimitDevices(t *testing.T) {
 		t.Errorf("open devices: %v %q", err, out)
 	}
 }
+
+// Without an owner's ~/.gitconfig, git must not read a global config from the
+// sandbox's home: a command could write one there, and every later git in
+// every project would run it. GIT_CONFIG_GLOBAL points at /dev/null then.
+func TestSandboxGitGlobalConfigPinned(t *testing.T) {
+	owner := t.TempDir()
+	t.Setenv("HOME", owner)
+	c := Config{Cache: t.TempDir()}
+	env, _, err := c.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "GIT_CONFIG_GLOBAL=/dev/null") {
+		t.Errorf("no owner ~/.gitconfig: want GIT_CONFIG_GLOBAL=/dev/null, env has %v", envWith(env, "GIT_CONFIG_"))
+	}
+	// With one, the owner's file is the global config, as before.
+	os.WriteFile(filepath.Join(owner, ".gitconfig"), []byte("[user]\n\tname = x\n"), 0o644)
+	env, _, err = c.prepare(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "GIT_CONFIG_GLOBAL="+filepath.Join(owner, ".gitconfig")) {
+		t.Errorf("owner ~/.gitconfig: want it as GIT_CONFIG_GLOBAL, env has %v", envWith(env, "GIT_CONFIG_"))
+	}
+}
+
+// A command plants a config in its home, and a git command in the same
+// command reads it: the planted fsmonitor hook must not run.
+func TestSandboxPlantedHomeConfigDoesNotRun(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	os.MkdirAll(root, 0o755)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "cache")}
+	command := `git init -q . && printf '[core]\n\tfsmonitor = touch PLANTED\n' > "$HOME/.gitconfig" && git status >/dev/null 2>&1 && echo GIT-RAN`
+	out, err := run(t, c, root, command)
+	if err != nil || !strings.Contains(out, "GIT-RAN") {
+		t.Fatalf("git did not run under the pin: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "PLANTED")); err == nil {
+		t.Error("a config planted in the sandbox home ran git's fsmonitor hook")
+	}
+}
+
+// envWith lists the variables in env that start with prefix (for messages).
+func envWith(env []string, prefix string) []string {
+	var out []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
