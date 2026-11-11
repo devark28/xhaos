@@ -217,7 +217,7 @@ server {
 
 Keep the `Host` header as the browser sent it (Caddy does by default): Xhaos checks that a page's `Origin` matches it.
 
-Published channel links (`/xhaos/channel/<workspace>/<id>`) go through the same proxy; they carry their own passphrase instead of a session.
+Published channel links (`/xhaos/channel/<workspace>/<id>`) go through the same proxy; they carry their own passphrase instead of a session. So does the MCP endpoint (`/mcp`, also `/xhaos/mcp`), with its own tokens ([mcp.md](mcp.md)); nothing in the proxy needs to change for it. Its `wait_for_events` and `read_channel` calls hold a request up to 50 seconds, within nginx's default 60-second `proxy_read_timeout`.
 
 ## Nodes (remote machines)
 
@@ -300,6 +300,7 @@ What Xhaos protects, and what you need to:
 - **Sessions** last 30 days and live in server memory: a restart signs every browser out.
 - **HTTPS** only, via the reverse proxy; the server itself should listen on localhost (or the container's network) only.
 - **Published channels** let anyone with a channel's passphrase send its agents instructions and read the channel. Publish only channels whose agents you'd let that program instruct; reset or unpublish when done.
+- **MCP access tokens** ([mcp.md](mcp.md)) work from the internet: the endpoint is public wherever the page is, behind the same proxy. A token is as powerful as its scopes, in its own workspace, until you revoke it: with `drive` it can start agents on any task in any project (and so spend on your models), with `answer` it answers agents' questions as you, with `approve-feature-branch` it lets commits and pushes through to unprotected branches. Give each client the least scope it needs (`read` alone to watch), one token per client so you can revoke one, and revoke tokens you no longer use (Settings shows when each was last used). Creating one needs the passphrase. What stays yours whatever the scopes: the lock after a restart (tokens do not unlock it), every approval other than plain-git commits and pushes to unprotected branches, policies without commit review, dangerously allow, secrets, providers, projects and tokens. Only a hash of each token is stored; wrong tokens are slowed down per address. Keep tokens out of shared shell histories and repositories (`claude mcp add` stores the header in your Claude Code config).
 - **Secrets** reach only the agents you grant them to, in sealed commands that can reach only the secrets' hosts; each use asks unless you trusted the secret to the agent. A command can still send a value to one of those hosts (a token for `github.com` could be pasted into a gist): review commands that use secrets.
 - **Dangerously allow** lifts approvals for one agent for a while; it keeps the sandbox, the secrets rules and a git branch lock. Pushes still need credentials it does not have unless you grant a token; use your remote's branch protection too.
 - **MCP servers** you add as local commands run as the server's user, outside the sandbox. Add only ones you trust.
