@@ -157,7 +157,8 @@ func TestInstallScriptJoinConf(t *testing.T) {
 `+call, conf)
 		return out, err
 	}
-	if out, err := run(`ROOT=/srv/work DEVICES=" /dev/video0 /dev/ttyUSB0" UNSANDBOXED=yes; save_join_conf`); err != nil {
+	byPath := "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0"
+	if out, err := run(`ROOT=/srv/work DEVICES=" /dev/video0 ` + byPath + `" UNSANDBOXED=yes; check_device ` + byPath + `; save_join_conf`); err != nil {
 		t.Fatalf("save: %v %s", err, out)
 	}
 	if err := os.Chmod(conf, 0o644); err != nil { // the script's chmod is recorded, not run
@@ -165,7 +166,7 @@ func TestInstallScriptJoinConf(t *testing.T) {
 	}
 	show := `; echo "root=$ROOT devices=$DEVICES unsandboxed=$UNSANDBOXED"`
 	for _, c := range []struct{ call, want string }{
-		{`ROOT="" DEVICES="" UNSANDBOXED=""; load_join_conf` + show, "root=/srv/work devices= /dev/video0 /dev/ttyUSB0 unsandboxed=yes"},
+		{`ROOT="" DEVICES="" UNSANDBOXED=""; load_join_conf` + show, "root=/srv/work devices= /dev/video0 " + byPath + " unsandboxed=yes"},
 		{`ROOT=/other DEVICES=" /dev/video2" DEVICES_GIVEN=yes UNSANDBOXED=no; load_join_conf` + show, "root=/other devices= /dev/video2 unsandboxed=no"},
 	} {
 		if out, err := run(c.call); err != nil || strings.TrimSpace(out) != c.want {
@@ -176,9 +177,11 @@ func TestInstallScriptJoinConf(t *testing.T) {
 	if out, err := run(`load_join_conf`); err == nil {
 		t.Errorf("a device outside /dev was read: %s", out)
 	}
-	os.WriteFile(conf, []byte("server=https://evil.example\n"), 0o644)
-	if out, err := run(`load_join_conf`); err == nil {
-		t.Errorf("an unknown line was read: %s", out)
+	for _, bad := range []string{"server=https://evil.example\n", "root=/a\nroot=/b\n", "unsandboxed=no\nunsandboxed=yes\n", "root=/srv/work\r\n", " root=/srv/work\n", "root\n", "root=\n", "root=/srv/a:b\n", "device=/dev/a b\n"} {
+		os.WriteFile(conf, []byte(bad), 0o644)
+		if out, err := run(`load_join_conf`); err == nil {
+			t.Errorf("%q was read: %s", bad, out)
+		}
 	}
 	os.WriteFile(conf, []byte("root=/srv/work\n"), 0o644)
 	os.Chmod(conf, 0o664)
@@ -188,5 +191,43 @@ func TestInstallScriptJoinConf(t *testing.T) {
 	os.Chmod(conf, 0o644)
 	if out, err := run(`ROOT_UID=$(($(id -u) + 1)); load_join_conf`); err == nil || !strings.Contains(out, "not root's") {
 		t.Errorf("another user's join.conf was read: %v %s", err, out)
+	}
+}
+
+// save_join_conf writes as root through its folder: one that is a symlink,
+// not root's or writable by others is refused, and a planted .new file is
+// not followed.
+func TestInstallScriptJoinConfFolder(t *testing.T) {
+	save := func(conf string) (string, error) {
+		out, _, err := installScript(t, t.TempDir(), `JOIN_CONF=$3 ROOT_UID=$(id -u) ROOT=/srv/work DEVICES="" UNSANDBOXED=no; save_join_conf`, conf)
+		return out, err
+	}
+	dir := filepath.Join(t.TempDir(), "xhaos-node")
+	os.Mkdir(dir, 0o755)
+	os.Chmod(dir, 0o755)
+	victim := filepath.Join(t.TempDir(), "victim")
+	os.WriteFile(victim, []byte("keep\n"), 0o600)
+	os.Symlink(victim, filepath.Join(dir, "join.conf.new"))
+	if out, err := save(filepath.Join(dir, "join.conf")); err != nil {
+		t.Fatalf("save: %v %s", err, out)
+	}
+	if read(t, victim) != "keep\n" {
+		t.Error("a planted join.conf.new was followed")
+	}
+	if !strings.Contains(read(t, filepath.Join(dir, "join.conf")), "root=/srv/work") {
+		t.Error("join.conf not written")
+	}
+
+	os.Chmod(dir, 0o775)
+	if out, err := save(filepath.Join(dir, "join.conf")); err == nil || !strings.Contains(out, "writable by others") {
+		t.Errorf("a group-writable folder was used: %v %s", err, out)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	os.Symlink(t.TempDir(), link)
+	if out, err := save(filepath.Join(link, "join.conf")); err == nil || !strings.Contains(out, "symlink") {
+		t.Errorf("a symlinked folder was used: %v %s", err, out)
+	}
+	if out, _, err := installScript(t, t.TempDir(), `JOIN_CONF=$3 ROOT_UID=$(($(id -u) + 1)) ROOT=/srv/work DEVICES="" UNSANDBOXED=no; save_join_conf`, filepath.Join(t.TempDir(), "join.conf")); err == nil || !strings.Contains(out, "not root's") {
+		t.Errorf("another user's folder was used: %v %s", err, out)
 	}
 }

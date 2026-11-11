@@ -172,7 +172,7 @@ func TestCheckRootAccepts(t *testing.T) {
 	defer d.close()
 	own := t.TempDir() // the test user's, like the node user's own folder
 	for _, root := range []string{filepath.Join(state, "xhaos-work"), own} {
-		if err := d.checkRoot(root); err != nil {
+		if err := d.checkRoot(root, "node.json"); err != nil {
 			t.Errorf("%s: %v", root, err)
 		}
 	}
@@ -280,8 +280,9 @@ func TestReadJoinConf(t *testing.T) {
 		os.Chmod(path, mode)
 		return path
 	}
-	c, err := readJoinConf(write("# Managed by install-node.sh\nroot=/srv/work\ndevice=/dev/video0\ndevice=/dev/ttyUSB0\nunsandboxed=no\n", 0o644))
-	if err != nil || c.Root != "/srv/work" || strings.Join(c.Devices, ",") != "/dev/video0,/dev/ttyUSB0" || c.Unsandboxed {
+	byPath := "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0"
+	c, err := readJoinConf(write("# Managed by install-node.sh\nroot=/srv/work\ndevice=/dev/video0\ndevice="+byPath+"\nunsandboxed=no\n", 0o644))
+	if err != nil || c.Root != "/srv/work" || strings.Join(c.Devices, ",") != "/dev/video0,"+byPath || c.Unsandboxed {
 		t.Errorf("read %+v %v", c, err)
 	}
 	if c, err := readJoinConf(write("unsandboxed=yes\n", 0o644)); err != nil || !c.Unsandboxed {
@@ -295,6 +296,15 @@ func TestReadJoinConf(t *testing.T) {
 		"device with ..":      "device=/dev/../etc/shadow\n",
 		"unknown line":        "server=https://evil.example\n",
 		"bad unsandboxed":     "unsandboxed=maybe\n",
+		"root twice":          "root=/a\nroot=/b\n",
+		"unsandboxed twice":   "unsandboxed=no\nunsandboxed=yes\n",
+		"CRLF":                "root=/srv/work\r\n",
+		"leading space":       " root=/srv/work\n",
+		"bare root":           "root\n",
+		"empty root":          "root=\n",
+		"root with a colon":   "root=/srv/a:b\n",
+		"device with a space": "device=/dev/a b\n",
+		"bare /dev/":          "device=/dev/\n",
 	} {
 		if _, err := readJoinConf(write(content, 0o644)); err == nil {
 			t.Errorf("%s accepted", name)

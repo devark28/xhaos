@@ -260,7 +260,9 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		server = cur.Server
 	}
 	cfg := client.Config{Server: server, Root: cur.Root, Devices: cur.Devices, Unsandboxed: cur.Unsandboxed}
+	from := "node.json"
 	if loadErr != nil {
+		from = "join.conf"
 		// Never joined (install-node.sh --no-join): its folder, devices and
 		// sandbox mode are in join.conf (root's file, unlike node.json).
 		js, err := readJoinConf(joinConf)
@@ -273,7 +275,7 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 	if cfg.Root == "" {
 		cfg.Root = filepath.Join(state, "xhaos-work")
 	}
-	if err := dir.checkRoot(cfg.Root); err != nil {
+	if err := dir.checkRoot(cfg.Root, from); err != nil {
 		r.fail("join: %v. Nothing was changed; join by hand (xhaos-node leave, then install-node.sh or xhaos-node join).", err)
 		return
 	}
@@ -387,28 +389,28 @@ func (d *stateDir) config() (client.Config, error) {
 	return c, nil
 }
 
-// checkRoot vets node.json's folder for agents before root joins with it:
+// checkRoot vets node.json's (or join.conf's: from) folder for agents before root joins with it:
 // an absolute path that is either a real folder of the node's user, or not
 // there yet and inside the state folder (the node service then makes it).
 // Anything else (a system folder, a symlink, someone else's) is refused.
-func (d *stateDir) checkRoot(root string) error {
+func (d *stateDir) checkRoot(root, from string) error {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
-		return fmt.Errorf("node.json's folder %q is not a clean absolute path", root)
+		return fmt.Errorf("%s's folder %q is not a clean absolute path", from, root)
 	}
 	var st unix.Stat_t
 	err := unix.Lstat(root, &st)
 	switch {
 	case errors.Is(err, unix.ENOENT):
 		if !strings.HasPrefix(root, filepath.Clean(d.path)+"/") {
-			return fmt.Errorf("node.json's folder %s does not exist and is outside %s", root, d.path)
+			return fmt.Errorf("%s's folder %s does not exist and is outside %s", from, root, d.path)
 		}
 		return nil
 	case err != nil:
-		return fmt.Errorf("node.json's folder %s: %w", root, err)
+		return fmt.Errorf("%s's folder %s: %w", from, root, err)
 	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
-		return fmt.Errorf("node.json's folder %s is not a folder (a symlink?)", root)
+		return fmt.Errorf("%s's folder %s is not a folder (a symlink?)", from, root)
 	case int(st.Uid) != d.uid:
-		return fmt.Errorf("node.json's folder %s does not belong to the node's user (uid %d)", root, d.uid)
+		return fmt.Errorf("%s's folder %s does not belong to the node's user (uid %d)", from, root, d.uid)
 	}
 	return nil
 }
@@ -449,25 +451,50 @@ func readJoinConf(path string) (client.Config, error) {
 	if err != nil {
 		return c, err
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		key, value, _ := strings.Cut(line, "=")
+	// As strict as install-node.sh's reader: no spaces or CRs, root= and
+	// unsandboxed= at most once.
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !ok || (key != "device" && seen[key]) {
+			return c, fmt.Errorf("%s: bad or repeated line %q", path, line)
+		}
+		seen[key] = true
 		switch {
-		case line == "" || strings.HasPrefix(line, "#"):
-		case key == "root":
+		case key == "root" && plainPath(value) && !strings.Contains(value, ":"):
 			c.Root = value
-		case key == "device":
-			if !strings.HasPrefix(value, "/dev/") || filepath.Clean(value) != value || strings.Contains(value, "/../") {
-				return c, fmt.Errorf("%s: device %q is not a plain path under /dev", path, value)
-			}
+		case key == "device" && strings.HasPrefix(value, "/dev/") && len(value) > len("/dev/") && plainPath(value):
 			c.Devices = append(c.Devices, value)
 		case key == "unsandboxed" && (value == "yes" || value == "no"):
 			c.Unsandboxed = value == "yes"
 		default:
-			return c, fmt.Errorf("%s: unknown line %q", path, line)
+			return c, fmt.Errorf("%s: bad line %q (a device must be a plain path under /dev)", path, line)
 		}
 	}
 	return c, nil
+}
+
+// plainPath is install-node.sh's check for --device (--root: without the
+// colon): an absolute path of letters, digits and . _ / @ + - :, with no
+// empty, . or .. parts.
+func plainPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || filepath.Clean(p) != p {
+		return false
+	}
+	for _, part := range strings.Split(p[1:], "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	for _, r := range p {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._/@+-:", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func stagedName(name string) string { return "." + name + ".rejoin" }

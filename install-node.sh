@@ -136,50 +136,71 @@ prepare_root() {
 }
 
 # check_device accepts a device path as join does (under /dev), in the
-# characters --root allows (it goes into join.conf, one per line).
+# characters --root allows and ':' (as in /dev/serial/by-path/…); it goes
+# into join.conf, one per line.
 check_device() {
   case $1 in
     /dev/?*) ;;
     *) die "--device $1: a device is a path under /dev" ;;
   esac
   case $1 in
-    *[!A-Za-z0-9._/@+-]*|*/|*//*|*/./*|*/.|*/../*|*/..) die "--device $1: a plain path of letters, digits and . _ / @ + -" ;;
+    *[!A-Za-z0-9._/@+:-]*|*/|*//*|*/./*|*/.|*/../*|*/..) die "--device $1: a plain path of letters, digits and . _ / @ + - :" ;;
   esac
 }
 
 # load_join_conf fills what this run was not given (--root, --device,
-# --unsandboxed) from join.conf, when it is root's own plain file.
+# --unsandboxed) from join.conf, when it is root's own plain file. Anything
+# else in it (spaces, CRs, a repeated root= or unsandboxed=) is refused, as
+# xhaos-node apply-usb does.
 load_join_conf() {
   [ -f "$JOIN_CONF" ] && [ ! -L "$JOIN_CONF" ] || return 0
   [ "$(stat -c %u "$JOIN_CONF")" = "$ROOT_UID" ] || die "$JOIN_CONF is not root's: refusing to read it"
   case $(stat -c %a "$JOIN_CONF") in
     *[2367][0-7]|*[2367]) die "$JOIN_CONF is writable by others: refusing to read it" ;;
   esac
-  conf_devices=""
+  conf_devices="" conf_root="" conf_unsandboxed=""
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
       ''|'#'*) ;;
-      root=*) [ -n "$ROOT" ] || ROOT=${line#root=} ;;
+      root=/*)
+        [ -z "$conf_root" ] || die "$JOIN_CONF: root= twice"
+        conf_root=${line#root=}
+        case $conf_root in
+          *[!A-Za-z0-9._/@+-]*|*/|*//*|*/./*|*/.|*/../*|*/..) die "$JOIN_CONF: bad line: $line" ;;
+        esac ;;
       device=*) check_device "${line#device=}"; conf_devices="$conf_devices ${line#device=}" ;;
-      unsandboxed=yes|unsandboxed=no) [ -n "$UNSANDBOXED" ] || UNSANDBOXED=${line#unsandboxed=} ;;
-      *) die "$JOIN_CONF: unknown line: $line" ;;
+      unsandboxed=yes|unsandboxed=no)
+        [ -z "$conf_unsandboxed" ] || die "$JOIN_CONF: unsandboxed= twice"
+        conf_unsandboxed=${line#unsandboxed=} ;;
+      *) die "$JOIN_CONF: bad line: $line" ;;
     esac
   done <"$JOIN_CONF"
+  [ -n "$ROOT" ] || ROOT=$conf_root
+  [ -n "$UNSANDBOXED" ] || UNSANDBOXED=$conf_unsandboxed
   [ "$DEVICES_GIVEN" = yes ] || DEVICES=$conf_devices
 }
 
-# save_join_conf keeps this run's settings for the join to come.
+# save_join_conf keeps this run's settings for the join to come, in a
+# folder only root can change (refused otherwise: root writes through it).
 save_join_conf() {
-  mkdir -p "${JOIN_CONF%/*}"
+  dir=${JOIN_CONF%/*}
+  [ ! -L "$dir" ] || die "$dir is a symlink: refusing to write $JOIN_CONF"
+  [ -d "$dir" ] || mkdir -p -m 0755 "$dir"
+  [ "$(stat -c %u "$dir")" = "$ROOT_UID" ] || die "$dir is not root's: refusing to write $JOIN_CONF"
+  case $(stat -c %a "$dir") in
+    *[2367][0-7]|*[2367]) die "$dir is writable by others: refusing to write $JOIN_CONF" ;;
+  esac
+  new=$(mktemp "$JOIN_CONF.XXXXXX")
   {
     echo "# Managed by install-node.sh: what this node joins with when it joins later"
     echo "# (an XHAOS USB stick, or install-node.sh with --server and --code)."
+    echo "# Written when it was installed; a later run on a joined node does not change it."
     echo "root=$ROOT"
     for dev in $DEVICES; do echo "device=$dev"; done
     echo "unsandboxed=$UNSANDBOXED"
-  } >"$JOIN_CONF.new"
-  chmod 0644 "$JOIN_CONF.new"
-  mv -f "$JOIN_CONF.new" "$JOIN_CONF"
+  } >"$new"
+  chmod 0644 "$new"
+  mv -f "$new" "$JOIN_CONF"
 }
 
 # in_chroot: this runs in a chroot, as when an image is built, rather than on
@@ -479,6 +500,10 @@ elif [ -e "$USB_RULE" ] || [ -e "$USB_UNIT" ]; then
   say "USB stick settings are off (--no-usb-config)."
 else
   say "USB stick settings are off (--usb-config turns them on)."
+fi
+if [ "$IMAGE" = yes ] && [ "$JOINED" = yes ]; then
+  say "Enabled in the image (node.json is there already): xhaos-node starts on its first boot."
+  exit 0
 fi
 if [ "$JOINED" = no ] && [ "$NO_JOIN" = yes ]; then
   # node.json is not there: the service starts once the node joins.
