@@ -211,6 +211,34 @@ func TestTokensAreRequiredAndRevocable(t *testing.T) {
 	}
 }
 
+func TestRevokingEndsAWait(t *testing.T) {
+	e := setup(t, false, false)
+	cs := e.connect(t, e.token(t, "waiter", mcpserver.ScopeRead))
+	since := ok(t, cs, "wait_for_events", nil)["seq"]
+	got := make(chan string, 1)
+	go func() {
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "wait_for_events", Arguments: map[string]any{"since": since, "timeout_seconds": 20}})
+		if err != nil {
+			got <- err.Error()
+			return
+		}
+		got <- res.Content[0].(*sdk.TextContent).Text
+	}()
+	time.Sleep(200 * time.Millisecond)
+	list, _ := e.s.MCPTokens.Tokens(ws)
+	if err := e.s.MCPTokens.Revoke(mcpserver.RevokeRequest{WorkspaceID: ws, ID: list[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case text := <-got:
+		if !strings.Contains(text, "revoked") {
+			t.Fatalf("wait after revoking: %s", text)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait outlived its token")
+	}
+}
+
 func TestProtocolBasics(t *testing.T) {
 	e := setup(t, false, false)
 	tok := e.token(t, "raw", mcpserver.ScopeRead)

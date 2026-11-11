@@ -245,6 +245,12 @@ func (s *Service) lookup(secret string) (identity, error) {
 	return id, nil
 }
 
+// live reports whether a token still exists (not revoked).
+func (s *Service) live(id int64) bool {
+	var n int
+	return s.db.QueryRow(`SELECT COUNT(*) FROM mcp_tokens WHERE id = ?`, id).Scan(&n) == nil && n > 0
+}
+
 // touch records a token's use, at most once a minute.
 func (s *Service) touch(id int64) {
 	now := s.now()

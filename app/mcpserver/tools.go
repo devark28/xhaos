@@ -870,13 +870,16 @@ func (s *Server) readChannel(ctx context.Context, id identity, in readChannelIn)
 	}
 }
 
-// sleep waits one poll interval; it fails when the call is cancelled or the
-// workspace locks meanwhile.
+// sleep waits one poll interval; it fails when the call is cancelled, the
+// token is revoked or the workspace locks meanwhile.
 func (s *Server) sleep(ctx context.Context, id identity) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(s.Poll):
+	}
+	if !s.tokens.live(id.TokenID) {
+		return errToken
 	}
 	return s.unlocked(id)
 }
