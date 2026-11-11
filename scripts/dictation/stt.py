@@ -18,6 +18,11 @@ address and no other), and takes one take at a time: a take that arrives
 during another gets 503 at once, and Xhaos runs it with the command instead.
 
   stt.py --serve --model /opt/models/whisper-large-v3-turbo-ct2 --port 8190
+  stt.py --serve --model ... --socket /run/xhaos-dictation/dictation.sock
+
+On a loopback port, any local process can listen there while the service is
+down and answer in its place; the installer uses --socket, in a folder only
+the xhaos user can reach.
 
   GET  /health                  200 "ok" once the model is loaded.
   POST /transcribe?language=en&prompt=...
@@ -25,7 +30,7 @@ during another gets 503 at once, and Xhaos runs it with the command instead.
        200: the transcript as text/plain. 400: not a valid WAV. 413: too big.
        500: the model failed (the text says why).
 
-  xhaos -dictation-url http://127.0.0.1:8190 -dictation-cmd ... (the fallback)
+  xhaos -dictation-url unix:/run/xhaos-dictation/dictation.sock -dictation-cmd ... (the fallback)
 
 Install: pip install faster-whisper. {model} is a CTranslate2 model directory
 (or a model name faster-whisper can download). {language} is the dictation
@@ -40,6 +45,7 @@ import ipaddress
 import os
 import subprocess
 import sys
+import socketserver
 import threading
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -137,6 +143,19 @@ class Server(ThreadingHTTPServer):
         self.turn = threading.Lock()
 
 
+class UnixServer(socketserver.ThreadingUnixStreamServer):
+    """The warm service on a Unix socket (--socket): what Xhaos's installer
+    uses, in a folder only its user can reach, so no other process can
+    answer in the service's place while it is down."""
+
+    daemon_threads = True
+
+    def __init__(self, path, whisper):
+        super().__init__(path, Handler)
+        self.whisper = whisper
+        self.turn = threading.Lock()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "xhaos-dictation"
     protocol_version = "HTTP/1.1"
@@ -192,21 +211,39 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def serve(host: str, port: int, model: str, threads: int) -> int:
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        address = None
-    if host != "localhost" and (address is None or not address.is_loopback):
-        print(f"--host must be a loopback address (127.0.0.1), not {host}", file=sys.stderr)
+def serve(host: str, port: int, model: str, threads: int, sock: str = "") -> int:
+    if not sock:
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        if host != "localhost" and (address is None or not address.is_loopback):
+            print(f"--host must be a loopback address (127.0.0.1), not {host}", file=sys.stderr)
+            return 2
+    elif not os.path.isabs(sock):
+        print(f"--socket must be an absolute path, not {sock}", file=sys.stderr)
         return 2
     try:
         whisper = load_model(model, threads)
     except ImportError as err:
         print(f"faster-whisper is not installed (pip install faster-whisper): {err}", file=sys.stderr)
         return 1
-    server = Server((host, port), whisper)
-    print(f"dictation service ready on {host}:{port} ({threads} threads)", file=sys.stderr, flush=True)
+    if sock:
+        # A socket left by an earlier run would stop the bind.
+        try:
+            os.unlink(sock)
+        except FileNotFoundError:
+            pass
+        old = os.umask(0o077)
+        try:
+            server = UnixServer(sock, whisper)
+        finally:
+            os.umask(old)
+        where = sock
+    else:
+        server = Server((host, port), whisper)
+        where = f"{host}:{port}"
+    print(f"dictation service ready on {where} ({threads} threads)", file=sys.stderr, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -222,6 +259,7 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true", help="run the warm service instead: load the model once, answer over HTTP")
     parser.add_argument("--host", default="127.0.0.1", help="with --serve: the loopback address to listen on (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"with --serve: the port (default: {DEFAULT_PORT})")
+    parser.add_argument("--socket", default="", help="with --serve: listen on this Unix socket instead of --host and --port")
     parser.add_argument("--model", required=True, help="model directory (or a faster-whisper model name)")
     parser.add_argument("--language", default="en", help="language code such as en, or auto to detect it (default: en); one-shot mode")
     parser.add_argument("--prompt", default="", help="dictation hints: a punctuated sentence with the expected words; one-shot mode")
@@ -231,7 +269,7 @@ def main() -> int:
     if args.serve:
         if args.wav is not None:
             parser.error("--serve takes no WAV file")
-        return serve(args.host, args.port, args.model, threads)
+        return serve(args.host, args.port, args.model, threads, args.socket)
     if args.wav is None:
         parser.error("a WAV file is needed (or --serve)")
     if not os.path.exists(args.wav):

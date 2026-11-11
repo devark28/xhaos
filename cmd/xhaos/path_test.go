@@ -42,3 +42,23 @@ func TestInstallerKeepsSandboxCacheOffServerPath(t *testing.T) {
 		t.Errorf("install.sh puts a data folder on the server's PATH: %s", m)
 	}
 }
+
+// The installer points the server at its classifier and dictation services
+// on Unix sockets: on a loopback port, a sandboxed command could listen
+// while a service is down and answer in its place.
+func TestInstallerReachesServicesOnSockets(t *testing.T) {
+	raw, err := os.ReadFile("../../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-classifier-url", "-dictation-url"} {
+		m := regexp.MustCompile(`flags="\$flags ` + flag + ` (\S+)"`).FindSubmatch(raw)
+		if m == nil {
+			t.Errorf("install.sh sets no %s", flag)
+			continue
+		}
+		if !regexp.MustCompile(`^unix:`).Match(m[1]) {
+			t.Errorf("install.sh gives %s %s, not a Unix socket", flag, m[1])
+		}
+	}
+}

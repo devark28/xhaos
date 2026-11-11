@@ -36,6 +36,7 @@ import (
 	"github.com/devark28/xhaos/app/health"
 	"github.com/devark28/xhaos/app/live"
 	"github.com/devark28/xhaos/app/llm/claudecli"
+	"github.com/devark28/xhaos/app/localhttp"
 	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/run"
 	"github.com/devark28/xhaos/app/sandbox"
@@ -82,13 +83,13 @@ func main() {
 	sandboxMode := flag.String("sandbox", sandbox.Auto, "confine agents' commands with Landlock: auto (when the kernel supports it), on (refuse commands without it), off")
 	publicHosts := flag.String("public-host", "", "domain names a reverse proxy serves this server under (comma-separated, e.g. xhaos.example.com); needed when it listens on localhost behind the proxy")
 	trustedProxies := flag.String("trusted-proxy", "", "reverse proxies whose X-Forwarded-For and X-Forwarded-Proto headers are trusted (comma-separated addresses or CIDRs, e.g. 127.0.0.1,::1)")
-	dictationURL := flag.String("dictation-url", "", "warm dictation service base URL, e.g. http://127.0.0.1:8190 (optional; takes go there, and to -dictation-cmd when it fails)")
+	dictationURL := flag.String("dictation-url", "", "warm dictation service: a Unix socket, unix:/run/xhaos-dictation/dictation.sock, or a base URL (optional; takes go there, and to -dictation-cmd when it fails)")
 	dictationCmd := flag.String("dictation-cmd", "", "speech-to-text sidecar program for voice dictation (optional; dictation is off when empty and no -dictation-url)")
 	dictationArgs := flag.String("dictation-args", "", "sidecar argument template, split on spaces: {wav} is the WAV path, {model} is -dictation-model (empty: the WAV path alone)")
 	dictationModel := flag.String("dictation-model", "", "sidecar model directory, passed as {model}")
 	dictationTimeout := flag.Duration("dictation-timeout", 0, "fixed sidecar time limit per utterance (default: 60 s plus 1.5 times the utterance's length)")
 	nodeURL := flag.String("node-url", "", "public HTTPS address nodes connect to, where a reverse proxy passes /xhaos/node to this server (default: https:// and the first -public-host; see docs/nodes.md)")
-	classifierURL := flag.String("classifier-url", "", "llama-server base URL of the local command classifier, e.g. http://127.0.0.1:8081 (optional; without it only the built-in list of build, test and lint commands is used)")
+	classifierURL := flag.String("classifier-url", "", "the local command classifier's llama-server: a Unix socket, unix:/run/xhaos-classifier/classifier.sock, or a base URL (optional; without it only the built-in list of build, test and lint commands is used)")
 	classifierTimeout := flag.Duration("classifier-timeout", 15*time.Second, "time limit for one classifier answer; past it the command asks")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -124,6 +125,11 @@ func main() {
 	}
 	if m := *sandboxMode; m != sandbox.Auto && m != sandbox.On && m != sandbox.Off {
 		log.Fatalf("-sandbox must be auto, on or off")
+	}
+	for flagName, u := range map[string]string{"-classifier-url": *classifierURL, "-dictation-url": *dictationURL} {
+		if u != "" && !localhttp.IsUnix(u) {
+			log.Printf("%s is a TCP address: while that service is down, a sandboxed command can listen on its port and answer in its place; give it a Unix socket (unix:/path/to.sock, as install.sh sets up)", flagName)
+		}
 	}
 
 	page, from, err := pageFiles(*pageDir)

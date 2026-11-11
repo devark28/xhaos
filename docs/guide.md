@@ -95,7 +95,7 @@ Attachments can be sent with a new task, `/new task`, `tell agent 11 message`, o
 
 Xhaos sends each take, as a 16 kHz mono 16-bit WAV, to the warm dictation service when `-dictation-url` is set, and otherwise runs the program named by `-dictation-cmd` once per take and reads the transcript from its stdout. The installer sets up both (see the deploy guide). The flags are:
 
-- `-dictation-url`: the warm service's base URL, e.g. `http://127.0.0.1:8190`. The service keeps the speech model loaded, so a take does not pay the model load. Takes go there first. If it fails (down, or an error answer), the take runs the command instead when `-dictation-cmd` is set, and the log says so; a timeout does not fall back. Empty (the default) means no service.
+- `-dictation-url`: the warm service: a Unix socket, e.g. `unix:/run/xhaos-dictation/dictation.sock` (what the installer sets), or a base URL such as `http://127.0.0.1:8190` (a sandboxed command could take that port while the service is down, so Xhaos logs a warning). The service keeps the speech model loaded, so a take does not pay the model load. Takes go there first. If it fails (down, or an error answer), the take runs the command instead when `-dictation-cmd` is set, and the log says so; a timeout does not fall back. Empty (the default) means no service.
 
 - `-dictation-cmd`: the program. Empty turns dictation off.
 - `-dictation-args`: the argument template, split on spaces. `{wav}` is the WAV path, `{model}` the model directory, `{language}` the dictation language (`en` by default, or `auto`), and `{prompt}` the workspace's hints. A field with `{prompt}` inside it (such as `--prompt={prompt}`) gets the hints as one argument, spaces and all.
@@ -110,7 +110,7 @@ xhaos -dictation-cmd /usr/bin/python3 \
       -dictation-model /opt/models/whisper-large-v3-turbo-ct2
 ```
 
-The script runs on the CPU with int8 weights and uses the machine's physical cores by default, at most 4 (`--threads` overrides it): more threads were slower in every measurement so far, on a laptop and on an 8-vCPU server, where 8 threads took 140 s for a take that 4 did in 84 s. It checks that the WAV is 16 kHz mono 16-bit and prints the transcript. Nothing is downloaded at dictation time: the model must already be on disk. Run with `--serve` (and `--model`, `--host`, `--port`, default `127.0.0.1:8190`), it is the warm service: it loads the model once, answers `GET /health` with `200` when ready, and takes `POST /transcribe?language=…&prompt=…` with the WAV as the body, one take at a time. It listens on the loopback only.
+The script runs on the CPU with int8 weights and uses the machine's physical cores by default, at most 4 (`--threads` overrides it): more threads were slower in every measurement so far, on a laptop and on an 8-vCPU server, where 8 threads took 140 s for a take that 4 did in 84 s. It checks that the WAV is 16 kHz mono 16-bit and prints the transcript. Nothing is downloaded at dictation time: the model must already be on disk. Run with `--serve` (and `--model`, and `--socket <path>` or `--host`/`--port`, default `127.0.0.1:8190`), it is the warm service: it loads the model once, answers `GET /health` with `200` when ready, and takes `POST /transcribe?language=…&prompt=…` with the WAV as the body, one take at a time. It listens on the Unix socket, or on the loopback only.
 
 ## Channels
 

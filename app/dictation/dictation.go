@@ -61,6 +61,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/devark28/xhaos/app/apperr"
+	"github.com/devark28/xhaos/app/localhttp"
 	"github.com/devark28/xhaos/app/workspace"
 )
 
@@ -113,7 +114,10 @@ type Service struct {
 // NewService returns the dictation service. It needs the database for the
 // workspace checks and the settings.
 func NewService(db *sql.DB, cfg Config) *Service {
-	return &Service{db: db, cfg: cfg, http: &http.Client{}}
+	// The warm service is reached on a Unix socket (unix:/path) or a URL.
+	base, client := localhttp.New(cfg.URL)
+	cfg.URL = base
+	return &Service{db: db, cfg: cfg, http: client}
 }
 
 // Migrate creates the settings table. Settings are scoped: scope "" holds the
