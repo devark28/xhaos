@@ -74,6 +74,13 @@ func TestConfigRunsDrivers(t *testing.T) {
 		{"two headers on one line", "[core][diff]external=/abs/x.sh\n", true},
 		{"two headers with spaces", "[core]  [diff \"x\"] [diff]external=/x\n", true},
 		{"two headers, a clean key", "[core][core]bare = false\n", false},
+		// A line ending in a backslash continues into the next line, so the
+		// [user] below is part of core.x and fsmonitor is core's key.
+		{"a continued value hides a header", "[core]\n\tx = a\\\n[user]\n\tfsmonitor = touch PWNED\n", true},
+		{"a continued quoted value hides a header", "[core]\n\tx = \"a\\\n[user]\"\n\tfsmonitor = touch PWNED\n", true},
+		{"a continued header line", "[core \\\n]\n\tfsmonitor = touch PWNED\n", true},
+		{"a continuation with trailing blanks", "[core]\n\tx = a\\  \n[user]\n\tfsmonitor = touch PWNED\n", true},
+		{"a backslash inside a value", "[core]\n\tx = a\\tb\n\tbare = false\n", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

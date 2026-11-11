@@ -362,6 +362,12 @@ func configRuns(r io.Reader) bool {
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
+		// A backslash at a line's end joins the next line into this one (in a
+		// value, a quoted part or a header), and the joined text is not read
+		// here: count it as risky rather than follow the joins.
+		if strings.HasSuffix(line, `\`) {
+			return true
+		}
 		if line[0] == '[' {
 			// Several headers may share a line ([core][diff]external = x).
 			for line != "" && line[0] == '[' {
