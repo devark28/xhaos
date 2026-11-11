@@ -12,6 +12,7 @@ import { clearComposer, currentChoice, focusComposer } from './composer.ts';
 import { showProviders } from './panels.ts';
 import { projectName } from './projects.ts';
 import { projectConflict } from '../../composer-target.ts';
+import { terminateFlow } from '../../terminate-confirm.ts';
 import type { Agent, Attachment } from '../../types.ts';
 
 // Opening a card makes it the focus (the link's #agent=); closing it clears that.
@@ -92,6 +93,10 @@ export async function terminateAgent(id: number) {
   }
   toast(`Agent #${id} terminated. View retained history with /history.`);
 }
+// The card menu's Terminate agent asks first (terminate-confirm.ts); the
+// typed /terminate and /remove call terminateAgent directly.
+export const terminateAsk = terminateFlow(() => get().terminateAsk, id => update(s => { s.terminateAsk = id; }), id => void terminateAgent(id));
+
 // restore brings a terminated agent back. On the server it becomes idle (its
 // status event shows the card again); a sample or prototype agent is only
 // shown again.

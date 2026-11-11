@@ -381,3 +381,44 @@ func TestToolchainSettingsPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// With LimitDevices (xhaos-node), only the harmless devices and the ones
+// named in Devices can be opened; /dev can still be listed.
+func TestLimitDevices(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	os.MkdirAll(root, 0o755)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "cache"), LimitDevices: true}
+	for _, command := range []string{
+		"echo x > /dev/null && head -c 4 /dev/urandom | wc -c",
+		"echo to-stderr >&2 && echo to-stderr2 > /dev/stderr",
+		// Programs other than bash open /dev/stderr through /proc/self/fd.
+		"python3 -c \"open('/dev/stderr','w').write('x')\" 2>&1 | cat",
+		"ls /dev >/dev/null && echo listed",
+		"echo shm > /dev/shm/xhaos-test-$$ 2>/dev/null; rm -f /dev/shm/xhaos-test-$$; echo ok",
+	} {
+		if out, err := run(t, c, root, command); err != nil {
+			t.Errorf("%q: %v %q", command, err, out)
+		}
+	}
+	// /dev/full is not among the common devices: closed until named.
+	if out, err := run(t, c, root, "head -c 1 /dev/full"); err == nil {
+		t.Errorf("opened a device that was not named: %q", out)
+	}
+	named := Config{Mode: On, Cache: filepath.Join(dir, "cache"), LimitDevices: true, Devices: []string{"/dev/full"}}
+	if out, err := run(t, named, root, "head -c 1 /dev/full | wc -c"); err != nil || strings.TrimSpace(out) != "1" {
+		t.Errorf("named device: %v %q", err, out)
+	}
+	// /dev itself is not writable.
+	if out, err := run(t, c, root, "touch /dev/xhaos-planted"); err == nil {
+		t.Errorf("created a file in /dev: %q", out)
+	}
+	// The server's own setting keeps /dev open.
+	open := Config{Mode: On, Cache: filepath.Join(dir, "cache")}
+	if out, err := run(t, open, root, "cat /dev/null && echo ok"); err != nil {
+		t.Errorf("open devices: %v %q", err, out)
+	}
+}

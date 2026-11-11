@@ -12,7 +12,7 @@ import { useApp, update, get, toast, errorText, findAgent } from './state/store.
 import type { Agent } from '../types.ts';
 
 // useNow re-renders every interval, for countdowns.
-function useNow(ms: number) {
+export function useNow(ms: number) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), ms); return () => clearInterval(t); }, [ms]);
   return now;

@@ -1,7 +1,8 @@
 // The Go backend connection and startup. The connection object lives here,
 // not in the store: it holds the Wails runtime, which must not be frozen.
-import { BOARD_EVENT_NAME, connectBackend, createSync, DELTA_EVENT_NAME, type Backend } from '../../server-client.ts';
+import { BOARD_EVENT_NAME, connectBackend, createSync, DELTA_EVENT_NAME, NODE_EVENT_NAME, type Backend } from '../../server-client.ts';
 import { onBoardEvent, onBoardNotice, refreshBoards, resyncOpenBoard } from './boards.ts';
+import { onNodeNotice, refreshNodes } from './nodes.ts';
 import { viewFromSnapshot, applyEvent, applyDelta, applyChannelEvent, channelsFromBackend, prependOlder, setChannelMessages } from '../../backend-view.ts';
 import { ensureQuestionDemo, hasPendingQuestions } from '../../questions.ts';
 import { flatten } from '../../model.ts';
@@ -193,9 +194,10 @@ async function startBackend(connection: Backend, workspaceId: string) {
     for (const id of [...s.selected]) if (!flatten(view.agents).some(agent => agent.id === id)) s.selected.delete(id);
     s.backendVersion = connection.status.version;
     s.ready = true;
-  }); void refreshChannels(); if (synced) void refreshMemories(); synced = true; };
+  }); void refreshChannels(); if (synced) void refreshMemories(); if (get().nodes) void refreshNodes(); synced = true; };
   const onEvent = (event: BackendEvent) => {
     if (onBoardEvent(event)) return; // boards keep their own state (state/boards.ts)
+    if (event.kind === 'node.changed') { if (get().nodes) void refreshNodes(); return; } // a loaded Nodes list reloads
     if (event.kind === 'agent.message' && event.data?.from !== 'owner') usageSoon();
     if (event.kind === 'agent.message' && event.data?.from === 'agent') saved.set(event.agentId, (saved.get(event.agentId) || 0) + 1);
     update(s => {
@@ -211,6 +213,8 @@ async function startBackend(connection: Backend, workspaceId: string) {
   try { update(s => { s.backendVersion = connection.status.version; }); await refreshProviders(); } catch { /* providers stay empty */ }
   // Live board saves from other pages (not stored; see board.Notice).
   connection.events?.On?.(BOARD_EVENT_NAME, event => onBoardNotice(event?.data ?? event));
+  // Nodes going online and offline, and their jobs (not stored; see node.Notice).
+  connection.events?.On?.(NODE_EVENT_NAME, event => onNodeNotice(event?.data ?? event));
   // Live reply text: apply at most once per frame while replies stream.
   // Each streamed piece belongs to the reply being written when it arrived;
   // once that reply is saved, pieces still waiting for the next frame are

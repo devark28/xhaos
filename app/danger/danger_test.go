@@ -180,6 +180,8 @@ func TestCurrentBranchInASubmodule(t *testing.T) {
 	os.MkdirAll(gitdir, 0o755)
 	os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../.git/modules/sub\n"), 0o644)
 	os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/uvc\n"), 0o644)
+	// As git writes it: the submodule's folder names its worktree back.
+	os.WriteFile(filepath.Join(gitdir, "config"), []byte("[core]\n\tworktree = ../../../sub\n"), 0o644)
 	if b, err := CurrentBranch(sub); b != "feature/uvc" || err != nil {
 		t.Fatalf("branch = %q %v", b, err)
 	}
@@ -198,5 +200,25 @@ func TestParseDuration(t *testing.T) {
 		if got, err := ParseDuration(bad); err == nil {
 			t.Errorf("%q accepted as %v", bad, got)
 		}
+	}
+}
+
+func TestParseDurationBetween(t *testing.T) {
+	min, max := 10*time.Minute, 30*24*time.Hour
+	for text, want := range map[string]time.Duration{"10m": min, "1h": time.Hour, "30d": max, "1d12h": 36 * time.Hour} {
+		if got, err := ParseDurationBetween(text, min, max); err != nil || got != want {
+			t.Errorf("%q = %v %v, want %v", text, got, err, want)
+		}
+	}
+	for _, bad := range []string{"9m", "599s", "31d", "720h1s", "", "soon"} {
+		if got, err := ParseDurationBetween(bad, min, max); err == nil {
+			t.Errorf("%q accepted as %v", bad, got)
+		}
+	}
+	if _, err := ParseDurationBetween("5m", min, max); err == nil || !strings.Contains(err.Error(), "10 minutes and 30 days") {
+		t.Errorf("error = %v, want it to name the range", err)
+	}
+	if _, err := ParseDuration("8d"); err == nil || !strings.Contains(err.Error(), "10 seconds and 7 days") {
+		t.Errorf("error = %v, want the original wording", err)
 	}
 }

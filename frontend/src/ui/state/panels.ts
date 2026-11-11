@@ -5,6 +5,7 @@ import { call, connected, refreshProviders, pushAppearance } from './backend.ts'
 import { loadAppearance, saveAppearance } from '../appearance.ts';
 import { focusComposer } from './composer.ts';
 import { refreshProjects } from './projects.ts';
+import { refreshNodes } from './nodes.ts';
 import type { McpServer, McpTrust, Provider } from '../../types.ts';
 import { newId } from '../../ids.ts';
 import { isNarrow } from '../narrow.ts';
@@ -23,6 +24,7 @@ export function selectPanel(kind: PanelKind) {
   else if (kind === 'files') showFiles();
   else if (kind === 'settings') { openPanel('settings'); if (connected()) refreshMcp(); }
   else if (kind === 'providers') showProviders();
+  else if (kind === 'nodes') { openPanel('nodes'); void refreshNodes(); }
   else openPanel(kind);
 }
 export function showQuestions(id: number | null) {
@@ -52,10 +54,13 @@ export async function closeChannel(id: string) {
   catch (error) { toast(`Could not close the channel: ${errorText(error)}`); }
 }
 
-// publishChannel puts a channel on its link with a new passphrase (on a
-// published channel: a reset). The passphrase comes back this once.
-export async function publishChannel(id: string): Promise<{ passphrase: string; path: string } | null> {
-  try { return await call('channel', 'Publish', { workspaceId: get().active, channelId: Number(id) }); }
+// publishChannel puts a channel on its link with a new passphrase and expiry
+// (on a published channel, expired or not: the same action again, and the old
+// passphrase stops at once). duration is text like "1d"; null: no expiry,
+// which the owner chose explicitly. The passphrase comes back this once.
+export async function publishChannel(id: string, duration: string | null): Promise<{ passphrase: string; path: string; channel: { expiresAt?: string } } | null> {
+  const expiry = duration === null ? { noExpiry: true } : { duration };
+  try { return await call('channel', 'Publish', { workspaceId: get().active, channelId: Number(id), ...expiry }); }
   catch (error) { toast(`Could not publish the channel: ${errorText(error)}`); return null; }
 }
 export async function unpublishChannel(id: string) {

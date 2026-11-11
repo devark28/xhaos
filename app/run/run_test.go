@@ -960,8 +960,8 @@ func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
 		t.Fatalf("unpublished GET = %d", code)
 	}
 	owner := h.s.Channels.Owner()
-	pub, err := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
-	if err != nil || !strings.HasPrefix(pub.Passphrase, "xhc_") || !pub.Channel.Published || pub.Path != "/xhaos/channel/"+ws+fmt.Sprintf("/%d", c.ID) {
+	pub, err := owner.Publish(channel.PublishRequest{WorkspaceID: ws, ChannelID: c.ID, Duration: "1h"})
+	if err != nil || !strings.HasPrefix(pub.Passphrase, "xhc_") || !pub.Channel.Published || pub.Channel.ExpiresAt == nil || pub.Path != "/xhaos/channel/"+ws+fmt.Sprintf("/%d", c.ID) {
 		t.Fatalf("publish = %+v %v", pub, err)
 	}
 	var raw string
@@ -1016,7 +1016,7 @@ func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
 		t.Fatal("another workspace read the channel")
 	}
 	// Reset: the old passphrase stops working.
-	again, _ := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
+	again, _ := owner.Publish(channel.PublishRequest{WorkspaceID: ws, ChannelID: c.ID, Duration: "1h"})
 	if again.Passphrase == pub.Passphrase {
 		t.Fatal("reset kept the passphrase")
 	}
@@ -1041,8 +1041,235 @@ func TestPublishedChannelTakesOutsideMessages(t *testing.T) {
 	}
 	// A closed channel cannot be published.
 	h.s.Channels.Close(ws, c.ID)
-	if _, err := owner.Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID}); err == nil {
+	if _, err := owner.Publish(channel.PublishRequest{WorkspaceID: ws, ChannelID: c.ID, NoExpiry: true}); err == nil {
 		t.Fatal("published a closed channel")
+	}
+}
+
+// linkHarness is a published-channel setup whose clock the test moves.
+type linkHarness struct {
+	h      *harness
+	c      channel.Channel
+	owner  *channel.Owner
+	srv    *httptest.Server
+	offset atomic.Int64 // nanoseconds the clock is ahead
+}
+
+func newLinkHarness(t *testing.T) *linkHarness {
+	t.Helper()
+	l := &linkHarness{h: setup(t, func(turn llm.Turn) (llm.Result, error) { return llm.Result{Text: "ok", StopReason: "end_turn"}, nil })}
+	l.h.s.Channels.SetClock(func() time.Time { return time.Now().Add(time.Duration(l.offset.Load())) })
+	l.h.s.Providers.Save(provider.SaveRequest{WorkspaceID: ws, ID: "f", Kind: "fake", APIKey: "k", Models: []string{"m1"}})
+	a, _ := l.h.s.Agents.Create(agent.CreateRequest{IdempotencyKey: "a", WorkspaceID: ws, Title: "a", Provider: "f", Model: "m1"})
+	l.c, _ = l.h.s.Channels.Create(a, "ops", nil, "")
+	l.owner = l.h.s.Channels.Owner()
+	l.srv = httptest.NewServer(l.h.s.Channels.Links())
+	t.Cleanup(l.srv.Close)
+	return l
+}
+
+func (l *linkHarness) advance(d time.Duration) { l.offset.Add(int64(d)) }
+
+func (l *linkHarness) do(t *testing.T, method, pass, body string) int {
+	t.Helper()
+	req, _ := http.NewRequest(method, l.srv.URL+channel.LinkPath(ws, l.c.ID), strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+pass)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+func (l *linkHarness) publish(t *testing.T, req channel.PublishRequest) channel.Published {
+	t.Helper()
+	req.WorkspaceID, req.ChannelID = ws, l.c.ID
+	p, err := l.owner.Publish(req)
+	if err != nil {
+		t.Fatalf("publish %+v: %v", req, err)
+	}
+	return p
+}
+
+func (l *linkHarness) expiresAt(t *testing.T) any {
+	t.Helper()
+	var v any
+	if err := l.h.s.DB().QueryRow(`SELECT expires_at FROM channel_links WHERE channel_id = ?`, l.c.ID).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// A link lasts as long as chosen; past that it is refused like a wrong
+// passphrase (and counts toward the slow-down), and its row stays.
+func TestPublishedChannelLinkExpires(t *testing.T) {
+	l := newLinkHarness(t)
+	before := time.Now()
+	pub := l.publish(t, channel.PublishRequest{Duration: "1h"})
+	if pub.Channel.ExpiresAt == nil || pub.Channel.ExpiresAt.Before(before.Add(time.Hour-time.Second)) || pub.Channel.ExpiresAt.After(time.Now().Add(time.Hour+time.Second)) {
+		t.Fatalf("expiresAt = %v, want about an hour ahead", pub.Channel.ExpiresAt)
+	}
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("GET before expiry = %d", code)
+	}
+	if code := l.do(t, "POST", pub.Passphrase, `{"body":"hi"}`); code != http.StatusCreated {
+		t.Fatalf("POST before expiry = %d", code)
+	}
+	l.advance(59 * time.Minute)
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("GET at 59 min = %d", code)
+	}
+	l.advance(2 * time.Minute)
+	for _, method := range []string{"GET", "POST"} {
+		if code := l.do(t, method, pub.Passphrase, `{"body":"late"}`); code != http.StatusUnauthorized {
+			t.Fatalf("%s after expiry = %d, want 401", method, code)
+		}
+	}
+	// The row stays: the channel still reads as published, with its expiry.
+	var rows int
+	l.h.s.DB().QueryRow(`SELECT COUNT(*) FROM channel_links`).Scan(&rows)
+	views, _ := l.owner.Channels(ws)
+	if rows != 1 || len(views) != 1 || !views[0].Published || views[0].ExpiresAt == nil || views[0].Count != 1 {
+		t.Fatalf("rows = %d, views = %+v: want the row kept, published, with expiresAt and only the one message sent before expiry", rows, views)
+	}
+	// Expired tries count toward the slow-down, like wrong passphrases.
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusUnauthorized {
+		t.Fatalf("third refusal = %d", code)
+	}
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth refusal in a row = %d, want 429", code)
+	}
+}
+
+// A waiting GET stops at the expiry instead of running on to its deadline.
+func TestPublishedChannelLinkExpiresDuringWait(t *testing.T) {
+	l := newLinkHarness(t)
+	pub := l.publish(t, channel.PublishRequest{Duration: "10m"})
+	go func() { time.Sleep(700 * time.Millisecond); l.advance(11 * time.Minute) }()
+	started := time.Now()
+	req, _ := http.NewRequest("GET", l.srv.URL+channel.LinkPath(ws, l.c.ID)+"?wait=20", nil)
+	req.Header.Set("Authorization", "Bearer "+pub.Passphrase)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if took := time.Since(started); res.StatusCode != http.StatusUnauthorized || took > 5*time.Second {
+		t.Fatalf("wait across expiry = %d after %v, want 401 soon after it", res.StatusCode, took)
+	}
+}
+
+func TestPublishedChannelLinkWithoutExpiryNeverExpires(t *testing.T) {
+	l := newLinkHarness(t)
+	pub := l.publish(t, channel.PublishRequest{NoExpiry: true})
+	if pub.Channel.ExpiresAt != nil || l.expiresAt(t) != nil {
+		t.Fatalf("no expiry stored as %v / %v", pub.Channel.ExpiresAt, l.expiresAt(t))
+	}
+	l.advance(5 * 365 * 24 * time.Hour)
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("GET five years on = %d", code)
+	}
+}
+
+// Publishing again, expired or not, is one action: new passphrase and expiry;
+// the old passphrase stops at once.
+func TestPublishAgainRotatesPassphraseAndExpiry(t *testing.T) {
+	l := newLinkHarness(t)
+	first := l.publish(t, channel.PublishRequest{Duration: "1h"})
+	second := l.publish(t, channel.PublishRequest{Duration: "7d"})
+	if second.Passphrase == first.Passphrase {
+		t.Fatal("publishing again kept the passphrase")
+	}
+	if code := l.do(t, "GET", first.Passphrase, ""); code != http.StatusUnauthorized {
+		t.Fatalf("old passphrase = %d, want 401 at once", code)
+	}
+	if second.Channel.ExpiresAt == nil || !second.Channel.ExpiresAt.After(first.Channel.ExpiresAt.Add(24*time.Hour)) {
+		t.Fatalf("expiry %v did not move from %v", second.Channel.ExpiresAt, first.Channel.ExpiresAt)
+	}
+	// After the first expiry the second still works.
+	l.advance(2 * time.Hour)
+	if code := l.do(t, "GET", second.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("new passphrase at 2 h = %d", code)
+	}
+	// Expired, then published again: works at once, with a new expiry.
+	l.advance(8 * 24 * time.Hour)
+	if code := l.do(t, "POST", second.Passphrase, `{"body":"x"}`); code != http.StatusUnauthorized {
+		t.Fatalf("expired = %d", code)
+	}
+	third := l.publish(t, channel.PublishRequest{Duration: "1d"})
+	if code := l.do(t, "GET", third.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("after publishing again = %d", code)
+	}
+	if code := l.do(t, "GET", second.Passphrase, ""); code != http.StatusUnauthorized {
+		t.Fatalf("expired passphrase after publishing again = %d", code)
+	}
+	// From an expiry to none: the old passphrase is refused, the new one lasts.
+	fourth := l.publish(t, channel.PublishRequest{NoExpiry: true})
+	if fourth.Channel.ExpiresAt != nil || l.expiresAt(t) != nil {
+		t.Fatalf("expiry kept: %v / %v", fourth.Channel.ExpiresAt, l.expiresAt(t))
+	}
+	// Unpublish deletes the row, whatever its expiry.
+	if ch, err := l.owner.Unpublish(channel.CloseRequest{WorkspaceID: ws, ChannelID: l.c.ID}); err != nil || ch.Published || ch.ExpiresAt != nil {
+		t.Fatalf("unpublish = %+v %v", ch, err)
+	}
+}
+
+// The duration is chosen explicitly: a missing one, both, or one out of range
+// are refused, and nothing is published.
+func TestPublishNeedsAChosenExpiry(t *testing.T) {
+	l := newLinkHarness(t)
+	for name, req := range map[string]channel.PublishRequest{
+		"nothing chosen": {},
+		"blank":          {Duration: "  "},
+		"both":           {Duration: "1d", NoExpiry: true},
+		"too short":      {Duration: "9m"},
+		"too long":       {Duration: "31d"},
+		"not a duration": {Duration: "soon"},
+	} {
+		req.WorkspaceID, req.ChannelID = ws, l.c.ID
+		if p, err := l.owner.Publish(req); err == nil {
+			t.Errorf("%s: published %+v", name, p)
+		}
+	}
+	var rows int
+	l.h.s.DB().QueryRow(`SELECT COUNT(*) FROM channel_links`).Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("%d links after refused publishes", rows)
+	}
+	for _, d := range []string{"10m", "1h", "1d", "7d", "30d", "1d12h"} {
+		if _, err := l.owner.Publish(channel.PublishRequest{WorkspaceID: ws, ChannelID: l.c.ID, Duration: d}); err != nil {
+			t.Errorf("%s refused: %v", d, err)
+		}
+	}
+}
+
+// Links published before expiry existed keep working, without one.
+func TestExistingLinksMigrateToNoExpiry(t *testing.T) {
+	l := newLinkHarness(t)
+	pub := l.publish(t, channel.PublishRequest{Duration: "1h"})
+	db := l.h.s.DB()
+	// Back to the old table: no expires_at column.
+	if _, err := db.Exec(`ALTER TABLE channel_links DROP COLUMN expires_at`); err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if l.expiresAt(t) != nil {
+		t.Fatalf("migrated row has expires_at %v, want NULL", l.expiresAt(t))
+	}
+	if err := channel.Migrate(db); err != nil { // and again: nothing to do
+		t.Fatal(err)
+	}
+	l.advance(10 * 365 * 24 * time.Hour)
+	if code := l.do(t, "GET", pub.Passphrase, ""); code != http.StatusOK {
+		t.Fatalf("migrated link ten years on = %d", code)
+	}
+	views, _ := l.owner.Channels(ws)
+	if len(views) != 1 || !views[0].Published || views[0].ExpiresAt != nil {
+		t.Fatalf("view = %+v, want published without expiry", views)
 	}
 }
 
@@ -1785,7 +2012,7 @@ func TestChannelOfOneIsAnInbox(t *testing.T) {
 	if _, err := h.s.Channels.Send(a, c.ID, "inbox open"); err != nil {
 		t.Fatalf("send to a channel of one: %v", err)
 	}
-	pub, err := h.s.Channels.Owner().Publish(channel.CloseRequest{WorkspaceID: ws, ChannelID: c.ID})
+	pub, err := h.s.Channels.Owner().Publish(channel.PublishRequest{WorkspaceID: ws, ChannelID: c.ID, Duration: "1h"})
 	if err != nil {
 		t.Fatal(err)
 	}

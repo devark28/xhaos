@@ -12,7 +12,9 @@ import (
 //
 // A take costs a fixed part (starting the sidecar, loading the model) plus a
 // part that grows with its length. With takes of different lengths both are
-// fitted; until then the estimate is a plain ratio.
+// fitted; until then the estimate is a plain ratio. A take answered by the warm
+// service has no load in it, so its samples are kept apart from the others'
+// (the command's): the estimate uses the kind the server is set up for.
 
 const (
 	speedKey     = "speed" // in dictation_settings, server scope
@@ -22,16 +24,18 @@ const (
 
 // sample is one take: its length and how long the sidecar took, in seconds.
 // Cut marks a take that timed out: Took is then its limit, a lower bound.
+// Warm marks a take answered by the warm service (see warm.go).
 type sample struct {
 	Length float64 `json:"length"`
 	Took   float64 `json:"took"`
 	Cut    bool    `json:"cut,omitempty"`
+	Warm   bool    `json:"warm,omitempty"`
 }
 
 var speedMu sync.Mutex // one read-modify-write of the samples at a time
 
 // recordSpeed adds a take to the recent samples.
-func (s *Service) recordSpeed(length, took float64, cut bool) error {
+func (s *Service) recordSpeed(length, took float64, cut, warm bool) error {
 	if length < 1 {
 		return nil
 	}
@@ -41,7 +45,7 @@ func (s *Service) recordSpeed(length, took float64, cut bool) error {
 	if err != nil {
 		return err
 	}
-	samples = append(samples, sample{Length: length, Took: took, Cut: cut})
+	samples = append(samples, sample{Length: length, Took: took, Cut: cut, Warm: warm})
 	if len(samples) > speedSamples {
 		samples = samples[len(samples)-speedSamples:]
 	}
@@ -71,7 +75,22 @@ func (s *Service) Estimate(seconds float64) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return estimate(samples, seconds), nil
+	return estimate(ofKind(samples, s.cfg.URL != ""), seconds), nil
+}
+
+// ofKind returns the samples of the kind this server takes (warm when a
+// service is set). Until it has any of that kind, all of them.
+func ofKind(samples []sample, warm bool) []sample {
+	var out []sample
+	for _, p := range samples {
+		if p.Warm == warm {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return samples
+	}
+	return out
 }
 
 func estimate(samples []sample, length float64) float64 {

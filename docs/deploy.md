@@ -20,7 +20,7 @@ Run it as root or as a user with `sudo` (questions come from the terminal even u
 - downloads the latest release for the server's CPU (amd64 or arm64) and checks it against the release's `SHA256SUMS`; a mismatch stops it before anything changes;
 - creates the `xhaos` user, its data folder (`/var/lib/xhaos/data`, private), your projects folders, and the agents' git identity;
 - writes the systemd service (listening on 127.0.0.1:5180), managed from the settings it keeps in `/etc/xhaos/install.conf`, and asks before starting it. A service file you wrote by hand is replaced only after asking (the old one is kept as `.bak`), keeping its projects folders;
-- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256; yes by default), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; yes by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
+- offers optional parts, each with what it is, why, and where it comes from: **devtools** (gcc, make, cmake, Go, Node.js through `n`, Rust through rustup), **flutter**, **browsers** (Chrome and Firefox from their own apt repositories, their WebDriver drivers, Playwright's libraries), **podman** (rootless, with Docker Compose, for your user), **dictation** (faster-whisper and the Whisper large-v3-turbo model, each file checked by SHA-256, run as a warm service that keeps the model loaded; yes by default; see [The dictation service](#the-dictation-service)), and **classifier** (llama.cpp and a small model for commands the built-in list does not match; yes by default, see [The optional command classifier model](#the-optional-command-classifier-model)). Parts that need a regular user (Podman, your own Flutter) are skipped when run as plain root.
 
 Running it again updates: it says which version is installed and which is new, replaces the binary only if it changed, and asks before restarting (a restart pauses running agents and locks every workspace until someone signs in). Parts already installed are left alone; parts not installed are offered again only to someone at the terminal, so an unattended update never starts a new download. A part the settings file marks `no` (saved by an earlier run) stays out, even with `--yes`: add it with `--with <part>`, and the end of the run lists each part a saved `no` left out, with that command. If an optional part fails (a network error), the installer says so and carries on; re-run with `--with <part>` to try again. A part that an unattended run skipped, or that failed, is not saved as `no`, so a later run at the terminal offers it again.
 
@@ -28,7 +28,7 @@ Running it again updates: it says which version is installed and which is new, r
 |---|---|
 | `--yes` | answer yes to every question (unattended), including adding the classifier model (about 2.1 GB) |
 | `--with a,b` | install or update these parts without asking: `devtools`, `flutter`, `browsers`, `podman`, `dictation`, `classifier` |
-| `--without a,b` | skip these parts without asking |
+| `--without a,b` | skip these parts without asking. `--without dictation` turns off only the warm dictation service (takes then start the sidecar per take) and keeps everything else |
 | `--no-restart` | never restart a running Xhaos (restart it yourself later) |
 | `--version vX.Y.Z` | install that release instead of the latest |
 
@@ -109,6 +109,29 @@ Notes:
 - `-trusted-proxy` lists the proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are believed. With it, wrong passphrases are counted per visitor rather than for the proxy as a whole, and the sign-in cookie is marked `Secure`. Only list your proxy: anyone else could forge those headers.
 - Projects can be any folder the `xhaos` user can write. Add them in the Files tab (or `-root DIR` at startup); add each path you use to `ReadWritePaths`.
 - Don't add `SystemCallFilter=` to the unit without allowing `landlock_create_ruleset`, `landlock_add_rule`, `landlock_restrict_self` and `seccomp`: the sandbox needs them.
+
+## The dictation service
+
+Dictation's speech model takes several seconds to load. The installer runs it as a service, `xhaos-dictation.service`, so the model stays loaded and a take does not wait for it. It runs as the `xhaos` user, on `127.0.0.1:8190` only, with `Restart=always`, and Xhaos gets `-dictation-url http://127.0.0.1:8190`. Its unit has `Wants=` and `After=`, not `Requires=`, so Xhaos starts without it, and a take then runs the sidecar command (the fallback set by `-dictation-cmd`) until the service is back. The service takes one take at a time: a second take that arrives meanwhile runs with the command, so it never waits behind another.
+
+It keeps the model in memory all the time: about 1,070 MB resident after a few takes and 1,363 MB at peak, measured with the reference sidecar and the pinned model on an 8-CPU machine. Turn it off if that memory is needed elsewhere.
+
+Check it:
+
+```sh
+systemctl status xhaos-dictation
+curl -s http://127.0.0.1:8190/health
+journalctl -u xhaos-dictation
+```
+
+`/health` answers `ok` once the model is loaded. Settings → Dictation shows the same, with a Check again button.
+
+Turn it off:
+
+- **For good**: `--without dictation` (or set `DICTATION_SERVICE='no'` in `/etc/xhaos/install.conf`) and re-run the installer. It removes `-dictation-url` and the `Wants=`/`After=` lines from Xhaos's unit (asking before restarting Xhaos), stops and removes `xhaos-dictation`. Dictation keeps working through the command, one process per take. Nothing is deleted: the sidecar, its virtualenv and the model stay. Turn it back on with `--with dictation`.
+- **By hand**: remove `-dictation-url` from Xhaos's `ExecStart` and restart Xhaos.
+
+By hand, without the installer: run `stt.py --serve --model <model dir> --port 8190` as its own unit or any process on the loopback, and add `-dictation-url http://127.0.0.1:8190` to Xhaos's `ExecStart`.
 
 ## The optional command classifier model
 
@@ -195,6 +218,41 @@ server {
 Keep the `Host` header as the browser sent it (Caddy does by default): Xhaos checks that a page's `Origin` matches it.
 
 Published channel links (`/xhaos/channel/<workspace>/<id>`) go through the same proxy; they carry their own passphrase instead of a session.
+
+## Nodes (remote machines)
+
+Nodes are machines your agents can run commands on: a build PC, a Raspberry Pi ([nodes.md](nodes.md)). Each one connects out to this server over one WebSocket at `/xhaos/node`, so the server needs a public HTTPS address for that path. The machines need no open port.
+
+When the page is already public behind the proxy above, nodes use the same address: `-node-url` defaults to `https://` plus the first `-public-host`. Caddy passes WebSockets through as it is. With nginx, add:
+
+```nginx
+    location = /xhaos/node {
+        proxy_pass http://127.0.0.1:5180;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 1h;
+    }
+```
+
+When the page stays private (reached over an SSH tunnel to `127.0.0.1:5180`), expose only the node path, on a domain of its own:
+
+```caddyfile
+nodes.example.com {
+	handle /xhaos/node {
+		reverse_proxy 127.0.0.1:5180
+	}
+	respond 404
+}
+```
+
+and start Xhaos with `-node-url https://nodes.example.com` (with `install.sh`: set `NODE_URL='https://nodes.example.com'` in `/etc/xhaos/install.conf` and re-run it, so the setting survives updates). The page and its API stay unreachable from that domain; a node proves who it is with its own key (only the public key is kept here). Until a node address is set, **Add node** on the Nodes tab is off and says why.
+
+On Debian or Ubuntu, `scripts/expose-nodes.sh <domain>` does all of this after `install.sh` (Caddy, the site, ufw, `PUBLIC_HOST`, and a check); see [nodes.md](nodes.md#scriptsexpose-nodessh-debianubuntu-after-installsh).
+
+On the machine, the command that the Nodes tab shows installs `xhaos-node` from the GitHub release (checked against `SHA256SUMS`), as a systemd service of its own `xhaos-node` user, without sudo. `install-node.sh --help` lists its options: `--root` (the folder agents work in), `--device /dev/video0` (devices commands may open), and `--unsandboxed` (only where neither Landlock nor bubblewrap works; on a kernel without Landlock it installs bubblewrap with apt).
 
 ## In a container
 

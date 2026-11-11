@@ -31,6 +31,17 @@ for target in $TARGETS; do
   cp scripts/dictation/stt.py "$OUT/$name/dictation/"
   tar -C "$OUT" -czf "$OUT/$name.tar.gz" "$name"
   rm -rf "${OUT:?}/$name"
+  # The node program (docs/nodes.md), its own archive: install-node.sh
+  # downloads only this. Pure Go, no page.
+  [ "$os" = linux ] || continue
+  name="xhaos-node-$VERSION-$os-$arch"
+  echo "building $name"
+  mkdir -p "$OUT/$name"
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch "$GO" build -trimpath \
+    -ldflags "-s -w -X main.version=$VERSION" -o "$OUT/$name/xhaos-node" ./cmd/xhaos-node
+  cp LICENSE install-node.sh "$OUT/$name/" && mkdir -p "$OUT/$name/docs" && cp docs/nodes.md "$OUT/$name/docs/"
+  tar -C "$OUT" -czf "$OUT/$name.tar.gz" "$name"
+  rm -rf "${OUT:?}/$name"
 done
 (cd "$OUT" && sha256sum ./*.tar.gz > SHA256SUMS)
 # Back to the development page (with source maps).

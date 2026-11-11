@@ -10,13 +10,14 @@ import { hasPendingQuestions } from '../../questions.ts';
 import { activeAgents, flatten, initialWorkspaces } from '../../model.ts';
 import { loadModelChoice } from '../../models.ts';
 import { hydrateDemoActivity } from '../../demo-activity.ts';
+import type { NodeList } from './nodes.ts';
 import type { Agent, BoardSummary, FileEntry, McpServer, Memory, Project, Provider, ToolCatalog, Workspace, UsageReport } from '../../types.ts';
 
 enableMapSet();
 
 export type Layout = 'grid' | 'three' | 'list';
 export type Mode = 'message' | 'draw';
-export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'boards' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'btw';
+export type PanelKind = 'questions' | 'files' | 'memories' | 'channels' | 'boards' | 'providers' | 'history' | 'status' | 'help' | 'settings' | 'tools' | 'layout' | 'btw' | 'nodes';
 export interface Panel { kind: PanelKind; section?: string; editId?: string; channelId?: string; message?: string; testing?: string; loading?: boolean }
 export type Btw = { question: string; pending?: boolean; answer?: string; error?: string };
 export type SlashCommand = [name: string, description: string, usage: string];
@@ -35,6 +36,7 @@ export interface State {
   secretsVersion: number; // bumped by secret.changed, so the Secrets section reloads
   skillsVersion: number; // bumped by skill.changed
   dangerAgent: number | null; // the agent the dangerously-allow dialog is open for
+  terminateAsk: number | null; // the agent the terminate dialog is open for
   // On phones one view shows at a time: the agents, or the open panel.
   mobileView: 'agents' | 'panel';
   workspaceName: string; // the signed-in workspace, shown in the header
@@ -43,6 +45,7 @@ export interface State {
   files: Record<string, FileEntry[] | { error: string }>; // "projectId:dir" -> listing
   boards: BoardSummary[]; // the workspace's Draw boards, oldest first
   boardId: number | null; // the board open in the Draw tab
+  nodes: NodeList | null; // the workspace's nodes, loaded when the Nodes tab opens
   boardChanges: Record<number, number[]>; // boards agents changed while not shown: board -> agents (live only, not kept)
   openDirs: Set<string>; // expanded "projectId:dir" keys in the Files panel
 
@@ -95,6 +98,7 @@ function initial(): State {
     secretsVersion: 0,
     skillsVersion: 0,
     dangerAgent: null,
+    terminateAsk: null,
     mobileView: 'agents',
     workspaceName: '',
     projects: [],
@@ -102,6 +106,7 @@ function initial(): State {
     files: {},
     boards: [],
     boardId: null,
+    nodes: null,
     boardChanges: {},
     openDirs: new Set(),
     agentsOnly: false,
