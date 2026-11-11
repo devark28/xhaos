@@ -17,6 +17,7 @@ import type { Agent } from '../types.ts';
 import { DangerBadge, dangerLeft, dangerOff, openDanger } from './Danger.tsx';
 import { ConfirmDialog } from './Confirm.tsx';
 import { terminatePrompt } from '../terminate-confirm.ts';
+import { TitleProposal } from './TitleProposal.tsx';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 
@@ -150,6 +151,7 @@ function Child({ agent }: { agent: Agent }) {
   return (
     <div {...stylex.props(body.child)}>
       <Header agent={agent} closed={closed} nested />
+      <TitleProposal agent={agent} nested />
       {!closed && <>
         <Transcript agent={agent} nested />
         <div {...stylex.props(body.childExtras)}><QuestionSummary agent={agent} /></div>
@@ -176,6 +178,7 @@ export const AgentCard = memo(function AgentCard({ agent }: { agent: Agent }) {
   return (
     <article data-agent-card={agent.id} {...stylex.props(body.card)}>
       <Header agent={agent} closed={closed} nested={false} />
+      <TitleProposal agent={agent} />
       {!closed && (
         <div {...stylex.props(body.body)}>
           <Transcript agent={agent} />

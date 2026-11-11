@@ -21,6 +21,7 @@ import { Secrets } from './Secrets.tsx';
 import { Skills } from './Skills.tsx';
 import { WebSettings } from './WebSettings.tsx';
 import { ClassifierSettings } from './ClassifierSettings.tsx';
+import { AgentSettings } from './AgentSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { BoardList } from './Boards.tsx';
@@ -407,7 +408,7 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'usage' | 'tools' | 'skills' | 'secrets' | 'mcp-access' | 'dictation' | 'appearance' | 'security' | 'developer';
+type SectionId = 'models' | 'agents' | 'usage' | 'tools' | 'skills' | 'secrets' | 'mcp-access' | 'dictation' | 'appearance' | 'security' | 'developer';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
@@ -452,6 +453,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
       {version ? <>
         <Section id="models" title="Models" summary={providers ? `${providers} provider${providers > 1 ? 's' : ''}` : 'none set up'} open={open.has('models')} onToggle={() => toggle('models')}>
           <Providers message={message} testing={testing} />
+        </Section>
+        <Section id="agents" title="Agents" summary="what agents may do without asking" open={open.has('agents')} onToggle={() => toggle('agents')}>
+          <AgentSettings />
         </Section>
         <Section id="usage" title="Usage and cost" summary={usageSummary} open={open.has('usage')} onToggle={() => toggle('usage')}>
           <UsagePanel />
