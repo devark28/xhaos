@@ -2,6 +2,7 @@
 // Pure functions over plain objects, so a framework port can reuse them.
 import { modelLabel } from './models.ts';
 import { boardAdded } from './board.ts';
+import { isPolicy } from './policy.ts';
 import type { Agent, Attachment, BackendAgent, BackendChannel, BackendEvent, Channel, ChannelMessage, Delta, Entry, ModelChoice, Provider, QuestionOption, Snapshot, Status, ToolData, TranscriptPage, Workspace } from './types.ts';
 
 const statuses: Record<string, Status> = { idle: 'idle', running: 'running', attention: 'waiting', paused: 'paused', complete: 'complete', terminated: 'terminated' };
@@ -218,6 +219,12 @@ export function applyEvent(view: Workspace, event: BackendEvent): Change | null 
     const agent = byId.get(event.agentId);
     if (!agent) return null;
     agent.danger = event.data || undefined;
+    return { tree: true, agentId: agent.id };
+  }
+  if (event.kind === 'agent.policy') { // you changed its policy; the history note is an agent.message
+    const agent = byId.get(event.agentId);
+    if (!agent || !isPolicy(event.data?.policy)) return null;
+    agent.policy = event.data.policy;
     return { tree: true, agentId: agent.id };
   }
   if (event.kind === 'agent.title') { // the model's title replaces the prompt's first line, or a rename the agent proposed

@@ -14,10 +14,10 @@ import { useApp, findAgentIn } from './state/store.ts';
 import { toggleAgent, toggleRecipient, revealAgent, terminateAsk, stopAgent } from './state/agents.ts';
 import { showQuestions } from './state/panels.ts';
 import type { Agent } from '../types.ts';
-import { DangerBadge, dangerLeft, dangerOff, openDanger } from './Danger.tsx';
 import { ConfirmDialog } from './Confirm.tsx';
 import { terminatePrompt } from '../terminate-confirm.ts';
 import { TitleProposal } from './TitleProposal.tsx';
+import { ApprovalItems, PolicyLabel, closeMenu } from './PolicyMenu.tsx';
 
 export const labels = { idle: 'Idle', running: 'Running', waiting: 'Needs you', paused: 'Paused', complete: 'Complete', terminated: 'Terminated' };
 
@@ -47,7 +47,6 @@ function HeaderButton({ agent, closed, nested, attached }: { agent: Agent; close
       {/* The project only when there are several; the model lives in the footer. */}
       {(project && !nested) || agent.sample ? <span data-role {...stylex.props(header.role, nested && header.roleNested)}>{[!nested && project, agent.sample && 'sample'].filter(Boolean).join(' · ')}</span> : null}
       <span data-title {...stylex.props(header.title, nested && header.titleNested)}>{agent.title}</span>
-      <DangerBadge agent={agent} />
     </button>
   );
 }
@@ -89,10 +88,12 @@ function AgentMenu({ agent, attached }: { agent: Agent; attached: boolean }) {
       <div {...stylex.props(menu.items)}>
         <Button variant="menu" data-menu-target={agent.id} onClick={event => { close(event); toggleRecipient(agent.id); }}>{attached ? 'Detach from' : 'Attach to'} composer</Button>
         {backend && !agent.sample && agent.status === 'running' && <Button variant="menu" data-stop={agent.id} onClick={event => { close(event); stopAgent(agent.id); }}>Stop</Button>}
-        {backend && !agent.sample && agent.status !== 'terminated' && (dangerLeft(agent) > 0
-          ? <Button variant="menu" data-danger-off={agent.id} onClick={event => { close(event); void dangerOff(agent.id); }}>Turn off dangerously allow</Button>
-          : <Button variant="menu" data-danger={agent.id} onClick={event => { close(event); openDanger(agent.id); }}>Dangerously allow…</Button>)}
-        {/* Set apart from Dangerously allow… above it, and it asks first. */}
+        {/* Approvals: manual, auto, dangerously allow; access and commits (PolicyMenu.tsx). */}
+        {backend && !agent.sample && agent.status !== 'terminated' && <>
+          <div role="separator" {...stylex.props(menu.divider)} />
+          <ApprovalItems agent={agent} close={closeMenu} />
+        </>}
+        {/* Set apart from the approvals above it, and it asks first. */}
         <div role="separator" {...stylex.props(menu.divider)} />
         <Button variant="menu" data-terminate={agent.id} onClick={event => { close(event); terminateAsk.ask(agent.id); }}>Terminate agent…</Button>
       </div>
@@ -127,6 +128,7 @@ function Header({ agent, closed, nested }: { agent: Agent; closed: boolean; nest
       {nested && <span aria-hidden="true" {...stylex.props(header.branch)} />}
       <HeaderButton agent={agent} closed={closed} nested={nested} attached={attached} />
       <SubagentChips agent={agent} />
+      <PolicyLabel agent={agent} />
       {!['idle', 'paused', 'terminated'].includes(agent.status) && <span {...stylex.props(header.status, nested && header.statusNested)}><Badge agent={agent} /></span>}
       <Disclosure agent={agent} closed={closed} />
       {nested && decision && <DecisionButtons agent={agent} />}
@@ -281,6 +283,8 @@ const menu = stylex.create({
     right: 0,
     top: 'calc(100% + 3px)',
     minWidth: 175,
+    width: 'max-content',
+    maxWidth: 'min(300px, calc(100vw - 32px))',
     padding: 4,
     backgroundColor: colors.selected,
     borderRadius: 4,

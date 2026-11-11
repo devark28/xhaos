@@ -520,6 +520,13 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 			r.stopped(ws, id)
 			return
 		}
+		if step > 0 {
+			// The owner may have changed the policy during the turn: the
+			// next calls (and the system prompt that names it) use the new one.
+			if fresh, err := r.agents.Get(ws, id); err == nil {
+				a.Policy = fresh.Policy
+			}
+		}
 		history, err := r.agents.Messages(ws, id)
 		if err != nil {
 			slog.Error("run: load transcript", "agent", id, "err", err)
@@ -678,6 +685,17 @@ func lastReply(conv []agent.MessageData) int {
 	return -1
 }
 
+// hinted reports whether one of the agent's calls already carries
+// classifier.ManualHint.
+func hinted(states map[string]agent.ToolData) bool {
+	for _, d := range states {
+		if strings.Contains(d.Reason, classifier.ManualHint) {
+			return true
+		}
+	}
+	return false
+}
+
 // settle moves a reply's tool calls through the policy gate. Calls the gate
 // allows or denies are decided at once; the rest wait for the owner. When
 // every call is decided it runs the allowed ones in order, records their
@@ -750,6 +768,11 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				} else if why != "" {
 					reason = "the local classifier asks: " + why
 				}
+			}
+			// Manual review alone kept the classifier out: say so, once per
+			// agent, so the owner knows why it asked.
+			if verdict == policy.Ask && by == "policy" && classifier.OnlyManual(cc) && r.Classifier.On() && !hinted(states) {
+				reason += "; " + classifier.ManualHint
 			}
 			d.Reason = reason
 			switch verdict {

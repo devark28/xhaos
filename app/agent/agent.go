@@ -208,7 +208,7 @@ type CreateRequest struct {
 	Role           string         `json:"role,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
-	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else policy.Default
+	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else the workspace's default (AgentSettings)
 	Attachments    []string       `json:"attachments,omitempty"` // uploaded attachment IDs, sent with Prompt
 	// Via: see MessageData.Via. Never read from a client call (json "-").
 	Via string `json:"-"`
@@ -306,6 +306,12 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 		self_rename  INTEGER NOT NULL DEFAULT 0
 	)`); err != nil {
 		return nil, fmt.Errorf("migrate agent settings: %w", err)
+	}
+	// The policy of new top-level agents (settings.go); empty: policy.Default.
+	for _, col := range []string{"default_access", "default_review", "default_commit"} {
+		if err := addColumn(db, "agent_settings", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return nil, fmt.Errorf("migrate agent settings: %w", err)
+		}
 	}
 	return &Service{db: db, publish: publish, now: time.Now}, nil
 }
@@ -500,7 +506,8 @@ func TitleFrom(prompt string) string {
 }
 
 // Create creates an agent, or a subagent when ParentID is set. A subagent
-// inherits its parent's policy and can only be restricted further.
+// inherits its parent's policy and can only be restricted further; a
+// top-level agent without a policy gets the workspace's default.
 func (s *Service) Create(req CreateRequest) (Agent, error) {
 	req.Title = strings.TrimSpace(req.Title)
 	auto := 0
@@ -516,7 +523,7 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 		if _, err := workspace.Get(tx, req.WorkspaceID); err != nil {
 			return err
 		}
-		p := policy.Default()
+		p := defaultPolicy(tx, req.WorkspaceID)
 		if req.ParentID != 0 {
 			parent, err := get(tx, req.WorkspaceID, req.ParentID)
 			if err != nil {

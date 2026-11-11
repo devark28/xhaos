@@ -14,6 +14,8 @@
 //   - "rename to <title>": propose that title for itself with propose_title
 //     (it never waits), then go on;
 //   - "write" or "note": write sim-notes.md (gated like any write);
+//   - "lint": run `gofmt -l .` (not a read: it asks under manual review, and
+//     the command classifier's built-in list allows it under auto review);
 //   - "run": run `git status` (a read-only command);
 //   - "board": list the boards (creating one if there are none), add a note
 //     and a small diagram to the first, plus the image at "image <path>"
@@ -276,6 +278,9 @@ func next(turn llm.Turn) llm.Result {
 	if wants(low, "write", "note") && has(turn, "write_file") && len(e.called("write_file")) == 0 {
 		return use("Writing my notes to sim-notes.md.", call(id("write"), "write_file", map[string]any{
 			"path": "sim-notes.md", "content": "# Notes (simulated agent)\n\nTask: " + firstLine(task) + "\n\nLooked at " + seen + ".\n"}))
+	}
+	if wants(low, "lint") && has(turn, "bash") && len(e.called("bash")) == 0 {
+		return use("Checking the formatting.", call(id("lint"), "bash", map[string]any{"command": "gofmt -l ."}))
 	}
 	if wants(low, "run") && has(turn, "bash") && len(e.called("bash")) == 0 {
 		return use("Checking the repository state.", call(id("run"), "bash", map[string]any{"command": "git status --short"}))
