@@ -31,6 +31,7 @@ import (
 	"github.com/devark28/xhaos/app/idempotency"
 	"github.com/devark28/xhaos/app/llm"
 	"github.com/devark28/xhaos/app/llm/anthropic"
+	"github.com/devark28/xhaos/app/llm/claudecli"
 	"github.com/devark28/xhaos/app/prefs"
 	"github.com/devark28/xhaos/app/provider"
 	"github.com/devark28/xhaos/app/run"
@@ -162,9 +163,9 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	adapters := opts.Adapters
 	if adapters == nil {
-		adapters = []llm.Adapter{anthropic.Adapter{}, openai.Adapter{}, sim.Adapter{}}
+		adapters = []llm.Adapter{anthropic.Adapter{}, openai.Adapter{}, claudecli.Adapter{}, sim.Adapter{}}
 	}
-	providers, err := provider.NewStore(db, box, adapters, map[string][]string{anthropic.Kind: anthropic.DefaultModels, sim.Kind: sim.Models})
+	providers, err := provider.NewStore(db, box, adapters, map[string][]string{anthropic.Kind: anthropic.DefaultModels, claudecli.Kind: claudecli.DefaultModels, sim.Kind: sim.Models})
 	if err != nil {
 		return nil, err
 	}

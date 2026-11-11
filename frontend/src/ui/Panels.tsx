@@ -267,6 +267,7 @@ const presets = {
   openai: { id: 'openai', kind: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', key: 'sk-…' },
   deepseek: { id: 'deepseek', kind: 'openai', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', key: 'sk-…' },
   local: { id: 'local', kind: 'openai', name: 'Local (Ollama)', baseUrl: 'http://localhost:11434/v1', key: 'none needed' },
+  claude: { id: 'claude', kind: 'claude-cli', name: 'Claude subscription', baseUrl: '', key: 'none needed' },
   sim: { id: 'sim', kind: 'sim', name: 'Simulated', baseUrl: '', key: 'none needed' },
   other: { id: '', kind: 'openai', name: '', baseUrl: '', key: 'if the endpoint needs one' },
 } as const;
@@ -289,13 +290,13 @@ function Providers({ message, testing }: { message?: string; testing?: string })
   const edit = (id: string) => {
     const p = providers.find(x => x.id === id);
     if (!p) return;
-    setPreset(p.kind === 'anthropic' ? 'anthropic' : p.kind === 'sim' ? 'sim' : 'other');
+    setPreset(p.kind === 'anthropic' ? 'anthropic' : p.kind === 'claude-cli' ? 'claude' : p.kind === 'sim' ? 'sim' : 'other');
     setEditingId(p.id);
     setForm({ id: p.id, kind: p.kind, name: p.name, baseUrl: p.baseUrl || '', apiKey: '', models: p.models.join(', '), context: p.contextTokens ? String(p.contextTokens) : '' });
   };
   const save = async () => { if (preset && await saveProvider(form)) choose(''); };
   const onEnter = (event: React.KeyboardEvent) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); save(); } };
-  const openai = form.kind === 'openai', simulated = form.kind === 'sim';
+  const openai = form.kind === 'openai', simulated = form.kind === 'sim', subscription = form.kind === 'claude-cli';
   return (
     <>
       <P muted>Providers give agents their models. Each new agent uses the model picked next to the composer.</P>
@@ -303,7 +304,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
         {providers.length ? providers.map(p => (
           <div key={p.id} data-provider={p.id} {...stylex.props(provider.row)}>
             <div>
-              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind === 'sim' ? 'simulated, no tokens' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}{p.contextTokens ? ` · ${p.contextTokens.toLocaleString()} tokens` : ''}</span>
+              <strong>{p.name}</strong> <span {...stylex.props(shell.muted)}>{p.kind === 'openai' ? 'OpenAI-compatible' : p.kind === 'sim' ? 'simulated, no tokens' : p.kind === 'claude-cli' ? 'Claude Code, your Claude subscription' : p.kind}{p.baseUrl ? ` · ${p.baseUrl}` : ''}{p.kind === 'claude-cli' ? '' : p.hasKey ? ` · key ${p.keyHint}` : ' · no key'}{p.contextTokens ? ` · ${p.contextTokens.toLocaleString()} tokens` : ''}</span>
               <div {...stylex.props(shell.muted, provider.models)}>{p.models.join(', ')}</div>
             </div>
             <div {...stylex.props(provider.actions)}>
@@ -322,6 +323,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
           <select id="provider-preset" aria-label="Provider preset" value={preset} onChange={event => choose(event.target.value as PresetName | '')} {...stylex.props(provider.input)}>
             <option value="">Choose a provider…</option>
             <option value="anthropic">Anthropic</option>
+            <option value="claude">Claude subscription (Claude Code)</option>
             <option value="openai">OpenAI</option>
             <option value="deepseek">DeepSeek</option>
             <option value="local">Local (Ollama)</option>
@@ -340,7 +342,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
             <label htmlFor="provider-url" {...stylex.props(provider.fieldLabel)}>Base URL</label>
             <input id="provider-url" value={form.baseUrl} onChange={set('baseUrl')} placeholder="https://…/v1 (the part before /chat/completions)" autoComplete="off" spellCheck="false" {...stylex.props(provider.input)} />
           </>}
-          {!simulated && <>
+          {!simulated && !subscription && <>
           <label htmlFor="provider-key" {...stylex.props(provider.fieldLabel)}>API key</label>
           <input id="provider-key" type="text" name="xhaos-provider-key" value={form.apiKey} onChange={set('apiKey')} autoComplete="off" autoCapitalize="off" spellCheck="false" data-1p-ignore="" data-lpignore="true" data-bwignore=""
             placeholder={editing?.hasKey ? 'Leave empty to keep the saved key' : presets[preset].key} {...stylex.props(provider.input, provider.key)} />
@@ -352,6 +354,7 @@ function Providers({ message, testing }: { message?: string; testing?: string })
           <input id="provider-context" value={form.context} onChange={set('context')} inputMode="numeric" autoComplete="off"
             placeholder={`Tokens before older messages are compacted; empty: ${openai ? '128,000' : '200,000'}`} {...stylex.props(provider.input)} />
         </div>
+        {subscription && <P muted>Runs the Claude Code program on the server's machine, signed in as the user the server runs as (`claude auth login`). No API key is kept here; Test checks the login. Plain model names get a 200,000-token window. For 1M, name the model with a [1m] suffix and set Context to 1000000.</P>}
         {simulated && <P muted>A scripted stand-in for a model: agents list the project, read a file, and then act on words in the task. "split" or "spawn" starts two subagents, "contact #N" opens a channel with agent #N, "ask" asks you a question, "write" writes sim-notes.md, and "run" runs git status. Every approval and channel works as with a real model. No provider is called and nothing is billed. scripted-fast skips the typing delay.</P>}
         {clash && <p {...stylex.props(provider.message)}>A provider with ID “{form.id.trim()}” exists: saving updates it (an empty key or model list keeps its own).</p>}
         <div {...stylex.props(provider.formActions)}>

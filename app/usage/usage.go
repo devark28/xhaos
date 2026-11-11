@@ -215,11 +215,14 @@ func (s *Service) Usage(workspaceID string) (Report, error) {
 			p = s.price(r.model)
 			prices[r.model] = p
 		}
+		if r.kind == "claude-cli" {
+			p = nil // a subscription is flat-rate: API prices would show money that is never charged
+		}
 		t := r.t
 		if p != nil {
 			c := cost(*p, t)
 			t.Cost = &c
-		} else if r.kind != "sim" {
+		} else if r.kind != "sim" && r.kind != "claude-cli" {
 			rep.Unpriced += t.Input + t.Output
 		}
 		key := r.provider + "/" + r.model

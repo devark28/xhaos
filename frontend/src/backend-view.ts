@@ -249,8 +249,8 @@ export function applyDelta(view: Workspace, delta: Delta): number | null {
   return agent.id;
 }
 
-// usable: Anthropic needs a key; OpenAI-compatible endpoints may run without one.
-const usable = (p: Provider) => p.hasKey || p.kind === 'openai' || p.kind === 'sim'; // keyless kinds
+// usable: Anthropic needs a key; OpenAI-compatible endpoints may run without one; Claude Code holds its own login.
+const usable = (p: Provider) => p.hasKey || p.kind === 'openai' || p.kind === 'claude-cli' || p.kind === 'sim'; // keyless kinds
 // pickerChoices lists "provider/model" options from configured providers.
 export const pickerChoices = (providers: Provider[]): ModelChoice[] => providers.filter(usable).flatMap(p =>
   p.models.map(model => ({ id: `${p.id}/${model}`, provider: p.id, model, label: providers.length > 1 ? `${modelLabel(p.kind, model)} · ${p.name}` : modelLabel(p.kind, model) })));
