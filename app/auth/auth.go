@@ -527,6 +527,15 @@ func (l *Limiter) Fail(addr string, now time.Time) {
 	if l.seen == nil {
 		l.seen = map[string]*strikes{}
 	}
+	// Addresses quiet for a quarter of an hour start over anyway: drop them
+	// now and then, so the map does not grow without end.
+	if len(l.seen) >= 1024 {
+		for a, s := range l.seen {
+			if now.Sub(s.last) > 15*time.Minute {
+				delete(l.seen, a)
+			}
+		}
+	}
 	s := l.seen[addr]
 	if s == nil || now.Sub(s.last) > 15*time.Minute {
 		s = &strikes{}
@@ -659,7 +668,7 @@ const NodePath = "/xhaos/node"
 
 // MCPPaths are where MCP clients connect (package mcpserver): they carry an
 // MCP access token instead of a session, checked by that handler.
-var MCPPaths = []string{"/xhaos/mcp", "/mcp", "/mcp/"}
+var MCPPaths = []string{"/xhaos/mcp", "/xhaos/mcp/", "/mcp", "/mcp/"}
 
 func isMCP(path string) bool {
 	for _, p := range MCPPaths {
