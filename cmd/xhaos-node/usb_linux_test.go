@@ -5,13 +5,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+
 	"github.com/devark28/xhaos/app/node/client"
 	"github.com/devark28/xhaos/app/node/usbconf"
+	"github.com/devark28/xhaos/app/node/wire"
 )
 
 func stick(t *testing.T, conf string) string {
@@ -261,18 +267,101 @@ func TestCommitPartly(t *testing.T) {
 	}
 }
 
-// A node installed with --no-join joins by stick into the folder its unit
-// was given (install-node.sh --root), not the default.
-func TestUnitRoot(t *testing.T) {
-	unit := filepath.Join(t.TempDir(), "xhaos-node.service")
-	os.WriteFile(unit, []byte("[Service]\nUser=xhaos-node\nReadWritePaths=/var/lib/xhaos-node /srv/work\nPrivateTmp=yes\n"), 0o644)
-	if got := unitRoot(unit, "/var/lib/xhaos-node"); got != "/srv/work" {
-		t.Errorf("root = %q", got)
+// A node installed with --no-join joins by stick with the folder, devices
+// and sandbox mode install-node.sh kept in join.conf.
+func TestReadJoinConf(t *testing.T) {
+	joinConfOwner = os.Getuid()
+	t.Cleanup(func() { joinConfOwner = 0 })
+	write := func(content string, mode os.FileMode) string {
+		path := filepath.Join(t.TempDir(), "join.conf")
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(path, mode)
+		return path
 	}
-	if got := unitRoot(unit, "/other/state"); got != "" {
-		t.Errorf("another state's root = %q", got)
+	c, err := readJoinConf(write("# Managed by install-node.sh\nroot=/srv/work\ndevice=/dev/video0\ndevice=/dev/ttyUSB0\nunsandboxed=no\n", 0o644))
+	if err != nil || c.Root != "/srv/work" || strings.Join(c.Devices, ",") != "/dev/video0,/dev/ttyUSB0" || c.Unsandboxed {
+		t.Errorf("read %+v %v", c, err)
 	}
-	if got := unitRoot(filepath.Join(t.TempDir(), "none"), "/var/lib/xhaos-node"); got != "" {
-		t.Errorf("no unit = %q", got)
+	if c, err := readJoinConf(write("unsandboxed=yes\n", 0o644)); err != nil || !c.Unsandboxed {
+		t.Errorf("unsandboxed %+v %v", c, err)
+	}
+	if c, err := readJoinConf(filepath.Join(t.TempDir(), "none")); err != nil || c.Root != "" || len(c.Devices) > 0 {
+		t.Errorf("missing file %+v %v", c, err)
+	}
+	for name, content := range map[string]string{
+		"device outside /dev": "device=/etc/shadow\n",
+		"device with ..":      "device=/dev/../etc/shadow\n",
+		"unknown line":        "server=https://evil.example\n",
+		"bad unsandboxed":     "unsandboxed=maybe\n",
+	} {
+		if _, err := readJoinConf(write(content, 0o644)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if _, err := readJoinConf(write("root=/srv/work\n", 0o666)); err == nil {
+		t.Error("a file others can write was accepted")
+	}
+	link := filepath.Join(t.TempDir(), "join.conf")
+	os.Symlink(write("root=/srv/work\n", 0o644), link)
+	if _, err := readJoinConf(link); err == nil {
+		t.Error("a symlink was accepted")
+	}
+	joinConfOwner = os.Getuid() + 1
+	if _, err := readJoinConf(write("root=/srv/work\n", 0o644)); err == nil {
+		t.Error("another user's file was accepted")
+	}
+}
+
+// A node installed with --no-join, joined by stick, joins with join.conf's
+// folder, devices and sandbox mode (node.json is not there yet).
+func TestApplyRejoinWithJoinConf(t *testing.T) {
+	joined := make(chan wire.Facts, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		var m wire.Msg
+		if wsjson.Read(r.Context(), conn, &m) != nil || m.Type != wire.TJoin || m.Facts == nil {
+			return
+		}
+		joined <- *m.Facts
+		wsjson.Write(r.Context(), conn, wire.Msg{Type: wire.TJoined, Node: 9, Name: "cam"})
+	}))
+	defer srv.Close()
+
+	state := t.TempDir()
+	root := filepath.Join(state, "work")
+	conf := filepath.Join(t.TempDir(), "join.conf")
+	os.WriteFile(conf, []byte("root="+root+"\ndevice=/dev/video0\nunsandboxed=yes\n"), 0o644)
+	joinConf, joinConfOwner = conf, os.Getuid()
+	t.Cleanup(func() { joinConf, joinConfOwner = "/etc/xhaos-node/join.conf", 0 })
+
+	dir := stick(t, "server="+srv.URL+"\ncode=ABCD-EFGH-JKMN\n")
+	if !applyDir(context.Background(), dir, state) {
+		t.Fatalf("result:\n%s", read(t, filepath.Join(dir, usbconf.ResultName)))
+	}
+	f := <-joined
+	if f.Root != root || strings.Join(f.Devices, ",") != "/dev/video0" || !f.Unsandbox {
+		t.Errorf("joined with %+v", f)
+	}
+	c, _, err := client.Load(state)
+	if err != nil || c.Root != root || strings.Join(c.Devices, ",") != "/dev/video0" || !c.Unsandboxed || c.Node != 9 {
+		t.Errorf("node.json %+v: %v", c, err)
+	}
+
+	// A join.conf someone else could have written is refused.
+	os.Remove(filepath.Join(state, "node.json"))
+	os.Remove(filepath.Join(state, "node.key"))
+	os.Chmod(conf, 0o666)
+	dir = stick(t, "server="+srv.URL+"\ncode=ABCD-EFGH-JKMN\n")
+	if applyDir(context.Background(), dir, state) {
+		t.Fatal("a join.conf others can write was used")
+	}
+	if res := read(t, filepath.Join(dir, usbconf.ResultName)); !strings.Contains(res, "refusing it") || !strings.Contains(res, "Nothing was changed") {
+		t.Errorf("result:\n%s", res)
 	}
 }

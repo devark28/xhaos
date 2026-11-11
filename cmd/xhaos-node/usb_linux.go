@@ -260,10 +260,15 @@ func rejoin(ctx context.Context, r *report, state string, s usbconf.Settings) {
 		server = cur.Server
 	}
 	cfg := client.Config{Server: server, Root: cur.Root, Devices: cur.Devices, Unsandboxed: cur.Unsandboxed}
-	if cfg.Root == "" && loadErr != nil {
-		// Never joined (install-node.sh --no-join): the folder the service
-		// was given, from its unit (root's file, unlike node.json).
-		cfg.Root = unitRoot(serviceUnit, state)
+	if loadErr != nil {
+		// Never joined (install-node.sh --no-join): its folder, devices and
+		// sandbox mode are in join.conf (root's file, unlike node.json).
+		js, err := readJoinConf(joinConf)
+		if err != nil {
+			r.fail("join: %v. Nothing was changed.", err)
+			return
+		}
+		cfg.Root, cfg.Devices, cfg.Unsandboxed = js.Root, js.Devices, js.Unsandboxed
 	}
 	if cfg.Root == "" {
 		cfg.Root = filepath.Join(state, "xhaos-work")
@@ -411,19 +416,58 @@ func (d *stateDir) checkRoot(root string) error {
 // serviceUnit is the unit install-node.sh writes.
 const serviceUnit = "/etc/systemd/system/xhaos-node.service"
 
-// unitRoot is the work folder in unit's "ReadWritePaths=<state> <root>"
-// line; "" when there is none (checkRoot still checks what comes back).
-func unitRoot(unit, state string) string {
-	b, err := os.ReadFile(unit)
-	if err != nil {
-		return ""
+// joinConf is what a node installed with --no-join joins with (written by
+// install-node.sh as root); joinConfOwner is the uid it must belong to.
+var (
+	joinConf      = "/etc/xhaos-node/join.conf"
+	joinConfOwner = 0
+)
+
+// readJoinConf reads joinConf: root=, device= (repeated) and
+// unsandboxed=yes|no lines. A missing file gives nothing; one that is not
+// a small plain file of its owner, writable by others, or has an unknown
+// line or a device outside /dev, is refused.
+func readJoinConf(path string) (client.Config, error) {
+	var c client.Config
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return c, nil
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if rest, ok := strings.CutPrefix(line, "ReadWritePaths="+state+" "); ok {
-			return strings.TrimSpace(rest)
+	if err != nil {
+		return c, fmt.Errorf("%s: %w", path, err)
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return c, err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || int(st.Uid) != joinConfOwner || st.Mode&0o022 != 0 || st.Size > 8<<10 {
+		return c, fmt.Errorf("%s is not root's own small file: refusing it", path)
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return c, err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		key, value, _ := strings.Cut(line, "=")
+		switch {
+		case line == "" || strings.HasPrefix(line, "#"):
+		case key == "root":
+			c.Root = value
+		case key == "device":
+			if !strings.HasPrefix(value, "/dev/") || filepath.Clean(value) != value || strings.Contains(value, "/../") {
+				return c, fmt.Errorf("%s: device %q is not a plain path under /dev", path, value)
+			}
+			c.Devices = append(c.Devices, value)
+		case key == "unsandboxed" && (value == "yes" || value == "no"):
+			c.Unsandboxed = value == "yes"
+		default:
+			return c, fmt.Errorf("%s: unknown line %q", path, line)
 		}
 	}
-	return ""
+	return c, nil
 }
 
 func stagedName(name string) string { return "." + name + ".rejoin" }

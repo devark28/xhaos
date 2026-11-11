@@ -83,10 +83,12 @@ Removing a node in Xhaos forgets its key: its next connection is refused. `xhaos
 
 `install-node.sh --no-join` does everything except joining: `xhaos-node`, its user and folders, and the service, which waits for the node to join (`ConditionPathExists=/var/lib/xhaos-node/node.json`). It is for a machine that joins later, and for baking `xhaos-node` into an image. The node then joins in one of two ways:
 
-- **With a USB stick:** the install needs `--usb-config`. Plug in an `XHAOS` stick whose `xhaos-node.conf` has `server=` and `code=` (see "USB stick config" below). `apply-usb` joins into the folder the service was given (`--root`, read from the unit), then starts the service.
+- **With a USB stick:** the install needs `--usb-config`. Plug in an `XHAOS` stick whose `xhaos-node.conf` has `server=` and `code=` (see "USB stick config" below). `apply-usb` joins, then starts the service.
 - **By hand:** run `install-node.sh --server URL --code CODE` again.
 
-In an image build (a chroot, where systemd is installed but not running), `--no-join` sees that systemd is not running. It then writes and enables the units without starting anything or reloading systemd. It does not check the sandbox either, because the kernel running is the build host's. Instead it installs `bubblewrap` with apt, since Raspberry Pi kernels have no Landlock; the node picks its sandbox when it starts on its own kernel. `--code` does not go with `--no-join`.
+Either way the node joins with the `--root`, `--device` and `--unsandboxed` given to `--no-join`. They are kept in `/etc/xhaos-node/join.conf`, a root-owned file (`root=`, `device=` lines, `unsandboxed=yes|no`), because `node.json` does not exist until the node joins and belongs to the node's user. `apply-usb` and the installer both refuse that file if it is not root's or others can write to it, if it has an unknown line, or if a device is not a plain path under `/dev`. On a later run, `--root` or `--device` replaces the kept value (all of the kept devices at once), and `--sandboxed` undoes a kept `--unsandboxed`.
+
+An image build runs in a chroot. The installer detects this with `systemd-detect-virt --chroot`; without that tool, it checks whether `/` is the same as PID 1's root. In a chroot it requires `--no-join`, because the node joins on its own machine. It then writes and enables the units, but it starts nothing and does not reload systemd, since a `/run` bound from the host would reach the host's systemd. It does not check the sandbox either: the kernel running is the build host's. Instead it installs `bubblewrap` with apt, because Raspberry Pi kernels have no Landlock. The node picks its sandbox when it starts on its own kernel. `--server` and `--code` do not go with `--no-join`.
 
 ```sh
 # in the image's chroot (as root), e.g. an rpi-image-gen layer

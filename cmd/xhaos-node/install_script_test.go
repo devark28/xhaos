@@ -146,3 +146,47 @@ as_service /usr/local/bin/xhaos-node sandbox-check
 		t.Error("the unit no longer takes its confinement from confinement()")
 	}
 }
+
+// --no-join keeps --root, --device and --unsandboxed in join.conf; a later
+// run (the join) reads them back, its own flags winning, and refuses a file
+// that is not root's or has a device outside /dev.
+func TestInstallScriptJoinConf(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "etc", "join.conf")
+	run := func(call string) (string, error) {
+		out, _, err := installScript(t, t.TempDir(), `JOIN_CONF=$3 ROOT_UID=$(id -u) DEVICES_GIVEN=no
+`+call, conf)
+		return out, err
+	}
+	if out, err := run(`ROOT=/srv/work DEVICES=" /dev/video0 /dev/ttyUSB0" UNSANDBOXED=yes; save_join_conf`); err != nil {
+		t.Fatalf("save: %v %s", err, out)
+	}
+	if err := os.Chmod(conf, 0o644); err != nil { // the script's chmod is recorded, not run
+		t.Fatal(err)
+	}
+	show := `; echo "root=$ROOT devices=$DEVICES unsandboxed=$UNSANDBOXED"`
+	for _, c := range []struct{ call, want string }{
+		{`ROOT="" DEVICES="" UNSANDBOXED=""; load_join_conf` + show, "root=/srv/work devices= /dev/video0 /dev/ttyUSB0 unsandboxed=yes"},
+		{`ROOT=/other DEVICES=" /dev/video2" DEVICES_GIVEN=yes UNSANDBOXED=no; load_join_conf` + show, "root=/other devices= /dev/video2 unsandboxed=no"},
+	} {
+		if out, err := run(c.call); err != nil || strings.TrimSpace(out) != c.want {
+			t.Errorf("%s:\n got %q %v\nwant %q", c.call, out, err, c.want)
+		}
+	}
+	os.WriteFile(conf, []byte("device=/etc/shadow\n"), 0o644)
+	if out, err := run(`load_join_conf`); err == nil {
+		t.Errorf("a device outside /dev was read: %s", out)
+	}
+	os.WriteFile(conf, []byte("server=https://evil.example\n"), 0o644)
+	if out, err := run(`load_join_conf`); err == nil {
+		t.Errorf("an unknown line was read: %s", out)
+	}
+	os.WriteFile(conf, []byte("root=/srv/work\n"), 0o644)
+	os.Chmod(conf, 0o664)
+	if out, err := run(`load_join_conf`); err == nil || !strings.Contains(out, "writable by others") {
+		t.Errorf("a group-writable join.conf was read: %v %s", err, out)
+	}
+	os.Chmod(conf, 0o644)
+	if out, err := run(`ROOT_UID=$(($(id -u) + 1)); load_join_conf`); err == nil || !strings.Contains(out, "not root's") {
+		t.Errorf("another user's join.conf was read: %v %s", err, out)
+	}
+}
