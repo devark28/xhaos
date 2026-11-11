@@ -193,3 +193,32 @@ func TestNoNetDeniesOtherFamilies(t *testing.T) {
 		t.Errorf("NoNet: AF_NETLINK socket was denied; it must stay open for interface queries")
 	}
 }
+
+// netlinkProbe prints "denied" when socket(AF_NETLINK, SOCK_RAW, protocol)
+// gives EACCES or EPERM (the filter's answer), "opened" when it succeeds.
+const netlinkProbe = `import socket, sys
+try:
+    socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, int(sys.argv[1]))
+    print("opened")
+except PermissionError:
+    print("denied")
+except OSError as e:
+    print("error", e.errno)
+`
+
+// Under no-network, netlink stays open only for the kernel's route queries
+// (NETLINK_ROUTE, protocol 0). Other protocols reach other parts of the
+// kernel: NETLINK_USERSOCK (2) talks to user-space daemons.
+func TestNoNetNetlinkOnlyRoute(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "netlink.py"), []byte(netlinkProbe), 0o644)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "c")}
+	for _, mode := range []string{"nonet", "sealed"} {
+		if got := runIn(t, c, dir, mode, "netlink.py", "2"); got != "denied" {
+			t.Errorf("%s: NETLINK_USERSOCK socket %q, want denied", mode, got)
+		}
+		if got := runIn(t, c, dir, mode, "netlink.py", "0"); got != "opened" {
+			t.Errorf("%s: NETLINK_ROUTE socket %q, want opened", mode, got)
+		}
+	}
+}

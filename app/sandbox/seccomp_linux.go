@@ -18,8 +18,8 @@ import (
 // IPPROTO_TCP): a datagram, raw, SCTP or MPTCP socket could carry a secret
 // out, and Landlock's TCP rules do not cover them (sealed commands: a DNS
 // lookup could; their proxy resolves names for them). Where udp is set, only
-// TCP over IPv4 and IPv6 and netlink (the kernel's own interface queries)
-// may be opened: any other family (SMC, vsock, AF_ALG, packet, ...) could
+// TCP over IPv4 and IPv6 and NETLINK_ROUTE (the kernel's own interface
+// queries) may be opened: any other family (SMC, vsock, AF_ALG, packet, ...) could
 // reach the network past Landlock's TCP rules.
 //
 // io_uring (in every mode) is denied outright: it can create, connect and
@@ -48,7 +48,7 @@ func denySockets(udp bool) error {
 	if udp {
 		a.jeq(unix.AF_INET, "inet", "")
 		a.jeq(unix.AF_INET6, "inet", "")
-		a.jeq(unix.AF_NETLINK, "allow", "deny") // the kernel only: no route off the host
+		a.jeq(unix.AF_NETLINK, "netlink", "deny")
 		a.label("inet")
 		a.ld(24)   // type (low half of the second argument)
 		a.and(0xf) // without SOCK_NONBLOCK / SOCK_CLOEXEC
@@ -56,6 +56,12 @@ func denySockets(udp bool) error {
 		a.ld(32) // protocol (low half of the third argument)
 		a.jeq(0, "allow", "")
 		a.jeq(unix.IPPROTO_TCP, "allow", "deny")
+		// Netlink: only NETLINK_ROUTE (the kernel's interface and route
+		// queries). Other protocols reach user-space daemons (USERSOCK) or
+		// other kernel subsystems, so they are denied.
+		a.label("netlink")
+		a.ld(32) // protocol
+		a.jeq(unix.NETLINK_ROUTE, "allow", "deny")
 	}
 	a.label("allow")
 	a.ret(allow)
