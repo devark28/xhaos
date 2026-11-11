@@ -87,6 +87,31 @@ func limits(c Call) bool {
 		FloorIn(c.Root, c.Command) == ""
 }
 
+// ManualHint ends the reason of a command that asks because its agent is on
+// manual review, when the classifier is on and would have been consulted
+// under auto review (OnlyManual). The owner sees it once per agent.
+const ManualHint = "the classifier only decides for agents on auto review — switch this agent to auto to let it decide"
+
+// OnlyManual reports whether manual review alone keeps c from the
+// classifier: the same call by the agent on auto review would pass every
+// hard limit and the deny floor.
+func OnlyManual(c Call) bool {
+	if c.Policy.Review != "manual" {
+		return false
+	}
+	c.Policy.Review = "auto"
+	return limits(c)
+}
+
+// On reports the server-wide switch (false on a nil Classifier or an error).
+func (c *Classifier) On() bool {
+	if c == nil {
+		return false
+	}
+	on, err := c.on()
+	return err == nil && on
+}
+
 // ModelMaxChars is the longest command the model is asked about. A longer one
 // asks without the model: the system prompt is cached, but the command's own
 // tokens process at about 30 a second, so a long one cannot finish within the
