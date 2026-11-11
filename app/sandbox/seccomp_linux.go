@@ -17,7 +17,13 @@ import (
 // sockets fail too unless they are TCP (SOCK_STREAM with protocol 0 or
 // IPPROTO_TCP): a datagram, raw, SCTP or MPTCP socket could carry a secret
 // out, and Landlock's TCP rules do not cover them (sealed commands: a DNS
-// lookup could; their proxy resolves names for them).
+// lookup could; their proxy resolves names for them). Where udp is set, only
+// TCP over IPv4 and IPv6 and netlink (the kernel's own interface queries)
+// may be opened: any other family (SMC, vsock, AF_ALG, packet, ...) could
+// reach the network past Landlock's TCP rules.
+//
+// io_uring (in every mode) is denied outright: it can create, connect and
+// send on sockets without a socket(2) call, so the filter cannot see them.
 func denySockets(udp bool) error {
 	if sysSocket < 0 {
 		return fmt.Errorf("no seccomp filter for %s", runtime.GOARCH)
@@ -25,18 +31,24 @@ func denySockets(udp bool) error {
 	const (
 		allow  = 0x7fff0000
 		denied = unix.SECCOMP_RET_ERRNO | uint32(unix.EACCES)
+		// io_uring: ENOSYS, as on a kernel without it, so libraries fall back.
+		noURing = unix.SECCOMP_RET_ERRNO | uint32(unix.ENOSYS)
 	)
 	var a asm
 	a.ld(4)                       // arch
 	a.jeq(auditArch, "", "deny")  // another ABI (32-bit calls): deny
 	a.ld(0)                       // syscall number
 	a.jge(0x40000000, "deny", "") // x32 numbers: deny
+	a.jeq(sysIoUringSetup, "uring", "")
+	a.jeq(sysIoUringEnter, "uring", "")
+	a.jeq(sysIoUringRegister, "uring", "")
 	a.jeq(uint32(sysSocket), "", "allow")
 	a.ld(16) // domain (low half of the first argument)
 	a.jeq(unix.AF_UNIX, "deny", "")
 	if udp {
 		a.jeq(unix.AF_INET, "inet", "")
-		a.jeq(unix.AF_INET6, "inet", "allow")
+		a.jeq(unix.AF_INET6, "inet", "")
+		a.jeq(unix.AF_NETLINK, "allow", "deny") // the kernel only: no route off the host
 		a.label("inet")
 		a.ld(24)   // type (low half of the second argument)
 		a.and(0xf) // without SOCK_NONBLOCK / SOCK_CLOEXEC
@@ -49,6 +61,8 @@ func denySockets(udp bool) error {
 	a.ret(allow)
 	a.label("deny")
 	a.ret(denied)
+	a.label("uring")
+	a.ret(noURing)
 	prog, err := a.program()
 	if err != nil {
 		return err
@@ -63,6 +77,13 @@ func denySockets(udp bool) error {
 	}
 	return nil
 }
+
+// io_uring's system call numbers: the same on x86-64 and arm64.
+const (
+	sysIoUringSetup    = 425
+	sysIoUringEnter    = 426
+	sysIoUringRegister = 427
+)
 
 // asm builds a classic BPF program with named jump targets ("" means the
 // next instruction), so offsets are worked out rather than counted by hand.

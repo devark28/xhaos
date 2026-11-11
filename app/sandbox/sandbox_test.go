@@ -206,6 +206,12 @@ func TestNoNetPossibleNeedsSandboxAndABI(t *testing.T) {
 	if on.NoNetPossible() != (ABI() >= NetABI) || on.Status().NoNet != on.NoNetPossible() {
 		t.Errorf("auto: NoNetPossible %v, status %v; want the kernel's ABI %d to decide", on.NoNetPossible(), on.Status().NoNet, ABI())
 	}
+	// Under bubblewrap the helper applies no Landlock rules, so TCP stays
+	// open: no-network must not be claimed there, whatever the kernel.
+	bw := Config{Mode: Auto, Enforcer: Bwrap}
+	if bw.NoNetPossible() || bw.Status().NoNet {
+		t.Errorf("bubblewrap: no-network claimed (NoNetPossible %v, status %v); it cannot restrict TCP", bw.NoNetPossible(), bw.Status().NoNet)
+	}
 }
 
 // Commands the classifier allows also get no UDP: a datagram to a local

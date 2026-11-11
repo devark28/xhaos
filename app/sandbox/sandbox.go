@@ -81,9 +81,10 @@ type Status struct {
 // NoNetPossible reports whether commands the classifier allows can be given
 // no network connections: the sandbox is on, and the kernel's Landlock can
 // restrict TCP. Where it cannot, such commands must not run on the model's
-// say-so alone.
+// say-so alone. Under bubblewrap it cannot: the helper applies only the
+// seccomp filter, and bubblewrap shares the network.
 func (c Config) NoNetPossible() bool {
-	return c.Mode != Off && c.Mode != "" && ABI() >= NetABI
+	return c.Mode != Off && c.Mode != "" && c.Enforcer != Bwrap && ABI() >= NetABI
 }
 
 // ABI is the kernel's Landlock ABI version, 0 when Landlock is unavailable.
