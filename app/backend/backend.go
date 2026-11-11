@@ -275,6 +275,14 @@ func assemble(db *sql.DB, dataDir string, opts Options) (*Services, error) {
 	}
 	catalog := tool.NewService()
 	runner.Sandbox = sandbox.Config{Mode: opts.Sandbox, Cache: filepath.Join(dataDir, "sandbox")}
+	// The server's own PATH must not reach into a folder commands can write
+	// (an older installer put the cache's Flutter there); each command's
+	// start checks again for its project.
+	projects, err := project.AllPaths(db)
+	if err != nil {
+		return nil, err
+	}
+	sandbox.GuardPath(append([]string{dataDir, runner.Sandbox.Cache, sandbox.TempRoot()}, projects...)...)
 	risky.Sandbox = runner.Sandbox
 	catalog.Sandbox = runner.Sandbox
 	catalog.More = func() []tool.Info {

@@ -305,6 +305,7 @@ install_flutter() {
   apt_update; apt_install xz-utils zip unzip libglu1-mesa git
   # The flutter tool writes into its own folder, so agents get a copy in the
   # sandbox's shared cache (writable by their commands), you one of your own.
+  # It goes on the commands' PATH only, never on the server's.
   sb=$DATA/sandbox
   run install -d -m 700 -o xhaos -g xhaos "$sb" "$sb/home"
   flutter_at() {
@@ -596,8 +597,10 @@ if [ "$DICTATION" = yes ]; then
 fi
 [ "$WARM" = yes ] && flags="$flags -dictation-url http://127.0.0.1:$DICT_PORT"
 [ "$CLASSIFIER" = yes ] && flags="$flags -classifier-url http://127.0.0.1:$CLS_PORT"
+# Never a folder sandboxed commands can write (the cache's Flutter is one):
+# the server would run what a command planted there. Commands find Flutter
+# on their own PATH (the sandbox adds it).
 path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-[ "$FLUTTER" = yes ] && path="$path:$DATA/sandbox/flutter/bin"
 {
   printf '%s\n' "$MARK"
   printf '[Unit]\nDescription=Xhaos agent workspace\nAfter=network-online.target\nWants=network-online.target\n'

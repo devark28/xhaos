@@ -358,7 +358,18 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 	// Toolchains on PATH that live in the home folder (~/.local/go/bin,
 	// ~/.cargo/bin, …), with their install folder when the entry is a bin/;
 	// never the home folder itself or ~/.local (that holds Xhaos's data).
+	// The server's own PATH must not reach into anything a command can
+	// write (every project's temp folder included): it would run what a
+	// command planted there.
+	GuardPath(append(slices.Clone(p.Write), TempRoot())...)
 	path := os.Getenv("PATH")
+	// Tools for commands only, in the cache: on their PATH, after the
+	// system's (a name found earlier wins).
+	for _, b := range toolBins {
+		if d := filepath.Join(c.Cache, b); isDir(d) {
+			path += string(os.PathListSeparator) + d
+		}
+	}
 	for _, entry := range filepath.SplitList(path) {
 		if entry == "" || !filepath.IsAbs(entry) {
 			continue
@@ -413,7 +424,7 @@ func (c Config) prepare(root string) ([]string, policy, error) {
 // TempDir is the private temp folder for commands in root.
 func TempDir(root string) (string, error) {
 	sum := sha256.Sum256([]byte(root))
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("xhaos-%d", os.Getuid()), "sandboxes", fmt.Sprintf("%s-%x", filepath.Base(root), sum[:4]))
+	dir := filepath.Join(TempRoot(), fmt.Sprintf("%s-%x", filepath.Base(root), sum[:4]))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
