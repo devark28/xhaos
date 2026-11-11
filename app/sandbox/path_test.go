@@ -67,3 +67,58 @@ func TestGuardPathKeepsOtherEntries(t *testing.T) {
 		t.Errorf("PATH = %s", p)
 	}
 }
+
+// Project A's command plants usercustomize.py in its HOME (Python runs it
+// at every start). Python in project B must not run it, and A cannot write
+// into B's cache.
+func TestHomeIsPerProject(t *testing.T) {
+	if ABI() == 0 {
+		t.Skip("no Landlock in this kernel")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3")
+	}
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	os.MkdirAll(a, 0o755)
+	os.MkdirAll(b, 0o755)
+	c := Config{Mode: On, Cache: filepath.Join(dir, "cache")}
+	plant := `d=$(python3 -c 'import site; print(site.getusersitepackages())') && mkdir -p "$d" && echo 'print("PLANTED-RAN")' > "$d/usercustomize.py" && python3 -c 'print("in A")'`
+	out, err := run(t, c, a, plant)
+	if err != nil || !strings.Contains(out, "PLANTED-RAN") {
+		t.Fatalf("the plant did not take in A itself (test setup): %v %s", err, out)
+	}
+	out, err = run(t, c, b, `python3 -c 'print("in B")'`)
+	if err != nil || !strings.Contains(out, "in B") {
+		t.Fatalf("python3 in B: %v %s", err, out)
+	}
+	if strings.Contains(out, "PLANTED-RAN") {
+		t.Error("project A's usercustomize.py ran in project B's python3")
+	}
+	// Nor can A reach B's HOME by its path.
+	out, err = run(t, c, b, `echo $HOME`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bHome := strings.TrimSpace(out)
+	out, err = run(t, c, a, "echo x > "+filepath.Join(bHome, ".npmrc"))
+	if err == nil && bHome != "" {
+		if _, err := os.Stat(filepath.Join(bHome, ".npmrc")); err == nil {
+			t.Errorf("A wrote into B's HOME (%s): %s", bHome, out)
+		}
+	}
+	// HOME, the Go, npm and XDG caches are B's own, not A's.
+	envA, _, err := c.prepare(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envB, _, err := c.prepare(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"HOME=", "GOCACHE=", "GOMODCACHE=", "npm_config_cache=", "XDG_CACHE_HOME="} {
+		if va, vb := envWith(envA, k), envWith(envB, k); len(va) != 1 || len(vb) != 1 || va[0] == vb[0] {
+			t.Errorf("%s shared between projects: A %v, B %v", k, va, vb)
+		}
+	}
+}

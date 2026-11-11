@@ -8,10 +8,21 @@ import (
 	"strings"
 )
 
-// toolBins are folders under Config.Cache with tools for commands only
+// toolFolders are folders under Config.Cache with tools for commands only
 // (Flutter writes into its own folder, so commands get a writable copy).
-// They go on the commands' PATH, never on the server's.
-var toolBins = []string{"flutter/bin"}
+// Their bin/ goes on the commands' PATH, never on the server's.
+var toolFolders = []string{"flutter"}
+
+// toolDirs lists the tool folders present in the cache.
+func (c Config) toolDirs() []string {
+	var out []string
+	for _, b := range toolFolders {
+		if d := filepath.Join(c.Cache, b); isDir(d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
 
 // TempRoot is the folder that holds every project's temp folder (TempDir).
 func TempRoot() string {
