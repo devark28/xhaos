@@ -48,13 +48,15 @@ function toolEntry(data: ToolData, seq: number): Entry {
     return { kind: 'approval', callId: data.callId, state: data.state, text: what, command: write ? data.preview || '' : data.summary, language: write ? 'diff' : 'bash', output: data.reason ? `Asking because ${data.reason}.` : '', seq };
   }
   // A call the local classifier allowed says so, with its reason (see docs/guide.md).
-  const note = (data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : data.by === 'classifier' && data.reason ? data.reason : stateNotes[data.state] || (data.via ? 'allowed' : data.state)) + viaNote(data.via);
+  const note = (data.state === 'denied' ? `denied${data.by === 'policy' ? ` by policy: ${data.reason}` : ''}` : data.by === 'classifier' && data.reason ? data.reason : stateNotes[data.state] || (data.via ? 'allowed' : data.state)) + viaNote(data.via)
+    + (data.run && data.state !== 'denied' ? ", ran Xhaos's own command for it" : '');
   const output = data.state === 'denied' ? '' : data.output || '';
   return {
     kind: write && data.preview && data.state !== 'failed' ? 'diff' : 'tool',
     callId: data.callId, state: data.state,
     text: `${verb}${note ? ` · ${note}` : ''}`,
-    command: data.summary || '',
+    // A commit or push an MCP client allowed: what ran is Xhaos's command.
+    command: (data.state !== 'denied' && data.run) || data.summary || '',
     output: write && data.preview && data.state !== 'failed' ? data.preview : output,
     seq,
   };

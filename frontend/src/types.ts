@@ -209,6 +209,7 @@ export interface ToolData {
   reason?: string;
   output?: string;
   via?: string; // answered or decided by an MCP client: its token's name
+  run?: string; // the command Xhaos ran instead of the agent's (an MCP-approved commit or push)
 }
 
 export interface Snapshot {
