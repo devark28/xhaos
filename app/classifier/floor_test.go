@@ -325,3 +325,28 @@ func TestFloorGitOutsideConfig(t *testing.T) {
 		}
 	}
 }
+
+// A global option git takes a value for (--attr-source HEAD, git 2.40+) must
+// not hide the -C after it, and an unknown one must not either: each line
+// that could enter a folder outside the project through a link, or name one,
+// is refused.
+func TestFloorGitGlobalOptionsHideNoFolder(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	os.MkdirAll(filepath.Join(outside, ".git"), 0o755)
+	os.WriteFile(filepath.Join(outside, ".git", "config"), []byte("[core]\n\tfsmonitor = touch PWNED\n"), 0o644)
+	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(root, ".git", "config"), []byte("[core]\n\tbare = false\n"), 0o644)
+	if err := os.Symlink(outside, filepath.Join(root, "out")); err != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	for _, line := range []string{
+		"git --attr-source HEAD -C out status",
+		"git --unknown-option x -C out status",
+		"git --unknown-option -C /tmp status",
+	} {
+		if why := FloorIn(root, line); why == "" {
+			t.Errorf("FloorIn(%q) = \"\", want a refusal", line)
+		}
+	}
+}

@@ -46,6 +46,12 @@ func GitDriverRisk(root, line string) bool {
 	if drivers {
 		return true
 	}
+	// An option the parser does not know may take the next word as its value,
+	// so a -C after it cannot be read: risky. Without a -C the command cannot
+	// move git (cd is read on its own), so only a -C counts.
+	if _, unknown := gitDirs(plain); unknown && dashC.MatchString(plain) {
+		return true
+	}
 	// A link to a folder outside the project matters only when the command
 	// moves git into it (cd or -C): a plain git command runs in the project.
 	moves := movedTo(plain)
@@ -73,47 +79,93 @@ func entersOutside(root, d string) bool {
 	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// cdTarget matches a cd or pushd and the word after it (empty for a bare cd).
-var cdTarget = regexp.MustCompile(`(?:^|[\s;&|(])(?:cd|pushd)(?:[ \t]+([^\s;&|()]*))?`)
+// dashC matches a -C word: git's folder option, or grep's context count.
+var dashC = regexp.MustCompile(`(?:^|[\s;&|(])-C(?:\s|=|$)`)
+
+// cdArgs matches a cd or pushd and the words after it, up to a command
+// separator (a bare cd has none).
+var cdArgs = regexp.MustCompile(`(?:^|[\s;&|(])(?:cd|pushd)(?:$|[\s;&|()]([^;&|()]*))`)
+
+// cdFolder picks the folder of a cd's words: the first word that is not an
+// option (-P, --) or a redirection (2>/dev/null). cd - goes to the last
+// folder, which is "-" (outside). No word is a bare cd: "" (home).
+func cdFolder(args string) string {
+	for _, w := range strings.Fields(args) {
+		if w == "-" {
+			return w
+		}
+		if strings.HasPrefix(w, "-") || strings.ContainsAny(w, "<>") {
+			continue
+		}
+		return w
+	}
+	return ""
+}
 
 // movedTo lists the folders a command line moves git or the shell to: each
 // cd or pushd target, and each folder git -C names before its subcommand. A
 // bare cd goes to $HOME, so its target is "".
 func movedTo(plain string) []string {
 	var dirs []string
-	for _, m := range cdTarget.FindAllStringSubmatch(plain, -1) {
-		dirs = append(dirs, m[1])
+	for _, m := range cdArgs.FindAllStringSubmatch(plain, -1) {
+		dirs = append(dirs, cdFolder(m[1]))
 	}
-	return append(dirs, gitDirs(plain)...)
+	gitFolders, _ := gitDirs(plain)
+	return append(dirs, gitFolders...)
 }
+
+// globalFlags are git's global options that take no value; globalValues are
+// those that take one, as the next word (git -c a=b, git -C dir) or after =.
+var (
+	globalFlags = map[string]bool{
+		"-p": true, "-P": true, "--paginate": true, "--no-pager": true, "--bare": true,
+		"--no-replace-objects": true, "--no-lazy-fetch": true, "--no-optional-locks": true,
+		"--no-advice": true, "--literal-pathspecs": true, "--glob-pathspecs": true,
+		"--noglob-pathspecs": true, "--icase-pathspecs": true, "--exec-path": true,
+		"--html-path": true, "--man-path": true, "--info-path": true,
+		"--version": true, "--help": true,
+	}
+	globalValues = map[string]bool{
+		"-c": true, "-C": true, "--namespace": true, "--super-prefix": true,
+		"--config-env": true, "--attr-source": true, "--git-dir": true, "--work-tree": true,
+	}
+)
 
 // gitDirs lists the folders that git -C names before the subcommand (git -C
 // a -C b log): the options before it are read, and -C after the subcommand
-// is a flag of that subcommand (git log -C copies), not a folder.
-func gitDirs(plain string) []string {
+// is a flag of that subcommand (git log -C copies), not a folder. unknown
+// reports an option before the subcommand that is not in the lists above: it
+// may take the next word, so the rest of the line cannot be read.
+func gitDirs(plain string) (dirs []string, unknown bool) {
 	words := strings.Fields(strings.NewReplacer(";", " ", "&", " ", "|", " ", "(", " ", ")", " ").Replace(plain))
-	var dirs []string
 	for i, w := range words {
 		if w != "git" && !strings.HasSuffix(w, "/git") {
 			continue
 		}
-	options:
 		for j := i + 1; j < len(words); j++ {
-			switch v := words[j]; {
-			case v == "-C" && j+1 < len(words):
-				dirs = append(dirs, words[j+1])
+			v := words[j]
+			switch {
+			case !strings.HasPrefix(v, "-"):
+				j = len(words) // the subcommand
+			case v == "-C":
+				if j+1 < len(words) {
+					dirs = append(dirs, words[j+1])
+				}
 				j++
 			case strings.HasPrefix(v, "-C="):
 				dirs = append(dirs, v[3:])
-			case v == "-c" || v == "--namespace" || v == "--super-prefix" || v == "--config-env":
+			case globalFlags[v]:
+			case globalValues[v]:
 				j++ // its value is the next word
-			case strings.HasPrefix(v, "-"):
 			default:
-				break options // the subcommand
+				name, _, eq := strings.Cut(v, "=")
+				if !eq || !(globalFlags[name] || globalValues[name]) {
+					return dirs, true
+				}
 			}
 		}
 	}
-	return dirs
+	return dirs, false
 }
 
 // outsideDir reports a folder that may lie outside the project: a leading /,

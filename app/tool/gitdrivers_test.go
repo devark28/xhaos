@@ -518,3 +518,85 @@ func TestGitDriverRiskLinksOutsideOnlyWhenMoved(t *testing.T) {
 		}
 	}
 }
+
+// A global option before the subcommand may take the next word as its value
+// (git --attr-source HEAD, git 2.40+). The parser must not read that value as
+// the subcommand and miss a -C after it. A global option it does not know
+// makes the line risky when a link leads outside, since the parser cannot
+// tell where the -C would be.
+func TestGitDriverRiskGlobalOptions(t *testing.T) {
+	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	root := repo(t, "[core]\n\tbare = false\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		"git --attr-source HEAD -C link status",
+		"git --attr-source=HEAD -C link status",
+		"git --unknown-option x -C link status",
+		"git --unknown-flag -C link status",
+		"git -c a=b --attr-source HEAD -C link status",
+	} {
+		if !GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = false, want true: git may enter the outside link", line)
+		}
+	}
+	// Known global options that take no folder keep a plain command clean.
+	for _, line := range []string{"git --no-pager status", "git -p log A..B", "git --attr-source HEAD status"} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false: no move into the outside link", line)
+		}
+	}
+	// Without any link, an unknown option still hides the -C folder from the
+	// check, so the line is risky: a -C to a folder outside would go unseen.
+	clean := repo(t, "[core]\n\tbare = false\n")
+	if !GitDriverRisk(clean, "git --unknown-flag -C /somewhere status") {
+		t.Error("an unknown global option with no link: want risky (it may hide -C)")
+	}
+}
+
+// cd takes a folder, but not a word that is an option or a redirection: the
+// folder after them is the one bash enters, and a bare cd goes to $HOME.
+func TestGitDriverRiskCdOptions(t *testing.T) {
+	root := repo(t, "[core]\n\tbare = false\n")
+	for _, line := range []string{
+		"cd -P && git status",
+		"cd -- && git status",
+		"cd 2>/dev/null && git status",
+		"cd -P 2>/dev/null && git status",
+		"cd && git status",
+		"cd - && git status",
+	} {
+		if !GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = false, want true: cd goes outside the project", line)
+		}
+	}
+	for _, line := range []string{
+		"cd -P sub && git status",
+		"cd -- sub && git status",
+		"cd sub 2>/dev/null && git status",
+	} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false: the folder is sub, inside the project", line)
+		}
+	}
+}
+
+// Another program may have git as an argument, and an option that is not
+// git's: without a -C on the line, git does not move, so the line is not risky.
+func TestGitDriverRiskOtherProgramsNamingGit(t *testing.T) {
+	if os.Symlink("x", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("symlinks need a platform that has them")
+	}
+	root := repo(t, "[core]\n\tbare = false\n")
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"grep -rn git --include=*.go .", "ls git --color=auto", "echo git --foo"} {
+		if GitDriverRisk(root, line) {
+			t.Errorf("GitDriverRisk(%q) = true, want false: git does not run here", line)
+		}
+	}
+}
