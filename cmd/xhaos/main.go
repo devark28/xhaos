@@ -35,6 +35,7 @@ import (
 	"github.com/devark28/xhaos/app/eventlog"
 	"github.com/devark28/xhaos/app/health"
 	"github.com/devark28/xhaos/app/live"
+	"github.com/devark28/xhaos/app/llm/claudecli"
 	"github.com/devark28/xhaos/app/node"
 	"github.com/devark28/xhaos/app/run"
 	"github.com/devark28/xhaos/app/sandbox"
@@ -68,8 +69,9 @@ func defaultDBPath() string {
 }
 
 func main() {
-	sandbox.MaybeRun()    // started as the command sandbox helper: never returns
-	egress.MaybeConnect() // started as ssh's ProxyCommand in a sealed command: never returns
+	sandbox.MaybeRun()        // started as the command sandbox helper: never returns
+	egress.MaybeConnect()     // started as ssh's ProxyCommand in a sealed command: never returns
+	claudecli.MaybeServeMCP() // started as Claude Code's tool-list server: never returns
 	if len(os.Args) > 1 && os.Args[1] == "node" {
 		runNode(os.Args[2:]) // xhaos node …: like git, runs xhaos-node …
 	}

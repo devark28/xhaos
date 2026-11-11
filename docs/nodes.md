@@ -79,6 +79,24 @@ By hand, the same: open 80/443, install Caddy, add the site above, set `PUBLIC_H
 
 Removing a node in Xhaos forgets its key: its next connection is refused. `xhaos-node leave` on the machine deletes its key and stops the service.
 
+### Install now, join later (`--no-join`)
+
+`install-node.sh --no-join` does everything except joining: `xhaos-node`, its user and folders, and the service, which waits for the node to join (`ConditionPathExists=/var/lib/xhaos-node/node.json`). It is for a machine that joins later, and for baking `xhaos-node` into an image. The node then joins in one of two ways:
+
+- **With a USB stick:** the install needs `--usb-config`. Plug in an `XHAOS` stick whose `xhaos-node.conf` has `server=` and `code=` (see "USB stick config" below). `apply-usb` joins, then starts the service.
+- **By hand:** run `install-node.sh --server URL --code CODE` again.
+
+Either way the node joins with the `--root`, `--device` and `--unsandboxed` given to `--no-join`. They are kept in `/etc/xhaos-node/join.conf`, a root-owned file (`root=`, `device=` lines, `unsandboxed=yes|no`), because `node.json` does not exist until the node joins and belongs to the node's user. `apply-usb` and the installer both refuse that file if it is not root's or others can write to it, if it has an unknown line, or if a device is not a plain path under `/dev`. On a later run, `--root` or `--device` replaces the kept value (all of the kept devices at once), and `--sandboxed` undoes a kept `--unsandboxed`. The file keeps the values from the install that wrote it: a later run on a node that has joined does not change it. So a stick join after `xhaos-node leave` uses those values, not the ones the node last ran with.
+
+An image build runs in a chroot. The installer detects this with `systemd-detect-virt --chroot`; without that tool, it checks whether `/` is the same as PID 1's root. In a chroot it requires `--no-join`, because the node joins on its own machine. It then writes and enables the units, but it starts nothing and does not reload systemd, since a `/run` bound from the host would reach the host's systemd. It does not check the sandbox either: the kernel running is the build host's. Instead it installs `bubblewrap` with apt, because Raspberry Pi kernels have no Landlock. The node picks its sandbox when it starts on its own kernel. `--server` and `--code` do not go with `--no-join`.
+
+```sh
+# in the image's chroot (as root), e.g. an rpi-image-gen layer
+curl -fsSL https://raw.githubusercontent.com/devark28/xhaos/vX.Y.Z/install-node.sh | sh -s -- --no-join --usb-config --version vX.Y.Z
+```
+
+The stick's Wi-Fi settings need NetworkManager. On an image without it (systemd-networkd only), a stick can join the node but cannot change its Wi-Fi.
+
 ## Raspberry Pi first boot (no screen, no keyboard)
 
 Raspberry Pi OS based on Debian Trixie (images from November 2025 on) configures itself on first boot with cloud-init, from two files on the card's boot partition: `user-data` and `network-config`. That partition is the FAT one any computer mounts when the card is inserted, so it is the "flash disk with a setup file" we want, with nothing extra to plug in.

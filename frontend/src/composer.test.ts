@@ -92,6 +92,9 @@ test('picker lists models of providers that have a key', () => {
   assert.deepEqual(pickerChoices([]), []);
   const local = pickerChoices([{ id: 'local', kind: 'openai', name: 'Local', hasKey: false, models: ['qwen3:8b'] }]);
   assert.deepEqual(local.map(c => [c.id, c.label]), [['local/qwen3:8b', 'qwen3:8b']]);
+  // Claude Code holds its own login, so a subscription provider needs no key.
+  const cli = pickerChoices([{ id: 'claude', kind: 'claude-cli', name: 'Claude subscription', hasKey: false, models: ['claude-sonnet-5-5'] }]);
+  assert.deepEqual(cli.map(c => c.id), ['claude/claude-sonnet-5-5']);
 });
 
 test('#N then a space attaches an existing agent; \\#N stays text', () => {

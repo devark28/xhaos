@@ -111,7 +111,7 @@ func (e *exposeEnv) run(args ...string) (string, error) {
 		e.t.Skip("no sh")
 	}
 	cmd := exec.Command(sh, append([]string{script}, args...)...)
-	cmd.Env = []string{"PATH=" + e.bin(), "HOME=" + e.root, "FAKE_LOG=" + e.log, "XHAOS_EXPOSE_ROOT=" + e.root, "XHAOS_INSTALL_SH=/nonexistent/install.sh"}
+	cmd.Env = []string{"PATH=" + e.bin(), "HOME=" + e.root, "FAKE_LOG=" + e.log, "XHAOS_EXPOSE_ROOT=" + e.root, "XHAOS_INSTALL_SH=/nonexistent/install.sh", "TMPDIR=" + e.t.TempDir()}
 	for k, v := range e.env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
