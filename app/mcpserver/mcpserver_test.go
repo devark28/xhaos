@@ -419,15 +419,26 @@ func TestChannelsThroughMCP(t *testing.T) {
 		}
 		return false
 	})
-	ok(t, cs, "post_channel", map[string]any{"channel": ch, "body": "Second note"})
-	read := ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": 1})
+	// The (simulated) agent answers on the channel; a waiting read gets it.
+	read := ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": 1, "wait_seconds": 10})
 	msgs := read["messages"].([]any)
-	if len(msgs) != 1 || msgs[0].(map[string]any)["text"] != "Second note" || read["next_after"].(float64) != 2 {
+	if len(msgs) != 1 || msgs[0].(map[string]any)["agent"] != n || !strings.Contains(msgs[0].(map[string]any)["text"].(string), "Got it: How is it going?") {
+		t.Fatalf("reply = %v", read)
+	}
+	after := read["next_after"].(float64)
+	ok(t, cs, "post_channel", map[string]any{"channel": ch, "body": "Second note"})
+	read = ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": after})
+	msgs = read["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["text"] != "Second note" || read["next_after"].(float64) != after+1 {
 		t.Fatalf("read = %v", read)
 	}
-	// A wait returns when nothing comes, after the wait.
+	// Let the agent answer that one too, then a wait with nothing new
+	// returns empty after the wait.
+	ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": after + 1, "wait_seconds": 10})
+	time.Sleep(300 * time.Millisecond)
+	last := ok(t, cs, "list_channels", nil)["channels"].([]any)[0].(map[string]any)["last_id"]
 	t0 := time.Now()
-	read = ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": 2, "wait_seconds": 1})
+	read = ok(t, cs, "read_channel", map[string]any{"channel": ch, "after": last, "wait_seconds": 1})
 	if len(read["messages"].([]any)) != 0 || time.Since(t0) < 900*time.Millisecond {
 		t.Fatalf("waited read = %v after %s", read, time.Since(t0))
 	}
