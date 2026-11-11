@@ -30,6 +30,7 @@ export interface Entry {
   ask?: boolean; // an ask_user call (answered, not allowed)
   stagedImage?: boolean; // a board_add_image waiting for approval: its card shows the image (board.Service.StagedImage)
   board?: { id: number; name: string; added: string }; // a finished board write: "added a note to" the board, linked (board.ts boardAdded)
+  via?: string; // an owner message an MCP client sent for the owner: its token's name
 }
 
 export interface QuestionOption {
@@ -127,7 +128,8 @@ export interface BackendChannel {
   expiresAt?: string;
   // senderId 0: sent from outside through the link, by senderName.
   count?: number; // messages in all (the list carries only the last)
-  messages: { id: number; channelId: number; senderId: number; senderName?: string; body: string; createdAt: string }[];
+  // via "mcp": posted by an MCP client, senderName being its token's name.
+  messages: { id: number; channelId: number; senderId: number; senderName?: string; via?: string; body: string; createdAt: string }[];
 }
 
 export interface Workspace {
@@ -206,6 +208,7 @@ export interface ToolData {
   by?: string;
   reason?: string;
   output?: string;
+  via?: string; // answered or decided by an MCP client: its token's name
 }
 
 export interface Snapshot {

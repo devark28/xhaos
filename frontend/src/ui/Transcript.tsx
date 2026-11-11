@@ -137,6 +137,7 @@ function Entry({ entry, agent }: { entry: EntryData; agent: Agent }) {
   const label = kind === 'user' ? 'Your message' : kind === 'system' ? 'Status update' : 'Agent response';
   return (
     <div data-entry={kind} aria-label={label} {...stylex.props(styles.entry, kind === 'user' && styles.user, kind === 'system' && styles.system)}>
+      {kind === 'user' && entry.via && <span data-via={entry.via} title="Sent for you by an MCP client with this access token (Settings → MCP access)" {...stylex.props(styles.via)}>via MCP · {entry.via}</span>}
       <div className="markdown-body" dangerouslySetInnerHTML={html(markdown(entry.text, links))} />
       <AttachedFiles files={entry.attachments} />
     </div>
@@ -239,6 +240,7 @@ const styles = stylex.create({
   entry: { display: 'block', paddingBlock: 8 },
   user: { backgroundColor: colors.selected, borderRadius: 3, paddingBlock: 9, paddingInline: 11, marginTop: 8, marginBottom: 12, color: colors.text },
   system: { paddingBlock: 6, fontSize: 10, color: colors.textFaint },
+  via: { display: 'block', marginBottom: 4, fontSize: 9.5, color: colors.textFaint },
   live: { opacity: 0.85 },
   channel: { borderLeftWidth: 2, borderLeftStyle: 'solid', borderLeftColor: colors.lineStrong, paddingLeft: 10 },
   channelHead: { fontSize: 10, color: colors.textMuted },
