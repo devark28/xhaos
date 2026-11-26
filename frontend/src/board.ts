@@ -140,19 +140,28 @@ export const changedText = (agents: readonly number[]) => `changed by ${agents.m
 export interface BoardAdded { id: number; name: string; added: string }
 
 // boardAdded reads a board call's result (board/tools.go: "Added <what> to
-// board #N "Name", ..." or "Created board #N "Name"."). The name is a Go
-// quoted string; one JSON cannot read stays as "board #N".
+// board #N "Name", ...", "Created board #N "Name"." or "Edited element <id> on
+// board #N "Name": ..."). The name is a Go quoted string; one JSON cannot read
+// stays as "board #N".
 export function boardAdded(tool: string, output: string): BoardAdded | null {
   const m = /^(?:Added (.+?) to|Created) board #(\d+) ("(?:[^"\\]|\\.)*")/.exec(output || '');
-  if (!m) return null;
-  let name = `board #${m[2]}`;
-  try { name = JSON.parse(m[3]); } catch { /* keep "board #N" */ }
-  const what = m[1] || '';
-  let added: string;
-  if (tool === 'board_create') added = 'created';
-  else if (tool === 'board_add_image') added = `added an image${what.startsWith('image ') ? ` (${what.slice(6)})` : ''} to`;
-  else added = `added ${what || 'something'} to`;
-  return { id: Number(m[2]), name, added };
+  if (m) {
+    let name = `board #${m[2]}`;
+    try { name = JSON.parse(m[3]); } catch { /* keep "board #N" */ }
+    const what = m[1] || '';
+    let added: string;
+    if (tool === 'board_create') added = 'created';
+    else if (tool === 'board_add_image') added = `added an image${what.startsWith('image ') ? ` (${what.slice(6)})` : ''} to`;
+    else added = `added ${what || 'something'} to`;
+    return { id: Number(m[2]), name, added };
+  }
+  const e = /^Edited element (.+?) on board #(\d+) ("(?:[^"\\]|\\.)*")/.exec(output || '');
+  if (e) {
+    let name = `board #${e[2]}`;
+    try { name = JSON.parse(e[3]); } catch { /* keep "board #N" */ }
+    return { id: Number(e[2]), name, added: 'edited an element on' };
+  }
+  return null;
 }
 
 // deleteBoardText is what the delete dialog asks.

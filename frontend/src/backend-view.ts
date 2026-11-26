@@ -26,7 +26,7 @@ function node(agent: BackendAgent): Agent & { children: Agent[]; activity: Entry
 }
 
 const toolVerbs: Record<string, string> = { list_dir: 'List', read_file: 'Read', search: 'Search', write_file: 'Write', edit_file: 'Edit', bash: 'Run', channel_create: 'Open channel', channel_send: 'Send to', spawn_agent: 'Spawn',
-  board_list: 'List', board_read: 'Read', board_create: 'Create board', board_add_note: 'Add a note to', board_add_image: 'Add an image to', board_add_shapes: 'Add shapes to' };
+  board_list: 'List', board_read: 'Read', board_create: 'Create board', board_add_note: 'Add a note to', board_add_image: 'Add an image to', board_add_shapes: 'Add shapes to', board_edit: 'Edit' };
 const stateNotes: Record<string, string> = { pending: 'waiting for you', allowed: 'allowed', denied: 'denied', done: '', failed: 'failed' };
 
 // toolEntry renders one tool call's latest state. Pending calls show as an
