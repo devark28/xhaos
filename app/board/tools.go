@@ -253,12 +253,16 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 		if err != nil {
 			return call, err
 		}
-		// A dry run: validate the edit and get what it does for the preview.
-		_, _, changes, err := loadEdit(t.s.db, b.ID, in.ID, in.Version, op)
+		full, err := resolveElementID(t.s.db, b.ID, in.ID)
 		if err != nil {
 			if errors.Is(err, apperr.NotFound) {
 				return call, fmt.Errorf("there is no element %q on board #%d; board_read it to see the ids", in.ID, b.ID)
 			}
+			return call, err
+		}
+		// A dry run: validate the edit and get what it does for the preview.
+		_, _, changes, err := loadEdit(t.s.db, b.ID, full, in.Version, op)
+		if err != nil {
 			return call, err
 		}
 		call.Effect = tool.Write
@@ -337,7 +341,11 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		if err != nil {
 			return "", err
 		}
-		res, err := t.s.editForAgent(ws, a.ID, in.Board, in.ID, in.Version, op)
+		full, err := resolveElementID(t.s.db, in.Board, in.ID)
+		if err != nil {
+			return "", err
+		}
+		res, err := t.s.editForAgent(ws, a.ID, in.Board, full, in.Version, op)
 		if err != nil {
 			return "", err
 		}
