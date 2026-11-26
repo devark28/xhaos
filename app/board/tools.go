@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/llm"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/tool"
@@ -46,6 +47,7 @@ func NewTools(s *Service, root func(a agent.Agent) (string, error)) *Tools {
 var effects = map[string]string{
 	"board_list": tool.Read, "board_read": tool.Read,
 	"board_create": tool.Write, "board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write,
+	"board_edit": tool.Write,
 }
 
 func (t *Tools) Owns(name string) bool { _, ok := effects[name]; return ok }
@@ -92,19 +94,67 @@ func (t *Tools) Specs(string) []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "path": str, "caption": str}, Required: []string{"board", "path"}}},
 		{Name: "board_add_shapes", Description: fmt.Sprintf("Add a small diagram to a board: rectangles, ellipses, arrows (x,y to x2,y2) and text, in your own coordinates (x right, y down; only their relative positions matter), at most %d shapes.", maxShapes) + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "shapes": map[string]any{"type": "array", "items": shape}}, Required: []string{"board", "shapes"}}},
+		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
+			Schema: llm.ToolSchema{Properties: map[string]any{
+				"board":   boardID,
+				"id":      map[string]any{"type": "string", "description": "The element's id (board_read shows them)."},
+				"version": map[string]any{"type": "integer", "description": "The element's version (board_read shows it)."},
+				"x":       num, "y": num,
+				"width":  map[string]any{"type": "number", "description": "rectangle and ellipse"},
+				"height": map[string]any{"type": "number", "description": "rectangle and ellipse"},
+				"text":   map[string]any{"type": "string", "description": "the element's (or its label's) new text"},
+				"color":  map[string]any{"type": "string", "description": "stroke colour, #rgb or #rrggbb"},
+				"fill":   map[string]any{"type": "string", "description": "rectangle or ellipse background, #rgb or #rrggbb"},
+				"delete": map[string]any{"type": "boolean", "description": "delete the element and its bound label"},
+			}, Required: []string{"board", "id", "version"}}},
 	}
 }
 
 type input struct {
-	Board   int64   `json:"board"`
-	Name    string  `json:"name"`
-	Text    string  `json:"text"`
-	Path    string  `json:"path"`
-	Caption string  `json:"caption"`
-	Shapes  []Shape `json:"shapes"`
+	Board   int64    `json:"board"`
+	Name    string   `json:"name"`
+	Text    string   `json:"text"`
+	Path    string   `json:"path"`
+	Caption string   `json:"caption"`
+	Shapes  []Shape  `json:"shapes"`
+	ID      string   `json:"id"`
+	Version int64    `json:"version"`
+	X       *float64 `json:"x"` // board_edit: move
+	Y       *float64 `json:"y"`
+	Width   *float64 `json:"width"`
+	Height  *float64 `json:"height"`
+	Color   string   `json:"color"`
+	Fill    string   `json:"fill"`
+	Delete  bool     `json:"delete"`
 }
 
 var colorRE = regexp.MustCompile(`^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|transparent)$`)
+
+// editOp turns a board_edit call's fields into an EditOp, checking what it can
+// before the board is read. The rest of the validation is in applyEdit, which
+// the dry run (loadEdit) runs.
+func editOp(in input) (EditOp, error) {
+	op := EditOp{Color: in.Color, Fill: in.Fill, Delete: in.Delete}
+	if in.Text != "" {
+		op.Text = &in.Text
+	}
+	for _, c := range []string{in.Color, in.Fill} {
+		if c != "" && !colorRE.MatchString(c) {
+			return EditOp{}, fmt.Errorf("colour %q is not #rgb or #rrggbb", c)
+		}
+	}
+	if in.X != nil || in.Y != nil {
+		if in.X == nil || in.Y == nil {
+			return EditOp{}, errors.New("a move needs both x and y")
+		}
+		if math.IsNaN(*in.X) || math.Abs(*in.X) > maxCoord || math.IsNaN(*in.Y) || math.Abs(*in.Y) > maxCoord {
+			return EditOp{}, fmt.Errorf("coordinates are between -%.0f and %.0f", maxCoord, maxCoord)
+		}
+		op.X, op.Y = in.X, in.Y
+	}
+	op.Width, op.Height = in.Width, in.Height
+	return op, nil
+}
 
 func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, error) {
 	call := tool.Call{ID: c.ID, Name: c.Name, Effect: effects[c.Name], Args: c.Input}
@@ -180,6 +230,31 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 			p.WriteString("\n- " + describeShape(s))
 		}
 		call.Preview = p.String()
+	case "board_edit":
+		if strings.TrimSpace(in.ID) == "" {
+			return call, errors.New("board_edit needs id (an element's id from board_read)")
+		}
+		if in.Version < 1 {
+			return call, errors.New("board_edit needs version (the element's version from board_read)")
+		}
+		op, err := editOp(in)
+		if err != nil {
+			return call, err
+		}
+		// A dry run: validate the edit and get what it does for the preview.
+		_, _, changes, err := loadEdit(t.s.db, b.ID, in.ID, in.Version, op)
+		if err != nil {
+			if errors.Is(err, apperr.NotFound) {
+				return call, fmt.Errorf("there is no element %q on board #%d; board_read it to see the ids", in.ID, b.ID)
+			}
+			return call, err
+		}
+		call.Effect = tool.Write
+		if op.Delete {
+			call.Effect = tool.Delete
+		}
+		call.Summary = fmt.Sprintf("%s: %s", on, strings.Join(changes, ", "))
+		call.Preview = fmt.Sprintf("On %s, %s.", on, strings.Join(changes, ", "))
 	}
 	return call, nil
 }
@@ -245,6 +320,16 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		add := newAddition(a.ID)
 		add.shapes(in.Shapes)
 		return t.add(ws, a, in.Board, add, nil, "", call.ID, fmt.Sprintf("%d shapes", len(in.Shapes)))
+	case "board_edit":
+		op, err := editOp(in)
+		if err != nil {
+			return "", err
+		}
+		res, err := t.s.editForAgent(ws, a.ID, in.Board, in.ID, in.Version, op)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Edited element %s on board #%d %q: %s.", res.ID, res.Board.ID, res.Board.Name, strings.Join(res.Changes, ", ")), nil
 	}
 	return "", fmt.Errorf("unknown tool %s", call.Name)
 }
@@ -285,7 +370,7 @@ func (t *Tools) read(ws string, id int64) (string, error) {
 			break
 		}
 		bb := e.bounds()
-		fmt.Fprintf(&out, "- %s %s at (%.0f, %.0f) size %.0f×%.0f", e.Type, e.ID, bb.x0, bb.y0, bb.x1-bb.x0, bb.y1-bb.y0)
+		fmt.Fprintf(&out, "- %s %s v%d at (%.0f, %.0f) size %.0f×%.0f", e.Type, e.ID, e.Version, bb.x0, bb.y0, bb.x1-bb.x0, bb.y1-bb.y0)
 		if e.Type == "image" {
 			name, _ := e.CustomData["xhaosName"].(string)
 			if name == "" {

@@ -266,6 +266,7 @@ type sceneElement struct {
 	GroupIDs   []string       `json:"groupIds"`
 	Container  string         `json:"containerId"`
 	CustomData map[string]any `json:"customData"`
+	Version    int64          `json:"version"`
 }
 
 // agentOf is the agent that added an element (0: the owner drew it).

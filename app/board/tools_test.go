@@ -97,7 +97,8 @@ func (tf *toolFixture) ownerDrawing(t *testing.T) {
 func TestEffects(t *testing.T) {
 	tf := newToolFixture(t)
 	want := map[string]string{"board_list": tool.Read, "board_read": tool.Read, "board_create": tool.Write,
-		"board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write}
+		"board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write,
+		"board_edit": tool.Write}
 	specs := tf.tools.Specs(ws)
 	if len(specs) != len(want) {
 		t.Fatalf("specs: %d tools, want %d", len(specs), len(want))
@@ -209,6 +210,91 @@ func TestEmptyBoardStartsAtOrigin(t *testing.T) {
 		if e.Index == nil {
 			t.Errorf("%s has no index", e.ID)
 		}
+	}
+}
+
+func sceneElementByID(t *testing.T, tf *toolFixture, id string) *sceneElement {
+	t.Helper()
+	els := tf.scene(t)
+	for i := range els {
+		if els[i].ID == id {
+			return &els[i]
+		}
+	}
+	return nil
+}
+
+func TestBoardEdit(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+
+	// Move the owner's rectangle: a write, version bumps from 3 to 4.
+	out, call, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 40.0, "y": 10.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Effect != tool.Write || !strings.Contains(call.Preview, "moved to (40, 10)") {
+		t.Errorf("preview/effect: %+v %q", call, call.Preview)
+	}
+	if !strings.Contains(out, "moved to (40, 10)") {
+		t.Errorf("result: %q", out)
+	}
+	own := sceneElementByID(t, tf, "own")
+	if own == nil || own.X != 40 || own.Y != 10 || own.Version != 4 {
+		t.Fatalf("own after move: %+v", own)
+	}
+
+	// A stale version is refused and reported with the element's current state.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0, "y": 1.0}); err == nil ||
+		!strings.Contains(err.Error(), "changed since you read it") || !strings.Contains(err.Error(), "now v4") {
+		t.Errorf("stale edit: %v", err)
+	}
+
+	// Resize and recolour together.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 4, "width": 120.0, "height": 90.0, "color": "#e03131"}); err != nil {
+		t.Fatal(err)
+	}
+	own = sceneElementByID(t, tf, "own")
+	if own == nil || own.Width != 120 || own.Height != 90 || own.Version != 5 {
+		t.Fatalf("own after resize: %+v", own)
+	}
+
+	// Deleting always asks (EffectDelete) and leaves a tombstone.
+	_, call, err = tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 5, "delete": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Effect != tool.Delete {
+		t.Errorf("delete effect %q, want %q", call.Effect, tool.Delete)
+	}
+	if own = sceneElementByID(t, tf, "own"); own == nil || !own.IsDeleted {
+		t.Fatalf("own after delete: %+v", own)
+	}
+}
+
+func TestBoardEditRefusals(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+	cases := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3}, "nothing to change"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0}, "both x and y"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0, "y": 2e6}, "coordinates"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "color": "red"}, "not #rgb"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "width": 0.0}, "width and height"},
+		{map[string]any{"board": tf.board.ID, "id": "nope", "version": 1, "x": 1.0, "y": 1.0}, "no element"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 2, "x": 1.0, "y": 1.0}, "changed since you read it"},
+	}
+	for _, c := range cases {
+		_, _, err := tf.run(t, "board_edit", c.in)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%v: err %v, want %q", c.in, err, c.want)
+		}
+	}
+	if own := sceneElementByID(t, tf, "own"); own == nil || own.Version != 3 {
+		t.Errorf("a refused edit changed the board: %+v", own)
 	}
 }
 
@@ -333,7 +419,7 @@ func TestShapesAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`Board #1 "Plan"`, "rectangle own at (0, 0) size 100×80", `text "Sensor" in ` + rect.ID, "arrow", "(added by #7)", `text "added by #7"`} {
+	for _, want := range []string{`Board #1 "Plan"`, "rectangle own v3 at (0, 0) size 100×80", `text "Sensor" in ` + rect.ID, "arrow", "(added by #7)", `text "added by #7"`} {
 		if !strings.Contains(read, want) {
 			t.Errorf("board_read lacks %q:\n%s", want, read)
 		}
