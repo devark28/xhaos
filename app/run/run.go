@@ -677,12 +677,12 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 		default:
 			verdict, reason := a.Policy.Gate(call.Effect, call.Commit)
 			by := "policy"
-			// Dangerously allow: what would ask runs, except secrets and
-			// channels outside the family; git stays on its locked branch.
+			// Dangerously allow: what would ask runs, except secrets, channels outside
+			// the family, and deleting the owner's drawing; git stays on its locked branch.
 			if a.DangerActive(time.Now()) {
 				if why := lockBreak(a, call); why != "" {
 					verdict, reason = policy.Deny, why
-				} else if verdict == policy.Ask && call.Effect != policy.EffectSecret && call.Effect != policy.EffectContact {
+				} else if verdict == policy.Ask && call.Effect != policy.EffectSecret && call.Effect != policy.EffectContact && call.Effect != policy.EffectDelete {
 					verdict, reason, by = policy.Allow, "", "danger"
 				}
 			}
