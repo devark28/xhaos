@@ -84,8 +84,16 @@ func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
 		{Name: "board_list", Description: "List the workspace's boards (the user's Excalidraw drawings in the Draw tab): id and name.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
-		{Name: "board_read", Description: "Read a board as text: each element's type, id, position, size and text, in drawing order. Images are listed by name, without their pixels.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID}, Required: []string{"board"}}},
+		{Name: "board_read", Description: "Read a board as text. Each element is named by a short id prefix (unique, at least 4 characters). mode \"items\" (default) lists each element's type, id, version, position, size and text, in drawing order; mode \"outline\" gives a compact list with type, id, text and group, without geometry. Narrow the result with ids (element ids or prefixes), group (a group id), type (an element type), or region (elements in the rectangle x, y, width, height). Images are listed by name, without their pixels.",
+			Schema: llm.ToolSchema{Properties: map[string]any{
+				"board": boardID,
+				"mode":  map[string]any{"type": "string", "enum": []string{"outline", "items"}},
+				"ids":   map[string]any{"type": "array", "items": str},
+				"group": str,
+				"type":  str,
+				"x":     num, "y": num,
+				"width": num, "height": num,
+			}, Required: []string{"board"}}},
 		{Name: "board_create", Description: "Create an empty board. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"name": str}, Required: []string{"name"}}},
 		{Name: "board_add_note", Description: "Add a sticky note with text to a board." + where + " The user may review it first.",
@@ -117,6 +125,10 @@ type input struct {
 	Path    string   `json:"path"`
 	Caption string   `json:"caption"`
 	Shapes  []Shape  `json:"shapes"`
+	Mode    string   `json:"mode"`  // board_read: "outline" or "items"
+	IDs     []string `json:"ids"`   // board_read: element ids or prefixes
+	Group   string   `json:"group"` // board_read: a group id
+	Type    string   `json:"type"`  // board_read: an element type
 	ID      string   `json:"id"`
 	Version int64    `json:"version"`
 	X       *float64 `json:"x"` // board_edit: move
@@ -294,7 +306,7 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		}
 		return tool.Clip(strings.TrimSpace(b.String())), nil
 	case "board_read":
-		return t.read(ws, in.Board)
+		return t.read(ws, in.Board, in)
 	case "board_create":
 		m, err := t.s.Create(CreateRequest{WorkspaceID: ws, Name: in.Name})
 		if err != nil {
@@ -342,71 +354,6 @@ func (t *Tools) add(ws string, a agent.Agent, boardID int64, add *addition, img 
 	w, h := add.size()
 	return fmt.Sprintf("Added %s to board #%d %q, at (%.0f, %.0f), %.0f×%.0f, as group %s (%d elements). It shows on open pages now.",
 		what, res.Board.ID, res.Board.Name, res.X, res.Y, w, h, res.Group, len(res.Elements)), nil
-}
-
-// read is board_read's text: one line per live element, in drawing order.
-func (t *Tools) read(ws string, id int64) (string, error) {
-	b, err := t.s.Load(ws, id)
-	if err != nil {
-		return "", err
-	}
-	mimes := map[string]string{}
-	for _, r := range b.Images {
-		mimes[r.FileID] = r.MimeType
-	}
-	var els []sceneElement
-	for _, raw := range b.Elements {
-		var e sceneElement
-		if json.Unmarshal(raw, &e) == nil && !e.IsDeleted {
-			els = append(els, e)
-		}
-	}
-	sortByIndex(els)
-	var out strings.Builder
-	fmt.Fprintf(&out, "Board #%d %q, %d elements (x right, y down).\n", b.ID, b.Name, len(els))
-	for i, e := range els {
-		if i == maxRead {
-			fmt.Fprintf(&out, "… and %d more.\n", len(els)-maxRead)
-			break
-		}
-		bb := e.bounds()
-		fmt.Fprintf(&out, "- %s %s v%d at (%.0f, %.0f) size %.0f×%.0f", e.Type, e.ID, e.Version, bb.x0, bb.y0, bb.x1-bb.x0, bb.y1-bb.y0)
-		if e.Type == "image" {
-			name, _ := e.CustomData["xhaosName"].(string)
-			if name == "" {
-				name = "unnamed"
-			}
-			fmt.Fprintf(&out, " image %q (%s)", name, orUnknown(mimes[e.FileID]))
-		}
-		if e.Text != "" {
-			fmt.Fprintf(&out, " text %q", clipText(e.Text, 300))
-		}
-		if e.Container != "" {
-			fmt.Fprintf(&out, " in %s", e.Container)
-		}
-		if n := e.agentOf(); n != 0 {
-			fmt.Fprintf(&out, " (added by #%d)", n)
-		}
-		out.WriteString("\n")
-	}
-	return tool.Clip(strings.TrimSpace(out.String())), nil
-}
-
-// sortByIndex puts elements in drawing order: by fractional index, those
-// without one last in their stored order (as Excalidraw does).
-func sortByIndex(els []sceneElement) {
-	key := func(e sceneElement) string {
-		if e.Index == nil {
-			return "\U0010FFFF"
-		}
-		return *e.Index
-	}
-	// insertion sort keeps stored order among equal keys
-	for i := 1; i < len(els); i++ {
-		for j := i; j > 0 && key(els[j]) < key(els[j-1]); j-- {
-			els[j], els[j-1] = els[j-1], els[j]
-		}
-	}
 }
 
 func checkShapes(list []Shape) error {

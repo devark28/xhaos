@@ -419,7 +419,8 @@ func TestShapesAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`Board #1 "Plan"`, "rectangle own v3 at (0, 0) size 100×80", `text "Sensor" in ` + rect.ID, "arrow", "(added by #7)", `text "added by #7"`} {
+	short := shortIDs(tf.scene(t))
+	for _, want := range []string{`Board #1 "Plan"`, "rectangle own v3 at (0, 0) size 100×80", `text "Sensor" in ` + short[rect.ID], "arrow", "(added by #7)", `text "added by #7"`} {
 		if !strings.Contains(read, want) {
 			t.Errorf("board_read lacks %q:\n%s", want, read)
 		}
