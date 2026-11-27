@@ -23,7 +23,6 @@ const (
 	noteSize     = 20.0
 	captionSize  = 16.0
 	lineHeight   = 1.25
-	charWidth    = 0.6 // of the font size: a generous average, so text never runs past its box
 	notePad      = 5.0 // Excalidraw's padding around text in a container
 	noteColumns  = 48  // characters per line of a note
 	maxImageSide = 640.0
@@ -79,15 +78,49 @@ func (a *addition) base(kind string, x, y, w, h float64) element {
 	return e
 }
 
-// textSize estimates a text's box: Excalidraw measures it in the browser, the
-// server can only guess, so the guess errs on the wide side.
+// textSize estimates a text's box in the default font (Excalifont): the
+// browser measures it, the server can only guess, so the guess errs on the
+// wide side.
 func textSize(text string, size float64) (w, h float64) {
+	return textSizeIn(text, size, fontFamily)
+}
+
+// textSizeIn estimates a text's box for a font family from its average
+// character width and line height. The guess errs wide, so the server never
+// computes a box the rendered text would run past.
+func textSizeIn(text string, size, family float64) (w, h float64) {
 	lines := strings.Split(text, "\n")
 	longest := 0
 	for _, l := range lines {
 		longest = max(longest, utf8.RuneCountInString(l))
 	}
-	return math.Ceil(max(1, float64(longest)) * size * charWidth), math.Ceil(float64(len(lines)) * size * lineHeight)
+	return math.Ceil(max(1, float64(longest)) * size * charWidthOf(family)), math.Ceil(float64(len(lines)) * size * lineHeightOf(family))
+}
+
+// charWidthOf is a font's average character width as a fraction of the font
+// size, erring wide. Excalifont (5), Excalidraw's hand-drawn default, is the
+// widest; the named families are a little narrower.
+func charWidthOf(family float64) float64 {
+	switch int(family) {
+	case 1: // Virgil
+		return 0.58
+	case 2: // Helvetica
+		return 0.52
+	case 3: // Cascadia
+		return 0.6
+	default: // Excalifont (5), or unknown
+		return 0.65
+	}
+}
+
+// lineHeightOf is a font's line height as a fraction of the font size.
+func lineHeightOf(family float64) float64 {
+	switch int(family) {
+	case 2: // Helvetica
+		return 1.2
+	default:
+		return lineHeight
+	}
 }
 
 func (a *addition) text(x, y float64, text string, size float64, color string) element {
@@ -147,6 +180,22 @@ func wrap(text string, width int) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// labelColumns is how many characters of a label fit on one line inside a
+// shape of the given width, in the default font. At least one character fits,
+// so wrap never loops.
+func labelColumns(width, size float64) int {
+	return max(1, int((width-2*notePad)/(size*charWidthOf(fontFamily))))
+}
+
+// fitLabelText wraps a label's text to its container's width and returns the
+// wrapped text and the container height that fits it: the height it already
+// has, grown if the wrapped label is taller. The width is never changed.
+func fitLabelText(container element, text string, size float64) (string, float64) {
+	wrapped := wrap(text, labelColumns(container.num("width"), size))
+	_, h := textSizeIn(wrapped, size, fontFamily)
+	return wrapped, max(container.num("height"), h+2*notePad)
 }
 
 const contentTop = tagSize*lineHeight + 8 // content starts below the tag
@@ -228,8 +277,9 @@ func (a *addition) shapes(list []Shape) {
 			e["strokeColor"] = s.Color
 		}
 		if s.Text != "" && (s.Type == "rectangle" || s.Type == "ellipse") {
-			cols := max(4, int((s.Width-2*notePad)/(noteSize*charWidth)))
-			a.label(e, wrap(s.Text, cols), noteSize, "center", "middle")
+			wrapped, height := fitLabelText(e, s.Text, noteSize)
+			e["height"] = height // grow the box to fit its label; keep its width
+			a.label(e, wrapped, noteSize, "center", "middle")
 		}
 	}
 }

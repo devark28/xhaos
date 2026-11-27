@@ -282,16 +282,20 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 		case len(boundTextIDs(tgt)) > 0:
 			id := boundTextIDs(tgt)[0]
 			label := mark(id)
-			setText(label, text)
-			repositionLabel(label, tgt)
+			mark(targetID) // the container: setLabelText grows it
+			setLabelText(label, tgt, text)
 			changes = append(changes, fmt.Sprintf("label set to %q", clipText(text, 40)))
 		case kind == "text":
 			mark(targetID)
-			setText(tgt, text)
 			if cid := containerID(tgt); cid != "" {
 				if cont := loaded[cid]; cont != nil {
-					repositionLabel(tgt, cont)
+					mark(cid)
+					setLabelText(tgt, cont, text)
+				} else {
+					setText(tgt, text)
 				}
+			} else {
+				setText(tgt, text)
 			}
 			changes = append(changes, fmt.Sprintf("text set to %q", clipText(text, 40)))
 		default:
@@ -316,13 +320,34 @@ func bump(changed map[string]element, heads map[string]header) {
 
 // setText writes a text element's words and resizes its box to fit.
 func setText(e element, text string) {
-	size := e.num("fontSize")
-	if size <= 0 {
-		size = noteSize
-	}
-	w, h := textSize(text, size)
+	setTextSize(e, text, labelFontSize(e))
+}
+
+// setTextSize writes a text element's words and resizes its box to fit, in
+// the element's own font.
+func setTextSize(e element, text string, size float64) {
+	w, h := textSizeIn(text, size, e.num("fontFamily"))
 	e["text"], e["originalText"] = text, text
 	e["width"], e["height"] = w, h
+}
+
+// labelFontSize is the font size a text or label element renders at.
+func labelFontSize(e element) float64 {
+	if size := e.num("fontSize"); size > 0 {
+		return size
+	}
+	return noteSize
+}
+
+// setLabelText writes a bound label's words, wrapped to its container's
+// width, resizes the label, and grows the container's height to fit (its
+// width stays). Both elements must be marked changed already.
+func setLabelText(label, container element, text string) {
+	size := labelFontSize(label)
+	wrapped, height := fitLabelText(container, text, size)
+	setTextSize(label, wrapped, size)
+	container["height"] = height
+	repositionLabel(label, container)
 }
 
 // repositionLabel keeps a bound label inside its container the way layout.go

@@ -349,7 +349,7 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Edited element %s on board #%d %q: %s.", res.ID, res.Board.ID, res.Board.Name, strings.Join(res.Changes, ", ")), nil
+		return t.withLayout(ws, in.Board, fmt.Sprintf("Edited element %s on board #%d %q: %s.", res.ID, res.Board.ID, res.Board.Name, strings.Join(res.Changes, ", "))), nil
 	}
 	return "", fmt.Errorf("unknown tool %s", call.Name)
 }
@@ -360,8 +360,35 @@ func (t *Tools) add(ws string, a agent.Agent, boardID int64, add *addition, img 
 		return "", err
 	}
 	w, h := add.size()
-	return fmt.Sprintf("Added %s to board #%d %q, at (%.0f, %.0f), %.0f×%.0f, as group %s (%d elements). It shows on open pages now.",
-		what, res.Board.ID, res.Board.Name, res.X, res.Y, w, h, res.Group, len(res.Elements)), nil
+	msg := fmt.Sprintf("Added %s to board #%d %q, at (%.0f, %.0f), %.0f×%.0f, as group %s (%d elements). It shows on open pages now.",
+		what, res.Board.ID, res.Board.Name, res.X, res.Y, w, h, res.Group, len(res.Elements))
+	return t.withLayout(ws, boardID, msg), nil
+}
+
+// withLayout appends a layout check to a write's result, or nothing when the
+// board is clean.
+func (t *Tools) withLayout(ws string, boardID int64, msg string) string {
+	if check := t.layoutAfter(ws, boardID); check != "" {
+		return msg + "\nLayout: " + check
+	}
+	return msg
+}
+
+// layoutAfter reads the board's live elements and checks them for problems an
+// agent cannot see (see layoutCheck).
+func (t *Tools) layoutAfter(ws string, boardID int64) string {
+	b, err := t.s.Load(ws, boardID)
+	if err != nil {
+		return ""
+	}
+	var els []sceneElement
+	for _, raw := range b.Elements {
+		var e sceneElement
+		if json.Unmarshal(raw, &e) == nil && !e.IsDeleted {
+			els = append(els, e)
+		}
+	}
+	return layoutCheck(els)
 }
 
 func checkShapes(list []Shape) error {
