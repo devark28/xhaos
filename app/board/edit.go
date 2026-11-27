@@ -100,6 +100,13 @@ func loadEdit(q sqlitedb.Querier, boardID int64, id string, v int64, op EditOp) 
 			return nil, nil, nil, err
 		}
 	}
+	// Arrows bound to the element are touched too (their bindings are cleared
+	// when it is deleted), so load them here for their version checks.
+	for _, id := range boundArrowIDs(te) {
+		if err := load(id); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	changed, changes, err := applyEdit(id, loaded, heads, op)
 	if err != nil {
 		return nil, nil, nil, err
@@ -214,6 +221,16 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 		default:
 			mark(targetID)["isDeleted"] = true
 			changes = append(changes, "deleted "+kindName(kind))
+		}
+		// Arrows bound to the deleted element must not keep aiming at it: clear
+		// each one's startBinding/endBinding and drop it from the element's
+		// boundElements. The arrows were loaded in loadEdit, so their versions
+		// are checked and bumped like the deleted element's.
+		for _, id := range boundArrowIDs(tgt) {
+			if arrow := mark(id); arrow != nil {
+				unbindArrow(arrow, targetID)
+			}
+			unbind(tgt, id)
 		}
 		bump(changed, heads)
 		return changed, changes, nil
@@ -386,6 +403,38 @@ func boundTextIDs(e element) []string {
 		}
 	}
 	return ids
+}
+
+// boundArrowIDs lists the arrows bound to a shape, in order.
+func boundArrowIDs(e element) []string {
+	raw, ok := e["boundElements"].([]any)
+	if !ok {
+		return nil
+	}
+	var ids []string
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "arrow" {
+			if id, _ := m["id"].(string); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+// unbindArrow clears the arrow's startBinding or endBinding that points at
+// shapeID, so the arrow no longer aims at a deleted element.
+func unbindArrow(arrow element, shapeID string) {
+	if sb, ok := arrow["startBinding"].(map[string]any); ok && sb["elementId"] == shapeID {
+		arrow["startBinding"] = nil
+	}
+	if eb, ok := arrow["endBinding"].(map[string]any); ok && eb["elementId"] == shapeID {
+		arrow["endBinding"] = nil
+	}
 }
 
 // unbind removes the binding to text id from a container's boundElements.

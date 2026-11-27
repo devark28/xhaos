@@ -272,6 +272,79 @@ func TestBoardEdit(t *testing.T) {
 	}
 }
 
+func TestBoardEditDeleteUnbindsArrows(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || arrow == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v arrow %v", rect, ellipse, arrow)
+	}
+	if arrow.StartBinding == nil || arrow.StartBinding.ElementID != rect.ID || arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("arrow not bound as drawn: start %+v end %+v", arrow.StartBinding, arrow.EndBinding)
+	}
+
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true}); err != nil {
+		t.Fatal(err)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if rectAfter == nil || !rectAfter.IsDeleted || rectAfter.Version != rect.Version+1 {
+		t.Fatalf("rect after delete: %+v", rectAfter)
+	}
+	if arrowAfter == nil {
+		t.Fatalf("arrow missing after delete")
+	}
+	// The arrow's start is unbound from the deleted rectangle; its end keeps
+	// pointing at the ellipse. Its version is bumped because it was touched.
+	if arrowAfter.StartBinding != nil {
+		t.Errorf("arrow still starts on the deleted rectangle: %+v", arrowAfter.StartBinding)
+	}
+	if arrowAfter.EndBinding == nil || arrowAfter.EndBinding.ElementID != ellipse.ID {
+		t.Errorf("arrow lost its end binding: %+v", arrowAfter.EndBinding)
+	}
+	if arrowAfter.Version != arrow.Version+1 {
+		t.Errorf("arrow version %d, want %d (it was touched)", arrowAfter.Version, arrow.Version+1)
+	}
+	if boundTo(rectAfter.BoundElements, arrow.ID) {
+		t.Errorf("deleted rectangle still lists the arrow: %+v", rectAfter.BoundElements)
+	}
+	if !boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse lost the arrow from its boundElements: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version {
+		t.Errorf("ellipse version %d, want %d (it was not touched)", ellipseAfter.Version, ellipse.Version)
+	}
+}
+
 func TestBoardEditRefusals(t *testing.T) {
 	tf := newToolFixture(t)
 	tf.ownerDrawing(t)
