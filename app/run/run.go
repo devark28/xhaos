@@ -749,8 +749,10 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					verdict, reason, by = policy.Allow, "", "danger"
 				}
 			}
-			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy, Root: root}
-			creq = classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
+			// The project's own absolute path counts as inside it (tool.Relative); the command runs as written.
+			cmd := tool.Relative(root, call.Summary)
+			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: cmd, Policy: a.Policy, Root: root}
+			creq = classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: cmd}
 			if verdict == policy.Ask && r.Classifier != nil {
 				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model
 					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+classifier.ListReason(name), classifier.By
