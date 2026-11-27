@@ -54,6 +54,10 @@ func TestGate(t *testing.T) {
 		{Policy{"rw", "auto", "blocked"}, EffectGit, true, Deny},
 		{Policy{"rw", "manual", "allowed"}, EffectGit, false, Ask},
 		{Policy{"ro", "auto", "allowed"}, EffectGit, false, Deny},
+		// Deleting the owner's drawing always asks under rw, denied read-only.
+		{Policy{"rw", "auto", "review"}, EffectDelete, false, Ask},
+		{Policy{"rw", "manual", "review"}, EffectDelete, false, Ask},
+		{Policy{"ro", "auto", "allowed"}, EffectDelete, false, Deny},
 	}
 	for _, c := range cases {
 		if got, _ := c.p.Gate(c.effect, c.commit); got != c.want {

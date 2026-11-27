@@ -97,7 +97,8 @@ func (tf *toolFixture) ownerDrawing(t *testing.T) {
 func TestEffects(t *testing.T) {
 	tf := newToolFixture(t)
 	want := map[string]string{"board_list": tool.Read, "board_read": tool.Read, "board_create": tool.Write,
-		"board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write}
+		"board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write,
+		"board_edit": tool.Write}
 	specs := tf.tools.Specs(ws)
 	if len(specs) != len(want) {
 		t.Fatalf("specs: %d tools, want %d", len(specs), len(want))
@@ -212,6 +213,425 @@ func TestEmptyBoardStartsAtOrigin(t *testing.T) {
 	}
 }
 
+func sceneElementByID(t *testing.T, tf *toolFixture, id string) *sceneElement {
+	t.Helper()
+	els := tf.scene(t)
+	for i := range els {
+		if els[i].ID == id {
+			return &els[i]
+		}
+	}
+	return nil
+}
+
+func TestBoardEdit(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+
+	// Move the owner's rectangle: a write, version bumps from 3 to 4.
+	out, call, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 40.0, "y": 10.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Effect != tool.Write || !strings.Contains(call.Preview, "moved to (40, 10)") {
+		t.Errorf("preview/effect: %+v %q", call, call.Preview)
+	}
+	if !strings.Contains(out, "moved to (40, 10)") {
+		t.Errorf("result: %q", out)
+	}
+	own := sceneElementByID(t, tf, "own")
+	if own == nil || own.X != 40 || own.Y != 10 || own.Version != 4 {
+		t.Fatalf("own after move: %+v", own)
+	}
+
+	// A stale version is refused and reported with the element's current state.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0, "y": 1.0}); err == nil ||
+		!strings.Contains(err.Error(), "changed since you read it") || !strings.Contains(err.Error(), "now v4") {
+		t.Errorf("stale edit: %v", err)
+	}
+
+	// Resize and recolour together.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 4, "width": 120.0, "height": 90.0, "color": "#e03131"}); err != nil {
+		t.Fatal(err)
+	}
+	own = sceneElementByID(t, tf, "own")
+	if own == nil || own.Width != 120 || own.Height != 90 || own.Version != 5 {
+		t.Fatalf("own after resize: %+v", own)
+	}
+
+	// Deleting always asks (EffectDelete) and leaves a tombstone.
+	_, call, err = tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 5, "delete": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Effect != tool.Delete {
+		t.Errorf("delete effect %q, want %q", call.Effect, tool.Delete)
+	}
+	if own = sceneElementByID(t, tf, "own"); own == nil || !own.IsDeleted {
+		t.Fatalf("own after delete: %+v", own)
+	}
+}
+
+func TestBoardEditDeleteDeletesArrows(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || arrow == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v arrow %v", rect, ellipse, arrow)
+	}
+	if arrow.StartBinding == nil || arrow.StartBinding.ElementID != rect.ID || arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("arrow not bound as drawn: start %+v end %+v", arrow.StartBinding, arrow.EndBinding)
+	}
+
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "deleted a rectangle and 1 arrow") {
+		t.Errorf("result should say the arrow is deleted: %q", out)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if rectAfter == nil || !rectAfter.IsDeleted || rectAfter.Version != rect.Version+1 {
+		t.Fatalf("rect after delete: %+v", rectAfter)
+	}
+	// The arrow bound to the rectangle at its start is deleted with it.
+	if arrowAfter == nil || !arrowAfter.IsDeleted || arrowAfter.Version != arrow.Version+1 {
+		t.Fatalf("arrow after delete: %+v", arrowAfter)
+	}
+	// The ellipse the arrow's other end was bound to loses it from its
+	// boundElements and is bumped because it was touched.
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the deleted arrow: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d (it was touched)", ellipseAfter.Version, ellipse.Version+1)
+	}
+	if boundTo(rectAfter.BoundElements, arrow.ID) {
+		t.Errorf("deleted rectangle still lists the arrow: %+v", rectAfter.BoundElements)
+	}
+}
+
+func TestBoardEditDeleteDeletesLabelAndArrows(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60, "text": "Sensor"},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+		{"type": "arrow", "x": 160, "y": 50, "x2": 260, "y2": 50}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse *sceneElement
+	var arrows []*sceneElement
+	var label *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrows = append(arrows, &scene[i])
+		case "text":
+			label = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || len(arrows) != 2 || label == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v arrows %d label %v", rect, ellipse, len(arrows), label)
+	}
+
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "deleted a rectangle, its label and 2 arrows") {
+		t.Errorf("result: %q", out)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, labelAfter *sceneElement
+	var arrowAfters []*sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case label.ID:
+			labelAfter = &scene[i]
+		}
+		switch scene[i].Type {
+		case "arrow":
+			arrowAfters = append(arrowAfters, &scene[i])
+		}
+	}
+	if rectAfter == nil || !rectAfter.IsDeleted {
+		t.Fatalf("rect after delete: %+v", rectAfter)
+	}
+	if labelAfter == nil || !labelAfter.IsDeleted {
+		t.Fatalf("label after delete: %+v", labelAfter)
+	}
+	if len(arrowAfters) != 2 {
+		t.Fatalf("arrows after delete: %d, want 2", len(arrowAfters))
+	}
+	for _, a := range arrowAfters {
+		if !a.IsDeleted {
+			t.Errorf("arrow %s not deleted: %+v", a.ID, a)
+		}
+	}
+	if boundTo(ellipseAfter.BoundElements, arrows[0].ID) || boundTo(ellipseAfter.BoundElements, arrows[1].ID) {
+		t.Errorf("ellipse still lists a deleted arrow: %+v", ellipseAfter.BoundElements)
+	}
+}
+
+func TestBoardEditArrowEndRebinds(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "rectangle", "x": 600, "y": 300, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse, target, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			if rect == nil {
+				rect = &scene[i]
+			} else {
+				target = &scene[i]
+			}
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || target == nil || arrow == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v target %v arrow %v", rect, ellipse, target, arrow)
+	}
+	if arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("arrow end not bound to the ellipse: %+v", arrow.EndBinding)
+	}
+
+	// Move the end onto the far rectangle.
+	x2, y2 := target.X+target.Width/2, target.Y+target.Height/2
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": x2, "y2": y2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "arrow end moved to") {
+		t.Errorf("result: %q", out)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, targetAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case target.ID:
+			targetAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if arrowAfter == nil || arrowAfter.Version != arrow.Version+1 {
+		t.Fatalf("arrow after: %+v", arrowAfter)
+	}
+	// The bound end is routed onto the target's outline (its 1 px gap outside), aimed at its centre.
+	if len(arrowAfter.Points) != 2 {
+		t.Fatalf("arrow points %+v", arrowAfter.Points)
+	}
+	end := point{arrowAfter.X + arrowAfter.Points[1][0], arrowAfter.Y + arrowAfter.Points[1][1]}
+	box := shapeBox{e: element{"type": "rectangle"}, x: target.X, y: target.Y, w: target.Width, h: target.Height}
+	if d := box.dist(end.x, end.y); d > 0 || d < -1.5 {
+		t.Errorf("arrow end %+v is %.2f from the target's outline, want just outside it", end, d)
+	}
+	if arrowAfter.EndBinding == nil || arrowAfter.EndBinding.ElementID != target.ID {
+		t.Errorf("arrow end not rebound to the rectangle: %+v", arrowAfter.EndBinding)
+	}
+	// The ellipse the end left is unbound and bumped; the new target is bound.
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the arrow: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d", ellipseAfter.Version, ellipse.Version+1)
+	}
+	if !boundTo(targetAfter.BoundElements, arrow.ID) {
+		t.Errorf("rectangle does not list the arrow: %+v", targetAfter.BoundElements)
+	}
+	if targetAfter.Version != target.Version+1 {
+		t.Errorf("rectangle version %d, want %d", targetAfter.Version, target.Version+1)
+	}
+	// The shape the arrow starts on is untouched.
+	if !boundTo(rectAfter.BoundElements, arrow.ID) {
+		t.Errorf("start rectangle lost the arrow: %+v", rectAfter.BoundElements)
+	}
+	if rectAfter.Version != rect.Version {
+		t.Errorf("start rectangle version %d, want %d", rectAfter.Version, rect.Version)
+	}
+}
+
+func TestBoardEditArrowEndUnbinds(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var ellipse, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if ellipse == nil || arrow == nil || arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("fixture: ellipse %v arrow %v", ellipse, arrow)
+	}
+
+	// Move the end to free space far from every shape.
+	x2, y2 := arrow.X+2000, arrow.Y+1000
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": x2, "y2": y2}); err != nil {
+		t.Fatal(err)
+	}
+	scene = tf.scene(t)
+	var ellipseAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if arrowAfter == nil || arrowAfter.EndBinding != nil {
+		t.Fatalf("arrow end should be unbound: %+v", arrowAfter)
+	}
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the arrow: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d", ellipseAfter.Version, ellipse.Version+1)
+	}
+	if arrowAfter.Version != arrow.Version+1 {
+		t.Errorf("arrow version %d, want %d", arrowAfter.Version, arrow.Version+1)
+	}
+}
+
+func TestBoardEditArrowEndRefusals(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30},
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var arrow *sceneElement
+	for i := range scene {
+		if scene[i].Type == "arrow" {
+			arrow = &scene[i]
+		}
+	}
+	if arrow == nil {
+		t.Fatal("no arrow")
+	}
+	cases := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": 1.0}, "both x2 and y2"},
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": 1.0, "y2": 2e6}, "coordinates"},
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": arrow.X, "y2": arrow.Y}, "apart"},
+	}
+	for _, c := range cases {
+		_, _, err := tf.run(t, "board_edit", c.in)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%v: err %v, want %q", c.in, err, c.want)
+		}
+	}
+	// x2, y2 is only for an arrow's end.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x2": 5.0, "y2": 5.0}); err == nil ||
+		!strings.Contains(err.Error(), "x2, y2 move an arrow's end") {
+		t.Errorf("x2 on a rectangle: %v", err)
+	}
+}
+
+func TestBoardEditRefusals(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+	cases := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3}, "nothing to change"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0}, "both x and y"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x": 1.0, "y": 2e6}, "coordinates"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "color": "red"}, "not #rgb"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "width": 0.0}, "width and height"},
+		{map[string]any{"board": tf.board.ID, "id": "nope", "version": 1, "x": 1.0, "y": 1.0}, "no element"},
+		{map[string]any{"board": tf.board.ID, "id": "own", "version": 2, "x": 1.0, "y": 1.0}, "changed since you read it"},
+	}
+	for _, c := range cases {
+		_, _, err := tf.run(t, "board_edit", c.in)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%v: err %v, want %q", c.in, err, c.want)
+		}
+	}
+	if own := sceneElementByID(t, tf, "own"); own == nil || own.Version != 3 {
+		t.Errorf("a refused edit changed the board: %+v", own)
+	}
+}
+
 func TestOwnerEditWinsOverAddition(t *testing.T) {
 	tf := newToolFixture(t)
 	if _, _, err := tf.run(t, "board_add_note", map[string]any{"board": tf.board.ID, "text": "hi"}); err != nil {
@@ -319,11 +739,12 @@ func TestShapesAndRead(t *testing.T) {
 			}
 		}
 	}
-	if len(arrow.Points) != 2 || arrow.Points[1] != [2]float64{100, 0} {
+	// Bound ends sit on the outlines, the binding's 1 px gap outside them.
+	if len(arrow.Points) != 2 || arrow.Points[1] != [2]float64{98, 0} {
 		t.Errorf("arrow points %v", arrow.Points)
 	}
-	if arrow.X-rect.X != 160 {
-		t.Errorf("arrow starts %v right of the rectangle, want 160", arrow.X-rect.X)
+	if arrow.X-rect.X != 161 {
+		t.Errorf("arrow starts %v right of the rectangle, want 161", arrow.X-rect.X)
 	}
 	if byText["Sensor"].Container != rect.ID {
 		t.Errorf("label not bound to its rectangle")
@@ -333,7 +754,8 @@ func TestShapesAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`Board #1 "Plan"`, "rectangle own at (0, 0) size 100×80", `text "Sensor" in ` + rect.ID, "arrow", "(added by #7)", `text "added by #7"`} {
+	short := shortIDs(tf.scene(t))
+	for _, want := range []string{`Board #1 "Plan"`, "rectangle own v3 at (0, 0) size 100×80", `text "Sensor" in ` + short[rect.ID], "arrow", "(added by #7)", `text "added by #7"`} {
 		if !strings.Contains(read, want) {
 			t.Errorf("board_read lacks %q:\n%s", want, read)
 		}
@@ -345,6 +767,83 @@ func TestShapesAndRead(t *testing.T) {
 	if err != nil || !strings.Contains(list, `#1 Plan`) {
 		t.Errorf("board_list: %q %v", list, err)
 	}
+}
+
+func TestArrowsBindToShapes(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60, "text": "Sensor"},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+		{"type": "arrow", "x": 400, "y": 30, "x2": 500, "y2": 30}, // free → free
+		{"type": "arrow", "x": 380, "y": 20, "x2": 500, "y2": 20}, // ellipse → free
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var arrows []*sceneElement
+	var rect, ellipse *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "arrow":
+			arrows = append(arrows, &scene[i])
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		}
+	}
+	if len(arrows) != 3 || rect == nil || ellipse == nil {
+		t.Fatalf("arrows %d rect %v ellipse %v", len(arrows), rect, ellipse)
+	}
+	bound := arrows[0]
+	if bound.StartBinding == nil || bound.StartBinding.ElementID != rect.ID || bound.StartBinding.Focus != 0 || bound.StartBinding.Gap != 1 {
+		t.Errorf("arrow 0 start binding: %+v", bound.StartBinding)
+	}
+	if bound.EndBinding == nil || bound.EndBinding.ElementID != ellipse.ID || bound.EndBinding.Focus != 0 || bound.EndBinding.Gap != 1 {
+		t.Errorf("arrow 0 end binding: %+v", bound.EndBinding)
+	}
+	if !boundTo(rect.BoundElements, bound.ID) {
+		t.Errorf("rectangle does not list arrow 0 in boundElements: %+v", rect.BoundElements)
+	}
+	if !textBoundTo(rect.BoundElements, rect.ID) {
+		t.Errorf("rectangle lost its label binding: %+v", rect.BoundElements)
+	}
+	if !boundTo(ellipse.BoundElements, bound.ID) {
+		t.Errorf("ellipse does not list arrow 0 in boundElements: %+v", ellipse.BoundElements)
+	}
+	// A free arrow binds to nothing.
+	if arrows[1].StartBinding != nil || arrows[1].EndBinding != nil {
+		t.Errorf("free arrow should not bind: start %+v end %+v", arrows[1].StartBinding, arrows[1].EndBinding)
+	}
+	// A half-bound arrow binds only its shape end.
+	if arrows[2].StartBinding == nil || arrows[2].StartBinding.ElementID != ellipse.ID {
+		t.Errorf("arrow 2 start binding: %+v", arrows[2].StartBinding)
+	}
+	if arrows[2].EndBinding != nil {
+		t.Errorf("arrow 2 end should be free: %+v", arrows[2].EndBinding)
+	}
+}
+
+func boundTo(list []boundElement, id string) bool {
+	for _, be := range list {
+		if be.ID == id && be.Type == "arrow" {
+			return true
+		}
+	}
+	return false
+}
+
+// textBoundTo reports whether containerID has a bound label (a text entry
+// whose id is some other element).
+func textBoundTo(list []boundElement, containerID string) bool {
+	for _, be := range list {
+		if be.Type == "text" && be.ID != containerID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCreate(t *testing.T) {

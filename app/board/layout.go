@@ -23,7 +23,6 @@ const (
 	noteSize     = 20.0
 	captionSize  = 16.0
 	lineHeight   = 1.25
-	charWidth    = 0.6 // of the font size: a generous average, so text never runs past its box
 	notePad      = 5.0 // Excalidraw's padding around text in a container
 	noteColumns  = 48  // characters per line of a note
 	maxImageSide = 640.0
@@ -79,15 +78,49 @@ func (a *addition) base(kind string, x, y, w, h float64) element {
 	return e
 }
 
-// textSize estimates a text's box: Excalidraw measures it in the browser, the
-// server can only guess, so the guess errs on the wide side.
+// textSize estimates a text's box in the default font (Excalifont): the
+// browser measures it, the server can only guess, so the guess errs on the
+// wide side.
 func textSize(text string, size float64) (w, h float64) {
+	return textSizeIn(text, size, fontFamily)
+}
+
+// textSizeIn estimates a text's box for a font family from its average
+// character width and line height. The guess errs wide, so the server never
+// computes a box the rendered text would run past.
+func textSizeIn(text string, size, family float64) (w, h float64) {
 	lines := strings.Split(text, "\n")
 	longest := 0
 	for _, l := range lines {
 		longest = max(longest, utf8.RuneCountInString(l))
 	}
-	return math.Ceil(max(1, float64(longest)) * size * charWidth), math.Ceil(float64(len(lines)) * size * lineHeight)
+	return math.Ceil(max(1, float64(longest)) * size * charWidthOf(family)), math.Ceil(float64(len(lines)) * size * lineHeightOf(family))
+}
+
+// charWidthOf is a font's average character width as a fraction of the font
+// size, erring wide. Excalifont (5), Excalidraw's hand-drawn default, is the
+// widest; the named families are a little narrower.
+func charWidthOf(family float64) float64 {
+	switch int(family) {
+	case 1: // Virgil
+		return 0.58
+	case 2: // Helvetica
+		return 0.52
+	case 3: // Cascadia
+		return 0.6
+	default: // Excalifont (5), or unknown
+		return 0.65
+	}
+}
+
+// lineHeightOf is a font's line height as a fraction of the font size.
+func lineHeightOf(family float64) float64 {
+	switch int(family) {
+	case 2: // Helvetica
+		return 1.2
+	default:
+		return lineHeight
+	}
 }
 
 func (a *addition) text(x, y float64, text string, size float64, color string) element {
@@ -149,6 +182,22 @@ func wrap(text string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+// labelColumns is how many characters of a label fit on one line inside a
+// shape of the given width, in the default font. At least one character fits,
+// so wrap never loops.
+func labelColumns(width, size float64) int {
+	return max(1, int((width-2*notePad)/(size*charWidthOf(fontFamily))))
+}
+
+// fitLabelText wraps a label's text to its container's width and returns the
+// wrapped text and the container height that fits it: the height it already
+// has, grown if the wrapped label is taller. The width is never changed.
+func fitLabelText(container element, text string, size float64) (string, float64) {
+	wrapped := wrap(text, labelColumns(container.num("width"), size))
+	_, h := textSizeIn(wrapped, size, fontFamily)
+	return wrapped, max(container.num("height"), h+2*notePad)
+}
+
 const contentTop = tagSize*lineHeight + 8 // content starts below the tag
 
 // note adds a yellow sticky note holding text.
@@ -200,7 +249,14 @@ func (a *addition) shapes(list []Shape) {
 		}
 	}
 	dx, dy := -minX, contentTop-minY
+
+	// Boxes and text first, so an arrow can bind to a box wherever it sits in
+	// the list. Arrows come after and bind to the boxes their ends fall on.
+	var boxes []shapeBox
 	for _, s := range list {
+		if s.Type == "arrow" { // arrows are built after the boxes, so they can bind
+			continue
+		}
 		x, y := s.X+dx, s.Y+dy
 		var e element
 		switch s.Type {
@@ -214,13 +270,6 @@ func (a *addition) shapes(list []Shape) {
 			if s.Fill != "" {
 				e["backgroundColor"] = s.Fill
 			}
-		case "arrow":
-			px, py := s.X2-s.X, s.Y2-s.Y
-			e = a.base("arrow", x, y, math.Abs(px), math.Abs(py))
-			e["points"] = [][2]float64{{0, 0}, {px, py}}
-			e["lastCommittedPoint"], e["startBinding"], e["endBinding"] = nil, nil, nil
-			e["startArrowhead"], e["endArrowhead"], e["elbowed"] = nil, "arrow", false
-			e["roundness"] = map[string]any{"type": 2}
 		case "text":
 			e = a.text(x, y, s.Text, noteSize, ink)
 		}
@@ -228,9 +277,35 @@ func (a *addition) shapes(list []Shape) {
 			e["strokeColor"] = s.Color
 		}
 		if s.Text != "" && (s.Type == "rectangle" || s.Type == "ellipse") {
-			cols := max(4, int((s.Width-2*notePad)/(noteSize*charWidth)))
-			a.label(e, wrap(s.Text, cols), noteSize, "center", "middle")
+			wrapped, height := fitLabelText(e, s.Text, noteSize)
+			e["height"] = height // grow the box to fit its label; keep its width
+			a.label(e, wrapped, noteSize, "center", "middle")
 		}
+		if s.Type == "rectangle" || s.Type == "ellipse" {
+			boxes = append(boxes, shapeBox{id: e["id"].(string), e: e, x: x, y: y,
+				w: e["width"].(float64), h: e["height"].(float64)})
+		}
+	}
+	for _, s := range list {
+		if s.Type != "arrow" {
+			continue
+		}
+		x, y := s.X+dx, s.Y+dy
+		px, py := s.X2-s.X, s.Y2-s.Y
+		e := a.base("arrow", x, y, math.Abs(px), math.Abs(py))
+		e["points"] = [][2]float64{{0, 0}, {px, py}}
+		e["lastCommittedPoint"], e["startBinding"], e["endBinding"] = nil, nil, nil
+		e["startArrowhead"], e["endArrowhead"], e["elbowed"] = nil, "arrow", false
+		e["roundness"] = map[string]any{"type": 2}
+		if s.Color != "" {
+			e["strokeColor"] = s.Color
+		}
+		a.bindArrow(e, x, y, x+px, y+py, boxes)
+		byID := make(map[string]element, len(boxes))
+		for _, b := range boxes {
+			byID[b.id] = b.e
+		}
+		routeArrow(e, byID)
 	}
 }
 
@@ -266,6 +341,11 @@ type sceneElement struct {
 	GroupIDs   []string       `json:"groupIds"`
 	Container  string         `json:"containerId"`
 	CustomData map[string]any `json:"customData"`
+	Version    int64          `json:"version"`
+
+	StartBinding  *binding       `json:"startBinding"`
+	EndBinding    *binding       `json:"endBinding"`
+	BoundElements []boundElement `json:"boundElements"`
 }
 
 // agentOf is the agent that added an element (0: the owner drew it).

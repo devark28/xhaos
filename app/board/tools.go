@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/devark28/xhaos/app/agent"
+	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/llm"
 	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/tool"
@@ -46,6 +47,7 @@ func NewTools(s *Service, root func(a agent.Agent) (string, error)) *Tools {
 var effects = map[string]string{
 	"board_list": tool.Read, "board_read": tool.Read,
 	"board_create": tool.Write, "board_add_note": tool.Write, "board_add_image": tool.Write, "board_add_shapes": tool.Write,
+	"board_edit": tool.Write,
 }
 
 func (t *Tools) Owns(name string) bool { _, ok := effects[name]; return ok }
@@ -82,29 +84,102 @@ func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
 		{Name: "board_list", Description: "List the workspace's boards (the user's Excalidraw drawings in the Draw tab): id and name.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
-		{Name: "board_read", Description: "Read a board as text: each element's type, id, position, size and text, in drawing order. Images are listed by name, without their pixels.",
-			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID}, Required: []string{"board"}}},
+		{Name: "board_read", Description: "Read a board as text. Each element is named by a short id prefix (unique, at least 4 characters). mode \"items\" (default) lists each element's type, id, version, position, size and text, in drawing order; mode \"outline\" gives a compact list with type, id, version, text and group, without geometry. Narrow the result with ids (element ids or prefixes), group (a group id), type (an element type), or region (elements in the rectangle x, y, width, height). Images are listed by name, without their pixels.",
+			Schema: llm.ToolSchema{Properties: map[string]any{
+				"board": boardID,
+				"mode":  map[string]any{"type": "string", "enum": []string{"outline", "items"}},
+				"ids":   map[string]any{"type": "array", "items": str},
+				"group": str,
+				"type":  str,
+				"x":     num, "y": num,
+				"width": num, "height": num,
+			}, Required: []string{"board"}}},
 		{Name: "board_create", Description: "Create an empty board. The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"name": str}, Required: []string{"name"}}},
 		{Name: "board_add_note", Description: "Add a sticky note with text to a board." + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "text": str}, Required: []string{"board", "text"}}},
 		{Name: "board_add_image", Description: "Add a PNG, JPEG, GIF or WebP image (at most 20 MB) to a board, with an optional caption. path is in your project, or in your $TMPDIR (absolute)." + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "path": str, "caption": str}, Required: []string{"board", "path"}}},
-		{Name: "board_add_shapes", Description: fmt.Sprintf("Add a small diagram to a board: rectangles, ellipses, arrows (x,y to x2,y2) and text, in your own coordinates (x right, y down; only their relative positions matter), at most %d shapes.", maxShapes) + where + " The user may review it first.",
+		{Name: "board_add_shapes", Description: fmt.Sprintf("Add a small diagram to a board: rectangles, ellipses, arrows (x,y to x2,y2) and text, in your own coordinates (x right, y down; only their relative positions matter), at most %d shapes. An arrow whose x,y or x2,y2 lands on a rectangle or ellipse is bound to it and follows it when it moves or resizes.", maxShapes) + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "shapes": map[string]any{"type": "array", "items": shape}}, Required: []string{"board", "shapes"}}},
+		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), move an arrow's end (x2, y2), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Deleting a rectangle or ellipse also deletes the arrows bound to it, and its label. Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
+			Schema: llm.ToolSchema{Properties: map[string]any{
+				"board":   boardID,
+				"id":      map[string]any{"type": "string", "description": "The element's id (board_read shows them)."},
+				"version": map[string]any{"type": "integer", "description": "The element's version (board_read shows it)."},
+				"x":       num, "y": num,
+				"x2":     map[string]any{"type": "number", "description": "arrow: move its end point"},
+				"y2":     map[string]any{"type": "number", "description": "arrow: move its end point"},
+				"width":  map[string]any{"type": "number", "description": "rectangle and ellipse"},
+				"height": map[string]any{"type": "number", "description": "rectangle and ellipse"},
+				"text":   map[string]any{"type": "string", "description": "the element's (or its label's) new text"},
+				"color":  map[string]any{"type": "string", "description": "stroke colour, #rgb or #rrggbb"},
+				"fill":   map[string]any{"type": "string", "description": "rectangle or ellipse background, #rgb or #rrggbb"},
+				"delete": map[string]any{"type": "boolean", "description": "delete the element; a rectangle or ellipse also deletes its label and its bound arrows"},
+			}, Required: []string{"board", "id", "version"}}},
 	}
 }
 
 type input struct {
-	Board   int64   `json:"board"`
-	Name    string  `json:"name"`
-	Text    string  `json:"text"`
-	Path    string  `json:"path"`
-	Caption string  `json:"caption"`
-	Shapes  []Shape `json:"shapes"`
+	Board   int64    `json:"board"`
+	Name    string   `json:"name"`
+	Text    string   `json:"text"`
+	Path    string   `json:"path"`
+	Caption string   `json:"caption"`
+	Shapes  []Shape  `json:"shapes"`
+	Mode    string   `json:"mode"`  // board_read: "outline" or "items"
+	IDs     []string `json:"ids"`   // board_read: element ids or prefixes
+	Group   string   `json:"group"` // board_read: a group id
+	Type    string   `json:"type"`  // board_read: an element type
+	ID      string   `json:"id"`
+	Version int64    `json:"version"`
+	X       *float64 `json:"x"` // board_edit: move
+	Y       *float64 `json:"y"`
+	X2      *float64 `json:"x2"` // board_edit: move an arrow's end
+	Y2      *float64 `json:"y2"`
+	Width   *float64 `json:"width"`
+	Height  *float64 `json:"height"`
+	Color   string   `json:"color"`
+	Fill    string   `json:"fill"`
+	Delete  bool     `json:"delete"`
 }
 
 var colorRE = regexp.MustCompile(`^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|transparent)$`)
+
+// editOp turns a board_edit call's fields into an EditOp, checking what it can
+// before the board is read. The rest of the validation is in applyEdit, which
+// the dry run (loadEdit) runs.
+func editOp(in input) (EditOp, error) {
+	op := EditOp{Color: in.Color, Fill: in.Fill, Delete: in.Delete}
+	if in.Text != "" {
+		op.Text = &in.Text
+	}
+	for _, c := range []string{in.Color, in.Fill} {
+		if c != "" && !colorRE.MatchString(c) {
+			return EditOp{}, fmt.Errorf("colour %q is not #rgb or #rrggbb", c)
+		}
+	}
+	if in.X != nil || in.Y != nil {
+		if in.X == nil || in.Y == nil {
+			return EditOp{}, errors.New("a move needs both x and y")
+		}
+		if math.IsNaN(*in.X) || math.Abs(*in.X) > maxCoord || math.IsNaN(*in.Y) || math.Abs(*in.Y) > maxCoord {
+			return EditOp{}, fmt.Errorf("coordinates are between -%.0f and %.0f", maxCoord, maxCoord)
+		}
+		op.X, op.Y = in.X, in.Y
+	}
+	if in.X2 != nil || in.Y2 != nil {
+		if in.X2 == nil || in.Y2 == nil {
+			return EditOp{}, errors.New("a move of an arrow's end needs both x2 and y2")
+		}
+		if math.IsNaN(*in.X2) || math.Abs(*in.X2) > maxCoord || math.IsNaN(*in.Y2) || math.Abs(*in.Y2) > maxCoord {
+			return EditOp{}, fmt.Errorf("coordinates are between -%.0f and %.0f", maxCoord, maxCoord)
+		}
+		op.X2, op.Y2 = in.X2, in.Y2
+	}
+	op.Width, op.Height = in.Width, in.Height
+	return op, nil
+}
 
 func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, error) {
 	call := tool.Call{ID: c.ID, Name: c.Name, Effect: effects[c.Name], Args: c.Input}
@@ -180,6 +255,35 @@ func (t *Tools) Prepare(ws string, a agent.Agent, c llm.ToolCall) (tool.Call, er
 			p.WriteString("\n- " + describeShape(s))
 		}
 		call.Preview = p.String()
+	case "board_edit":
+		if strings.TrimSpace(in.ID) == "" {
+			return call, errors.New("board_edit needs id (an element's id from board_read)")
+		}
+		if in.Version < 1 {
+			return call, errors.New("board_edit needs version (the element's version from board_read)")
+		}
+		op, err := editOp(in)
+		if err != nil {
+			return call, err
+		}
+		full, err := resolveElementID(t.s.db, b.ID, in.ID)
+		if err != nil {
+			if errors.Is(err, apperr.NotFound) {
+				return call, fmt.Errorf("there is no element %q on board #%d; board_read it to see the ids", in.ID, b.ID)
+			}
+			return call, err
+		}
+		// A dry run: validate the edit and get what it does for the preview.
+		_, _, changes, err := loadEdit(t.s.db, b.ID, full, in.Version, op)
+		if err != nil {
+			return call, err
+		}
+		call.Effect = tool.Write
+		if op.Delete {
+			call.Effect = tool.Delete
+		}
+		call.Summary = fmt.Sprintf("%s: %s", on, strings.Join(changes, ", "))
+		call.Preview = fmt.Sprintf("On %s, %s.", on, strings.Join(changes, ", "))
 	}
 	return call, nil
 }
@@ -219,7 +323,7 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		}
 		return tool.Clip(strings.TrimSpace(b.String())), nil
 	case "board_read":
-		return t.read(ws, in.Board)
+		return t.read(ws, in.Board, in)
 	case "board_create":
 		m, err := t.s.Create(CreateRequest{WorkspaceID: ws, Name: in.Name})
 		if err != nil {
@@ -245,6 +349,20 @@ func (t *Tools) Execute(_ context.Context, ws string, a agent.Agent, call tool.C
 		add := newAddition(a.ID)
 		add.shapes(in.Shapes)
 		return t.add(ws, a, in.Board, add, nil, "", call.ID, fmt.Sprintf("%d shapes", len(in.Shapes)))
+	case "board_edit":
+		op, err := editOp(in)
+		if err != nil {
+			return "", err
+		}
+		full, err := resolveElementID(t.s.db, in.Board, in.ID)
+		if err != nil {
+			return "", err
+		}
+		res, err := t.s.editForAgent(ws, a.ID, in.Board, full, in.Version, op)
+		if err != nil {
+			return "", err
+		}
+		return t.withLayout(ws, in.Board, fmt.Sprintf("Edited element %s on board #%d %q: %s.", res.ID, res.Board.ID, res.Board.Name, strings.Join(res.Changes, ", "))), nil
 	}
 	return "", fmt.Errorf("unknown tool %s", call.Name)
 }
@@ -255,19 +373,26 @@ func (t *Tools) add(ws string, a agent.Agent, boardID int64, add *addition, img 
 		return "", err
 	}
 	w, h := add.size()
-	return fmt.Sprintf("Added %s to board #%d %q, at (%.0f, %.0f), %.0f×%.0f, as group %s (%d elements). It shows on open pages now.",
-		what, res.Board.ID, res.Board.Name, res.X, res.Y, w, h, res.Group, len(res.Elements)), nil
+	msg := fmt.Sprintf("Added %s to board #%d %q, at (%.0f, %.0f), %.0f×%.0f, as group %s (%d elements). It shows on open pages now.",
+		what, res.Board.ID, res.Board.Name, res.X, res.Y, w, h, res.Group, len(res.Elements))
+	return t.withLayout(ws, boardID, msg), nil
 }
 
-// read is board_read's text: one line per live element, in drawing order.
-func (t *Tools) read(ws string, id int64) (string, error) {
-	b, err := t.s.Load(ws, id)
-	if err != nil {
-		return "", err
+// withLayout appends a layout check to a write's result, or nothing when the
+// board is clean.
+func (t *Tools) withLayout(ws string, boardID int64, msg string) string {
+	if check := t.layoutAfter(ws, boardID); check != "" {
+		return msg + "\nLayout: " + check
 	}
-	mimes := map[string]string{}
-	for _, r := range b.Images {
-		mimes[r.FileID] = r.MimeType
+	return msg
+}
+
+// layoutAfter reads the board's live elements and checks them for problems an
+// agent cannot see (see layoutCheck).
+func (t *Tools) layoutAfter(ws string, boardID int64) string {
+	b, err := t.s.Load(ws, boardID)
+	if err != nil {
+		return ""
 	}
 	var els []sceneElement
 	for _, raw := range b.Elements {
@@ -276,52 +401,7 @@ func (t *Tools) read(ws string, id int64) (string, error) {
 			els = append(els, e)
 		}
 	}
-	sortByIndex(els)
-	var out strings.Builder
-	fmt.Fprintf(&out, "Board #%d %q, %d elements (x right, y down).\n", b.ID, b.Name, len(els))
-	for i, e := range els {
-		if i == maxRead {
-			fmt.Fprintf(&out, "… and %d more.\n", len(els)-maxRead)
-			break
-		}
-		bb := e.bounds()
-		fmt.Fprintf(&out, "- %s %s at (%.0f, %.0f) size %.0f×%.0f", e.Type, e.ID, bb.x0, bb.y0, bb.x1-bb.x0, bb.y1-bb.y0)
-		if e.Type == "image" {
-			name, _ := e.CustomData["xhaosName"].(string)
-			if name == "" {
-				name = "unnamed"
-			}
-			fmt.Fprintf(&out, " image %q (%s)", name, orUnknown(mimes[e.FileID]))
-		}
-		if e.Text != "" {
-			fmt.Fprintf(&out, " text %q", clipText(e.Text, 300))
-		}
-		if e.Container != "" {
-			fmt.Fprintf(&out, " in %s", e.Container)
-		}
-		if n := e.agentOf(); n != 0 {
-			fmt.Fprintf(&out, " (added by #%d)", n)
-		}
-		out.WriteString("\n")
-	}
-	return tool.Clip(strings.TrimSpace(out.String())), nil
-}
-
-// sortByIndex puts elements in drawing order: by fractional index, those
-// without one last in their stored order (as Excalidraw does).
-func sortByIndex(els []sceneElement) {
-	key := func(e sceneElement) string {
-		if e.Index == nil {
-			return "\U0010FFFF"
-		}
-		return *e.Index
-	}
-	// insertion sort keeps stored order among equal keys
-	for i := 1; i < len(els); i++ {
-		for j := i; j > 0 && key(els[j]) < key(els[j-1]); j-- {
-			els[j], els[j-1] = els[j-1], els[j]
-		}
-	}
+	return layoutCheck(els)
 }
 
 func checkShapes(list []Shape) error {

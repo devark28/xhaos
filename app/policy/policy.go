@@ -76,6 +76,10 @@ const (
 	// in. It runs under auto review, read-only agents included, and asks
 	// under manual review.
 	EffectNet = "net"
+	// EffectDelete removes an element from a board. Unlike a plain write, it
+	// always waits for the owner, whatever the review policy: it destroys
+	// someone's work, so auto review must never run it.
+	EffectDelete = "delete"
 )
 
 // Gate decides what happens to a tool call with the given effect. commit
@@ -102,6 +106,9 @@ func (p Policy) Gate(effect string, commit bool) (verdict, reason string) {
 	}
 	if p.Access != "rw" {
 		return Deny, "this agent is read-only"
+	}
+	if effect == EffectDelete {
+		return Ask, "deleting a board element needs your approval"
 	}
 	if commit {
 		switch p.Commit {

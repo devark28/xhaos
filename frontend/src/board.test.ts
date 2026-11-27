@@ -106,5 +106,7 @@ test('a finished board call becomes "added … to <board>", linked by ID', () =>
   assert.deepEqual(boardAdded('board_add_shapes', 'Added 3 shapes to board #5 "Flow \\"v2\\"", at (0, 0), 1×1, as group g (7 elements).'),
     { id: 5, name: 'Flow "v2"', added: 'added 3 shapes to' });
   assert.deepEqual(boardAdded('board_create', 'Created board #9 "Sketches".'), { id: 9, name: 'Sketches', added: 'created' });
+  assert.deepEqual(boardAdded('board_edit', 'Edited element abc on board #4 "Plan": moved to (40, 0), recoloured to #e03131.'),
+    { id: 4, name: 'Plan', added: 'edited an element on' });
   assert.equal(boardAdded('board_add_note', 'there is no board #9'), null);
 });

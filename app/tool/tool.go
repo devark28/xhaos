@@ -34,6 +34,8 @@ const (
 	Contact = policy.EffectContact
 	// Net reaches the web (package web).
 	Net = policy.EffectNet
+	// Delete removes an element of the owner's own drawing from a board.
+	Delete = policy.EffectDelete
 )
 
 const (
