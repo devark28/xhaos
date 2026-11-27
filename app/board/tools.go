@@ -102,7 +102,7 @@ func (t *Tools) Specs(string) []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "path": str, "caption": str}, Required: []string{"board", "path"}}},
 		{Name: "board_add_shapes", Description: fmt.Sprintf("Add a small diagram to a board: rectangles, ellipses, arrows (x,y to x2,y2) and text, in your own coordinates (x right, y down; only their relative positions matter), at most %d shapes. An arrow whose x,y or x2,y2 lands on a rectangle or ellipse is bound to it and follows it when it moves or resizes.", maxShapes) + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "shapes": map[string]any{"type": "array", "items": shape}}, Required: []string{"board", "shapes"}}},
-		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), move an arrow's end (x2, y2), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
+		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), move an arrow's end (x2, y2), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Deleting a rectangle or ellipse also deletes the arrows bound to it, and its label. Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
 			Schema: llm.ToolSchema{Properties: map[string]any{
 				"board":   boardID,
 				"id":      map[string]any{"type": "string", "description": "The element's id (board_read shows them)."},
@@ -115,7 +115,7 @@ func (t *Tools) Specs(string) []llm.Tool {
 				"text":   map[string]any{"type": "string", "description": "the element's (or its label's) new text"},
 				"color":  map[string]any{"type": "string", "description": "stroke colour, #rgb or #rrggbb"},
 				"fill":   map[string]any{"type": "string", "description": "rectangle or ellipse background, #rgb or #rrggbb"},
-				"delete": map[string]any{"type": "boolean", "description": "delete the element and its bound label"},
+				"delete": map[string]any{"type": "boolean", "description": "delete the element; a rectangle or ellipse also deletes its label and its bound arrows"},
 			}, Required: []string{"board", "id", "version"}}},
 	}
 }

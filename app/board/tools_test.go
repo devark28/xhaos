@@ -272,7 +272,7 @@ func TestBoardEdit(t *testing.T) {
 	}
 }
 
-func TestBoardEditDeleteUnbindsArrows(t *testing.T) {
+func TestBoardEditDeleteDeletesArrows(t *testing.T) {
 	tf := newToolFixture(t)
 	shapes := []map[string]any{
 		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
@@ -301,8 +301,12 @@ func TestBoardEditDeleteUnbindsArrows(t *testing.T) {
 		t.Fatalf("arrow not bound as drawn: start %+v end %+v", arrow.StartBinding, arrow.EndBinding)
 	}
 
-	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true}); err != nil {
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(out, "deleted a rectangle and 1 arrow") {
+		t.Errorf("result should say the arrow is deleted: %q", out)
 	}
 
 	scene = tf.scene(t)
@@ -320,28 +324,95 @@ func TestBoardEditDeleteUnbindsArrows(t *testing.T) {
 	if rectAfter == nil || !rectAfter.IsDeleted || rectAfter.Version != rect.Version+1 {
 		t.Fatalf("rect after delete: %+v", rectAfter)
 	}
-	if arrowAfter == nil {
-		t.Fatalf("arrow missing after delete")
+	// The arrow bound to the rectangle at its start is deleted with it.
+	if arrowAfter == nil || !arrowAfter.IsDeleted || arrowAfter.Version != arrow.Version+1 {
+		t.Fatalf("arrow after delete: %+v", arrowAfter)
 	}
-	// The arrow's start is unbound from the deleted rectangle; its end keeps
-	// pointing at the ellipse. Its version is bumped because it was touched.
-	if arrowAfter.StartBinding != nil {
-		t.Errorf("arrow still starts on the deleted rectangle: %+v", arrowAfter.StartBinding)
+	// The ellipse the arrow's other end was bound to loses it from its
+	// boundElements and is bumped because it was touched.
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the deleted arrow: %+v", ellipseAfter.BoundElements)
 	}
-	if arrowAfter.EndBinding == nil || arrowAfter.EndBinding.ElementID != ellipse.ID {
-		t.Errorf("arrow lost its end binding: %+v", arrowAfter.EndBinding)
-	}
-	if arrowAfter.Version != arrow.Version+1 {
-		t.Errorf("arrow version %d, want %d (it was touched)", arrowAfter.Version, arrow.Version+1)
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d (it was touched)", ellipseAfter.Version, ellipse.Version+1)
 	}
 	if boundTo(rectAfter.BoundElements, arrow.ID) {
 		t.Errorf("deleted rectangle still lists the arrow: %+v", rectAfter.BoundElements)
 	}
-	if !boundTo(ellipseAfter.BoundElements, arrow.ID) {
-		t.Errorf("ellipse lost the arrow from its boundElements: %+v", ellipseAfter.BoundElements)
+}
+
+func TestBoardEditDeleteDeletesLabelAndArrows(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60, "text": "Sensor"},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+		{"type": "arrow", "x": 160, "y": 50, "x2": 260, "y2": 50}, // rect → ellipse
 	}
-	if ellipseAfter.Version != ellipse.Version {
-		t.Errorf("ellipse version %d, want %d (it was not touched)", ellipseAfter.Version, ellipse.Version)
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse *sceneElement
+	var arrows []*sceneElement
+	var label *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrows = append(arrows, &scene[i])
+		case "text":
+			label = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || len(arrows) != 2 || label == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v arrows %d label %v", rect, ellipse, len(arrows), label)
+	}
+
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": rect.ID, "version": rect.Version, "delete": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "deleted a rectangle, its label and 2 arrows") {
+		t.Errorf("result: %q", out)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, labelAfter *sceneElement
+	var arrowAfters []*sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case label.ID:
+			labelAfter = &scene[i]
+		}
+		switch scene[i].Type {
+		case "arrow":
+			arrowAfters = append(arrowAfters, &scene[i])
+		}
+	}
+	if rectAfter == nil || !rectAfter.IsDeleted {
+		t.Fatalf("rect after delete: %+v", rectAfter)
+	}
+	if labelAfter == nil || !labelAfter.IsDeleted {
+		t.Fatalf("label after delete: %+v", labelAfter)
+	}
+	if len(arrowAfters) != 2 {
+		t.Fatalf("arrows after delete: %d, want 2", len(arrowAfters))
+	}
+	for _, a := range arrowAfters {
+		if !a.IsDeleted {
+			t.Errorf("arrow %s not deleted: %+v", a.ID, a)
+		}
+	}
+	if boundTo(ellipseAfter.BoundElements, arrows[0].ID) || boundTo(ellipseAfter.BoundElements, arrows[1].ID) {
+		t.Errorf("ellipse still lists a deleted arrow: %+v", ellipseAfter.BoundElements)
 	}
 }
 

@@ -102,11 +102,18 @@ func loadEdit(q sqlitedb.Querier, boardID int64, id string, v int64, op EditOp) 
 			return nil, nil, nil, err
 		}
 	}
-	// Arrows bound to the element are touched too (their bindings are cleared
-	// when it is deleted), so load them here for their version checks.
-	for _, id := range boundArrowIDs(te) {
-		if err := load(id); err != nil {
+	// Arrows bound to the element at either end are deleted with it when it is
+	// deleted, and the shapes they are bound to at the other end lose them from
+	// their boundElements. Load the arrows and those shapes for their version
+	// checks.
+	for _, arrowID := range boundArrowIDs(te) {
+		if err := load(arrowID); err != nil {
 			return nil, nil, nil, err
+		}
+		for _, other := range arrowBoundIDs(loaded[arrowID]) {
+			if err := load(other); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 	}
 	// An arrow edit rebinds its endpoints to the shapes they land on, so load
@@ -246,6 +253,7 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 	}
 
 	if op.Delete {
+		arrows := boundArrowIDs(tgt)
 		switch {
 		case len(boundTextIDs(tgt)) > 0:
 			mark(targetID)["isDeleted"] = true
@@ -254,7 +262,7 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 					e["isDeleted"] = true
 				}
 			}
-			changes = append(changes, "deleted "+kindName(kind)+" and its label")
+			changes = append(changes, deletePhrase(kind, true, len(arrows)))
 		case containerID(tgt) != "":
 			mark(targetID)["isDeleted"] = true
 			if cont := mark(containerID(tgt)); cont != nil {
@@ -263,15 +271,24 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 			changes = append(changes, "deleted its label")
 		default:
 			mark(targetID)["isDeleted"] = true
-			changes = append(changes, "deleted "+kindName(kind))
+			changes = append(changes, deletePhrase(kind, false, len(arrows)))
 		}
-		// Arrows bound to the deleted element must not keep aiming at it: clear
-		// each one's startBinding/endBinding and drop it from the element's
-		// boundElements. The arrows were loaded in loadEdit, so their versions
-		// are checked and bumped like the deleted element's.
-		for _, id := range boundArrowIDs(tgt) {
+		// Arrows bound to the deleted element at either end are deleted with
+		// it, and the shapes they are bound to at the other end lose them from
+		// their boundElements. The arrows and those shapes were loaded in
+		// loadEdit, so their versions are checked and bumped like the deleted
+		// element's.
+		for _, id := range arrows {
 			if arrow := mark(id); arrow != nil {
-				unbindArrow(arrow, targetID)
+				arrow["isDeleted"] = true
+				for _, other := range arrowBoundIDs(arrow) {
+					if other == targetID {
+						continue
+					}
+					if e := mark(other); e != nil {
+						unbind(e, id)
+					}
+				}
 			}
 			unbind(tgt, id)
 		}
@@ -573,15 +590,36 @@ func boundArrowIDs(e element) []string {
 	return ids
 }
 
-// unbindArrow clears the arrow's startBinding or endBinding that points at
-// shapeID, so the arrow no longer aims at a deleted element.
-func unbindArrow(arrow element, shapeID string) {
-	if sb, ok := arrow["startBinding"].(map[string]any); ok && sb["elementId"] == shapeID {
-		arrow["startBinding"] = nil
+// arrowBoundIDs lists the element ids an arrow's startBinding and endBinding
+// point at, in order, skipping any empty ids.
+func arrowBoundIDs(arrow element) []string {
+	var ids []string
+	for _, k := range []string{"startBinding", "endBinding"} {
+		if b, ok := arrow[k].(map[string]any); ok {
+			if id, _ := b["elementId"].(string); id != "" {
+				ids = append(ids, id)
+			}
+		}
 	}
-	if eb, ok := arrow["endBinding"].(map[string]any); ok && eb["elementId"] == shapeID {
-		arrow["endBinding"] = nil
+	return ids
+}
+
+// deletePhrase is the "deleted …" change phrase for deleting an element of the
+// given kind, mentioning its label when it has one and the arrows bound to it.
+func deletePhrase(kind string, label bool, arrows int) string {
+	s := "deleted " + kindName(kind)
+	switch {
+	case label && arrows > 0:
+		s += ", its label"
+	case label:
+		s += " and its label"
 	}
+	if arrows == 1 {
+		s += " and 1 arrow"
+	} else if arrows > 1 {
+		s += fmt.Sprintf(" and %d arrows", arrows)
+	}
+	return s
 }
 
 // unbind removes the binding to text id from a container's boundElements.
