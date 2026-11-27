@@ -27,6 +27,7 @@ import (
 	"github.com/devark28/xhaos/app/agent"
 	"github.com/devark28/xhaos/app/apperr"
 	"github.com/devark28/xhaos/app/llm"
+	"github.com/devark28/xhaos/app/sandbox"
 	"github.com/devark28/xhaos/app/secretbox"
 	"github.com/devark28/xhaos/app/sqlitedb"
 	"github.com/devark28/xhaos/app/tool"
@@ -251,6 +252,11 @@ func (m *Manager) connect(ws, id string) {
 	switch s.Transport {
 	case "stdio":
 		cmd := exec.Command(s.Command, s.Args...)
+		// The server runs it unsandboxed: never from a folder commands can write.
+		if err := sandbox.CheckProgram(cmd.Path); err != nil {
+			set(&conn{status: "error", err: err.Error()})
+			return
+		}
 		cmd.Env = os.Environ()
 		for k, v := range sec.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)

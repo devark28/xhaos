@@ -75,9 +75,12 @@ type Message struct {
 	ChannelID int64 `json:"channelId"`
 	SenderID  int64 `json:"senderId"` // 0: sent from outside, through the channel's link
 	// SenderName names an outside sender (as it introduced itself).
-	SenderName string    `json:"senderName,omitempty"`
-	Body       string    `json:"body"`
-	CreatedAt  time.Time `json:"createdAt"`
+	SenderName string `json:"senderName,omitempty"`
+	// Via is ViaMCP for a message an MCP client posted (SenderName is then
+	// its token's name, not a name the sender chose); empty otherwise.
+	Via       string    `json:"via,omitempty"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 const schema = `
@@ -111,7 +114,14 @@ func Migrate(db *sql.DB) error {
 	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
-	return migrateLinks(db)
+	if err := migrateLinks(db); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE channel_messages ADD COLUMN via TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 // Service holds channels. Its exported methods are the client-facing API
@@ -434,6 +444,11 @@ func (s *Service) Send(sender agent.Agent, channelID int64, body string) (Messag
 // header, in every other live member's transcript, waking those not paused.
 // senderID 0 is a message from outside, named senderName.
 func (s *Service) deliver(tx *sql.Tx, c Channel, senderID int64, senderName, header, body string) (Message, error) {
+	return s.deliverVia(tx, c, senderID, senderName, "", header, body)
+}
+
+// deliverVia is deliver with the message's Via.
+func (s *Service) deliverVia(tx *sql.Tx, c Channel, senderID int64, senderName, via, header, body string) (Message, error) {
 	ws, channelID := c.WorkspaceID, c.ID
 	if c.Closed {
 		return Message{}, fmt.Errorf("channel #%d was closed by the user; nothing more can be sent there", channelID)
@@ -450,12 +465,12 @@ func (s *Service) deliver(tx *sql.Tx, c Channel, senderID int64, senderName, hea
 	if senderID != 0 {
 		sid = senderID
 	}
-	res, err := tx.Exec(`INSERT INTO channel_messages (channel_id, sender_id, sender_name, body, created_at) VALUES (?, ?, ?, ?, ?)`, channelID, sid, senderName, body, sqlitedb.Stamp(at))
+	res, err := tx.Exec(`INSERT INTO channel_messages (channel_id, sender_id, sender_name, via, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`, channelID, sid, senderName, via, body, sqlitedb.Stamp(at))
 	if err != nil {
 		return Message{}, err
 	}
 	id, _ := res.LastInsertId()
-	msg := Message{ID: id, ChannelID: channelID, SenderID: senderID, SenderName: senderName, Body: body, CreatedAt: at}
+	msg := Message{ID: id, ChannelID: channelID, SenderID: senderID, SenderName: senderName, Via: via, Body: body, CreatedAt: at}
 	events := []eventlog.Event{}
 	ev, err := eventlog.Append(tx, ws, senderID, EventMessage, msg, at)
 	if err != nil {
@@ -499,6 +514,9 @@ func (s *Service) deliver(tx *sql.Tx, c Channel, senderID int64, senderName, hea
 
 // From names a message's sender for agents and digests.
 func (m Message) From() string {
+	if m.SenderID == 0 && m.Via == ViaMCP {
+		return fmt.Sprintf("MCP client (%s)", m.SenderName)
+	}
 	if m.SenderID == 0 {
 		return fmt.Sprintf("outside (%s)", m.SenderName)
 	}
@@ -511,7 +529,7 @@ func (s *Service) messages(ws string, channelID int64, limit int) ([]Message, er
 
 // messagesAfter lists the latest limit messages with ids above after, oldest first.
 func (s *Service) messagesAfter(ws string, channelID, after int64, limit int) ([]Message, error) {
-	rows, err := s.db.Query(`SELECT m.id, m.channel_id, COALESCE(m.sender_id, 0), m.sender_name, m.body, m.created_at FROM channel_messages m
+	rows, err := s.db.Query(`SELECT m.id, m.channel_id, COALESCE(m.sender_id, 0), m.sender_name, m.via, m.body, m.created_at FROM channel_messages m
 		JOIN channels c ON c.id = m.channel_id WHERE c.workspace_id = ? AND m.channel_id = ? AND m.id > ? ORDER BY m.id DESC LIMIT ?`, ws, channelID, after, limit)
 	if err != nil {
 		return nil, err
@@ -521,7 +539,7 @@ func (s *Service) messagesAfter(ws string, channelID, after int64, limit int) ([
 	for rows.Next() {
 		var m Message
 		var at string
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &m.SenderName, &m.Body, &at); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &m.SenderName, &m.Via, &m.Body, &at); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = sqlitedb.ParseStamp(at)

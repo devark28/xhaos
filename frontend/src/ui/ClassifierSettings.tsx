@@ -2,16 +2,17 @@
 // switch is always shown: it turns off the built-in list of build, test and
 // lint commands, and the optional local model's answers with it. The model
 // status line appears only when a model server is configured (-classifier-url,
-// set up by install.sh; off by default there).
+// set up by install.sh, which adds it by default).
 import { useEffect, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
 import { call } from './state/backend.ts';
-import { errorText } from './state/store.ts';
+import { errorText, useApp, workspaceOf } from './state/store.ts';
+import { countsText, reviewCounts } from '../policy.ts';
 import { colors } from './theme/tokens.stylex.ts';
 import { Button } from './kit.tsx';
 import { Toggle } from './AppearanceSettings.tsx';
 
-const HINT = 'Lets agents on auto review run ordinary build, test and lint commands (go test, npm test, make, pytest, ruff check...) without asking you. The list is fixed: no model, nothing new to install. Anything it does not list still asks, and so does every dangerous command (sudo, deletes, installs, publishes, network tools, anything outside the project). Commands with secrets are never listed. It can only make a command run, never stop one. Off: every command asks, as before.';
+const HINT = 'Lets agents on auto review run ordinary build, test and lint commands (go test, npm test, make, pytest, ruff check...) without asking you. The list is fixed: no model, nothing new to install. Anything it does not list goes to the local model when one is set up, and asks otherwise; every dangerous command still asks (sudo, deletes, installs, publishes, network tools, anything outside the project). Commands with secrets are never listed. It can only make a command run, never stop one. Off: every command asks, as before. Only agents on auto review with read-write access use it; read-only and manual agents are unchanged. Put new agents on auto review in Settings → Agents, and an existing one with Auto in its menu. An allowed command’s card gives the reason.';
 
 interface Health { ok: boolean; detail?: string }
 
@@ -67,9 +68,16 @@ export function ClassifierSettings() {
       </span>
       <Button data-classifier-check disabled={checking} onClick={check}>{checking ? 'Checking…' : 'Check again'}</Button>
     </div>}
+    {on && <ReviewCounts />}
     {note && <p {...stylex.props(s.muted)}>{note}</p>}
-    <p {...stylex.props(s.muted)}>Only agents on auto review with read-write access use it; read-only and manual agents are unchanged. An allowed command's card gives the reason.</p>
   </div>;
+}
+
+// ReviewCounts says how many active agents the classifier decides for (auto
+// review) and how many it never sees (manual review).
+function ReviewCounts() {
+  const text = useApp(s => countsText(reviewCounts(workspaceOf(s).agents)));
+  return <p data-review-counts {...stylex.props(s.muted)}>{text} It decides only for those on auto review: pick Auto in an agent’s menu (⋯ on its card).</p>;
 }
 
 const s = stylex.create({

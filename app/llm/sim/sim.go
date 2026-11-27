@@ -9,14 +9,20 @@
 //     final answers when both arrive;
 //   - "contact #N" or "talk to #N": open a channel with agent #N (another
 //     top-level agent's channel waits for your approval);
-//   - "ask": ask you a question with ask_user;
+//   - "ask": ask you a question with ask_user; "questions": three of them
+//     (one multi-select, one free text);
+//   - "rename to <title>": propose that title for itself with propose_title
+//     (it never waits), then go on;
 //   - "write" or "note": write sim-notes.md (gated like any write);
+//   - "lint": run `gofmt -l .` (not a read: it asks under manual review, and
+//     the command classifier's built-in list allows it under auto review);
 //   - "run": run `git status` (a read-only command);
 //   - "board": list the boards (creating one if there are none), add a note
 //     and a small diagram to the first, plus the image at "image <path>"
 //     when the task names one, then read the board back.
 //
-// A message from another agent gets one reply on its channel; replies are
+// A message from another agent, or from an MCP client, gets one reply on
+// its channel; replies are
 // marked so two simulated agents never answer each other forever. A
 // subagent reads a file and reports back.
 package sim
@@ -54,6 +60,8 @@ var (
 	imageRE   = regexp.MustCompile(`(?i)\bimage\s+(\S+\.(?:png|jpe?g|gif|webp))\b`)
 	boardRE   = regexp.MustCompile(`#(\d+)`)
 	channelRE = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from agent #(\d+) \(([^)]*)\):\n`)
+	renameRE  = regexp.MustCompile(`(?i)\brename to\s+"?([^"\n]+?)"?\s*(?:[.;]|$)`)
+	clientRE  = regexp.MustCompile(`^\[channel #(\d+) .*?\] message from "([^"]*)", an MCP client[^\n]*\n`)
 )
 
 func (a Adapter) Stream(ctx context.Context, _ llm.Credentials, turn llm.Turn, onDelta func(string)) (llm.Result, error) {
@@ -189,6 +197,16 @@ func next(turn llm.Turn) llm.Result {
 		return say(fmt.Sprintf("Replied to agent #%s on channel #%s.", m[2], m[1]))
 	}
 
+	// A message from an MCP client acting for the user: one reply there.
+	if m := clientRE.FindStringSubmatch(e.trigger); m != nil {
+		body := e.trigger[len(m[0]):]
+		if len(e.called("channel_send")) == 0 && has(turn, "channel_send") {
+			return use(fmt.Sprintf("%s wrote on channel #%s. Replying there.", m[2], m[1]),
+				call(id("reply"), "channel_send", map[string]any{"channel": atoi(m[1]), "message": replyMark + "Got it: " + firstLine(body)}))
+		}
+		return say(fmt.Sprintf("Replied to %s on channel #%s.", m[2], m[1]))
+	}
+
 	task := e.trigger
 	low := strings.ToLower(task)
 	subagent := strings.Contains(task, "(You are a subagent")
@@ -230,6 +248,24 @@ func next(turn llm.Turn) llm.Result {
 			call(id("contact"), "channel_create", map[string]any{"subject": "coordination: " + firstLine(task), "members": []int{atoi(m[1])},
 				"message": "Hi, I'm working on: " + firstLine(task) + ". Anything I should know before I start?"}))
 	}
+	if m := renameRE.FindStringSubmatch(task); m != nil && has(turn, "propose_title") && len(e.called("propose_title")) == 0 {
+		return use("My task changed; proposing a title that fits it.", call(id("title"), "propose_title", map[string]any{"title": strings.TrimSpace(m[1]), "reason": "the task changed"}))
+	}
+	if wants(low, "questions") && has(turn, "ask_user") && len(e.called("ask_user")) == 0 {
+		return use("A few decisions before I go on.", call(id("ask"), "ask_user", map[string]any{
+			"title": "A few decisions",
+			"questions": []map[string]any{
+				{"prompt": "Which approach should I take?", "options": []map[string]any{
+					{"label": "The small change", "description": "touch as little as possible"},
+					{"label": "The thorough one", "description": "refactor while I am there"},
+				}},
+				{"prompt": "Which checks should I run?", "multiple": true, "options": []map[string]any{
+					{"label": "Unit tests"}, {"label": "Lint", "description": "gofmt and go vet"}, {"label": "Browser tests", "description": "Chrome and Firefox"},
+				}},
+				{"prompt": "Anything else I should know?", "required": false},
+			},
+		}))
+	}
 	if wants(low, "ask") && has(turn, "ask_user") && len(e.called("ask_user")) == 0 {
 		return use("I need a decision before going on.", call(id("ask"), "ask_user", map[string]any{
 			"title": "Before I continue",
@@ -243,6 +279,9 @@ func next(turn llm.Turn) llm.Result {
 		return use("Writing my notes to sim-notes.md.", call(id("write"), "write_file", map[string]any{
 			"path": "sim-notes.md", "content": "# Notes (simulated agent)\n\nTask: " + firstLine(task) + "\n\nLooked at " + seen + ".\n"}))
 	}
+	if wants(low, "lint") && has(turn, "bash") && len(e.called("bash")) == 0 {
+		return use("Checking the formatting.", call(id("lint"), "bash", map[string]any{"command": "gofmt -l ."}))
+	}
 	if wants(low, "run") && has(turn, "bash") && len(e.called("bash")) == 0 {
 		return use("Checking the repository state.", call(id("run"), "bash", map[string]any{"command": "git status --short"}))
 	}
@@ -254,7 +293,7 @@ func next(turn llm.Turn) llm.Result {
 	}
 	// What it did, as a Markdown table (it also shows tables rendering).
 	rows := ""
-	for _, name := range []string{"list_dir", "read_file", "channel_create", "ask_user", "write_file", "bash"} {
+	for _, name := range []string{"list_dir", "read_file", "propose_title", "channel_create", "ask_user", "write_file", "bash"} {
 		if r, ok := e.result(name); ok {
 			state := "done"
 			if r.IsError {

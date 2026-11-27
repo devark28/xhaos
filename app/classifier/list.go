@@ -42,6 +42,9 @@ func ListedIn(root, command string) (name string, ok bool) {
 	if !ok || len(toks) == 0 {
 		return "", false
 	}
+	if root != "" && !insideProject(root, toks) {
+		return "", false
+	}
 	var names []string
 	seen := map[string]bool{}
 	// read is set when a simple command is a read beside the listed commands
@@ -153,6 +156,23 @@ func simple(toks []token, afterPipe bool, root string) (string, bool) {
 		return "", false
 	}
 	return p(args)
+}
+
+// insideProject is true when every word of the line that names a path (any
+// word that is not an operator or an option) resolves inside root, following
+// symbolic links. A word is judged by where it points, not by its text: a
+// link named etc-link that points at /etc is outside, so npx eslint etc-link
+// reads outside the project.
+func insideProject(root string, toks []token) bool {
+	for _, t := range toks {
+		if t.op != "" || strings.HasPrefix(t.text, "-") {
+			continue
+		}
+		if _, err := tool.Resolve(root, t.text); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // --- the shell reader ---

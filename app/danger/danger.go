@@ -127,6 +127,7 @@ func CheckCommand(command string) string {
 const maxNesting = 3
 
 func checkLine(command string, depth int) string {
+	command = tool.JoinLines(command)
 	cmds, ok := tool.SimpleCommands(command)
 	if !ok {
 		return checkText(strings.NewReplacer(`'`, "", `"`, "", `\`, "", `$`, "").Replace(command))

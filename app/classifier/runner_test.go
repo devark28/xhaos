@@ -124,6 +124,26 @@ func TestRunnerListedWithTheDirectFlagRules(t *testing.T) {
 	}
 }
 
+// npx TOOL is listed only when TOOL is installed in the project: a listed
+// tool that is not in node_modules/.bin is not listed, and a tool that is
+// installed for another project is not found here.
+func TestRunnerNotListedWhenTheToolIsMissing(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	installTools(t, other, "tsc")
+	for _, cmd := range []string{"npx tsc --noEmit", "npx eslint .", "npx vitest run"} {
+		if name, ok := ListedIn(root, cmd); ok {
+			t.Errorf("ListedIn(%q) with no tools in the project listed as %q", cmd, name)
+		}
+	}
+	if name, ok := ListedIn(other, "npx tsc --noEmit"); !ok || name != "npx tsc --noEmit" {
+		t.Errorf("ListedIn with the tool installed = %q, %v; want listed", name, ok)
+	}
+	if name, ok := ListedIn(root, "npx tsc --noEmit"); ok {
+		t.Errorf("ListedIn(root without tsc) = %q; want refused", name)
+	}
+}
+
 // A read beside a runner's listed command is refused: the runner can download
 // a package, and the read is not judged in the same line. The same read beside
 // a runner-free listed command is still taken.
@@ -169,5 +189,31 @@ func TestRunnerIsNeverAskedOfTheModel(t *testing.T) {
 	}
 	if _, ok := Allowed(call("npx unknown")); ok {
 		t.Error("an uninstalled tool must not be allowed")
+	}
+}
+
+// A word that names a symbolic link to a folder outside the project is not
+// listed, whatever the word looks like: npx eslint on a link to /etc reads
+// outside the project. A link to a file inside the project is still listed.
+func TestListRefusesALinkOutsideTheProject(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	installTools(t, root, "eslint")
+	if err := os.WriteFile(filepath.Join(root, "inside.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "etc-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "inside.js"), filepath.Join(root, "inside-link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"npx eslint etc-link", "npx eslint etc-link/", "npx eslint etc-link/x.js", "npx eslint . etc-link", "eslint etc-link"} {
+		if name, ok := ListedIn(root, cmd); ok {
+			t.Errorf("ListedIn(%q) listed as %q; a link to outside the project must not be", cmd, name)
+		}
+	}
+	if name, ok := ListedIn(root, "npx eslint inside-link"); !ok || name != "npx eslint" {
+		t.Errorf("ListedIn(link inside the project) = %q, %v; want listed", name, ok)
 	}
 }

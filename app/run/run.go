@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/devark28/xhaos/app/agent"
@@ -54,9 +55,10 @@ type key struct {
 }
 
 type Runner struct {
-	agents    *agent.Store
-	providers *provider.Store
-	notify    Notifier
+	explaining atomic.Bool // a classifier reason is being written (see explainSoon)
+	agents     *agent.Store
+	providers  *provider.Store
+	notify     Notifier
 	// ProjectRoot, when set, maps an agent's project to the folder its tools
 	// work in. Agents in different projects cannot see each other's files.
 	ProjectRoot func(workspaceID string, projectID int64) (string, error)
@@ -118,7 +120,7 @@ type ExternalTools interface {
 
 // specs lists every tool an agent in the workspace can call.
 func (r *Runner) specs(ws string) []llm.Tool {
-	specs := append(tool.Specs(), attachTools{r}.Specs(ws)...)
+	specs := append(append(tool.Specs(), attachTools{r}.Specs(ws)...), titleTools{r}.Specs(ws)...)
 	for _, x := range r.Extras {
 		specs = append(specs, x.Specs(ws)...)
 	}
@@ -128,6 +130,9 @@ func (r *Runner) specs(ws string) []llm.Tool {
 func (r *Runner) extra(name string) ExternalTools {
 	if (attachTools{r}).Owns(name) {
 		return attachTools{r}
+	}
+	if (titleTools{r}).Owns(name) {
+		return titleTools{r}
 	}
 	for _, x := range r.Extras {
 		if x.Owns(name) {
@@ -297,12 +302,46 @@ func sshSetup(scratch string, keys []string, values map[string]string, use secre
 	return env, nil
 }
 
-func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+// explainLater writes the classifier's reason for a call it allowed into the
+// call's tool state. It runs in the background, after the call was recorded
+// as allowed; the answer's time is not part of the call's wait.
+func (r *Runner) explainLater(ws string, agentID int64, callID string, req classifier.Request) {
+	text := r.Classifier.Explain(context.Background(), req)
+	if err := r.agents.SetToolReason(ws, agentID, callID, text); err != nil {
+		slog.Error("run: record the classifier's reason", "agent", agentID, "err", err)
+	}
+}
+
+// explainSoon starts explainLater unless one is still running: the classifier
+// answers one request at a time, so a reason that would queue behind another
+// is dropped (its card then says only that the model allowed the call).
+func (r *Runner) explainSoon(ws string, agentID int64, callID string, req classifier.Request) {
+	if !r.explaining.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer r.explaining.Store(false)
+		r.explainLater(ws, agentID, callID, req)
+	}()
+}
+
+// noNetReason is the card's reason when the model is not asked because its
+// allow could not be given the no-network rule.
+const noNetReason = "the local classifier does not decide it: a command it allows must run with no network, which needs the sandbox on a kernel with Landlock ABI 4 or newer"
+
+// noNetNote is added to the output of a command the local model allowed when
+// it fails: the failure may be for want of the network, which that command
+// does not get (the owner can run it with the network).
+const noNetNote = "(ran without network (allowed by the local model); ask the owner to run it with network)"
+
+// execute runs an allowed call. noNet is true when the local model allowed it
+// (ToolData.ViaModel): a bash command then runs with no TCP connections.
+func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	// While dangerously allowed, git is checked around each command: what it
 	// did to protected branches or the project's checkout is undone.
 	if call.Name == "bash" && r.Guard != nil && a.DangerActive(time.Now()) {
 		before, err := r.Guard.Capture(root)
-		out, runErr := r.run(ctx, root, ws, a, call)
+		out, runErr := r.run(ctx, root, ws, a, call, noNet)
 		if err == nil {
 			if note := r.Guard.Repair(root, before); note != "" {
 				out = strings.TrimRight(out, "\n") + "\n\n" + note
@@ -310,12 +349,12 @@ func (r *Runner) execute(ctx context.Context, root, ws string, a agent.Agent, ca
 		}
 		return out, runErr
 	}
-	return r.run(ctx, root, ws, a, call)
+	return r.run(ctx, root, ws, a, call, noNet)
 }
 
 // run runs a call: an extra tool, a sealed command (with secrets), or a
 // built-in tool.
-func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call) (string, error) {
+func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call tool.Call, noNet bool) (string, error) {
 	if x := r.extra(call.Name); x != nil {
 		return x.Execute(ctx, ws, a, call)
 	}
@@ -326,12 +365,15 @@ func (r *Runner) run(ctx context.Context, root, ws string, a agent.Agent, call t
 	if err != nil {
 		return "", err
 	}
+	extra.NoNet = noNet
 	return tool.ExecuteWith(ctx, root, r.Sandbox, extra, call)
 }
 
-// Catalog lists the runner's own tools beyond tool.Specs (read_attachment),
-// for the Tools panel.
-func (r *Runner) Catalog() []tool.Info { return attachTools{r}.Catalog() }
+// Catalog lists the runner's own tools beyond tool.Specs (read_attachment,
+// propose_title), for the Tools panel.
+func (r *Runner) Catalog() []tool.Info {
+	return append(attachTools{r}.Catalog(), titleTools{r}.Catalog()...)
+}
 
 // rootFor is the folder an agent's tools work in.
 func (r *Runner) rootFor(a agent.Agent) (string, error) {
@@ -444,6 +486,7 @@ func SystemPrompt(a agent.Agent, root string) string {
 		"When you need a decision or information only the user has, ask with ask_user instead of guessing. "+
 		"Other agents work in this workspace, some in other projects; you cannot see their files, so coordinate through channels (agents_list, channel_create, channel_send). "+
 		"Messages from other agents arrive marked [channel #N]. Use spawn_agent to hand a self-contained task to a subagent. "+
+		"When you start a new task or your focus clearly changes, so that your title in the user's list no longer fits, propose a new one with propose_title (not every turn); it returns at once, so keep working. "+
 		"Read before you edit, keep changes small, and reply to the user in concise Markdown.",
 		a.ID, root, a.Policy.Access, a.Policy.Review, a.Policy.Commit)
 }
@@ -476,6 +519,13 @@ func (r *Runner) turn(ctx context.Context, ws string, id int64) {
 		if ctx.Err() != nil {
 			r.stopped(ws, id)
 			return
+		}
+		if step > 0 {
+			// The owner may have changed the policy during the turn: the
+			// next calls (and the system prompt that names it) use the new one.
+			if fresh, err := r.agents.Get(ws, id); err == nil {
+				a.Policy = fresh.Policy
+			}
 		}
 		history, err := r.agents.Messages(ws, id)
 		if err != nil {
@@ -635,6 +685,17 @@ func lastReply(conv []agent.MessageData) int {
 	return -1
 }
 
+// hinted reports whether one of the agent's calls already carries
+// classifier.ManualHint.
+func hinted(states map[string]agent.ToolData) bool {
+	for _, d := range states {
+		if strings.Contains(d.Reason, classifier.ManualHint) {
+			return true
+		}
+	}
+	return false
+}
+
 // settle moves a reply's tool calls through the policy gate. Calls the gate
 // allows or denies are decided at once; the rest wait for the owner. When
 // every call is decided it runs the allowed ones in order, records their
@@ -664,6 +725,8 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 		}
 		call, err := r.prepare(root, ws, a, c)
 		d := agent.ToolData{CallID: c.ID, Name: c.Name, Effect: call.Effect, Summary: call.Summary, Preview: call.Preview, Commit: call.Commit}
+		explain := false // the classifier allowed it and its reason follows in the background
+		var creq classifier.Request
 		switch {
 		case reply.Stop == "max_tokens":
 			// The input may be cut off yet still parse; never run it.
@@ -687,18 +750,29 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 				}
 			}
 			cc := classifier.Call{Name: call.Name, Effect: call.Effect, Commit: call.Commit, Command: call.Summary, Policy: a.Policy, Root: root}
-			creq := classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
+			creq = classifier.Request{Workspace: ws, Agent: a.ID, Project: root, Command: call.Summary}
 			if verdict == policy.Ask && r.Classifier != nil {
 				if name, ok := r.Classifier.List(creq, cc); ok { // the built-in list: no model
 					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+classifier.ListReason(name), classifier.By
 				}
 			}
 			if verdict == policy.Ask && r.Classifier != nil && classifier.Eligible(cc) {
-				if ok, why := r.Classifier.Decide(ctx, creq); ok {
-					verdict, reason, by = policy.Allow, classifier.ReasonPrefix+why, classifier.By
+				if !r.Sandbox.NoNetPossible() {
+					// A command the model allows runs with no network: without
+					// that, it asks.
+					reason = noNetReason
+				} else if ok, why := r.Classifier.Decide(ctx, creq); ok {
+					verdict, reason, by = policy.Allow, why, classifier.By
+					explain = why == ""
+					d.ViaModel = true
 				} else if why != "" {
 					reason = "the local classifier asks: " + why
 				}
+			}
+			// Manual review alone kept the classifier out: say so, once per
+			// agent, so the owner knows why it asked.
+			if verdict == policy.Ask && by == "policy" && classifier.OnlyManual(cc) && r.Classifier.On() && !hinted(states) {
+				reason += "; " + classifier.ManualHint
 			}
 			d.Reason = reason
 			switch verdict {
@@ -712,6 +786,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			}
 		}
 		record(d)
+		if explain && d.State == agent.ToolAllowed {
+			r.explainSoon(ws, a.ID, c.ID, creq)
+		}
 	}
 	if waiting {
 		_ = r.agents.SetStatus(ws, a.ID, agent.StatusAttention)
@@ -729,11 +806,20 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 			if ctx.Err() != nil {
 				d.State, d.Output = agent.ToolFailed, "Not run: the agent was stopped."
 			} else {
+				// An MCP client allowed a commit or push: Xhaos's own command for
+				// it runs, not the agent's (package mcpserver).
+				run := c
+				if d.Run != "" {
+					run = withCommand(c, d.Run)
+				}
 				// Prepare again: files may have changed while the call waited.
-				call, err := r.prepare(root, ws, a, c)
+				call, err := r.prepare(root, ws, a, run)
 				out := ""
 				if err == nil {
-					out, err = r.execute(ctx, root, ws, a, call)
+					out, err = r.execute(ctx, root, ws, a, call, d.ViaModel)
+				}
+				if d.Run != "" {
+					out = "Allowed via MCP; Xhaos ran its own command for it instead of yours:\n" + d.Run + "\n\n" + out
 				}
 				d.State, d.Output = agent.ToolDone, out
 				switch {
@@ -741,6 +827,9 @@ func (r *Runner) settle(ctx context.Context, ws string, a agent.Agent, reply age
 					d.State, d.Output = agent.ToolFailed, "Stopped before it finished.\n"+out
 				case err != nil:
 					d.State, d.Output = agent.ToolFailed, err.Error()
+					if d.ViaModel { // it may have failed for want of the network
+						d.Output += "\n" + noNetNote
+					}
 				}
 			}
 			record(d)
@@ -1054,4 +1143,17 @@ func attachmentChars(f attachment.Ref) int {
 		return previewText
 	}
 	return int(f.Size)
+}
+
+// withCommand is a bash call with its command replaced (its secrets and
+// skills kept).
+func withCommand(c llm.ToolCall, command string) llm.ToolCall {
+	var in map[string]any
+	if json.Unmarshal(c.Input, &in) != nil || in == nil {
+		in = map[string]any{}
+	}
+	in["command"] = command
+	raw, _ := json.Marshal(in)
+	c.Input = raw
+	return c
 }

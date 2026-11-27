@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/devark28/xhaos/app/sandbox"
 )
 
 // CommandEnv names the Claude Code program to run when the adapter sets none.
@@ -41,7 +43,22 @@ func installDirs(home string) []string {
 
 // resolve finds the program: an explicit path or name is the owner's choice
 // and never second-guessed; the bare default also tries the install folders.
+//
+// Whatever it finds, it refuses a program inside a folder sandboxed commands
+// can write (a project registered at the home folder makes ~/.local/bin one):
+// the server runs it outside the sandbox.
 func resolve(command string, env []string) (string, error) {
+	path, err := find(command, env)
+	if err != nil {
+		return "", err
+	}
+	if err := sandbox.CheckProgram(path); err != nil {
+		return "", fmt.Errorf("Claude Code: %w", err)
+	}
+	return path, nil
+}
+
+func find(command string, env []string) (string, error) {
 	explicit := command != ""
 	if command == "" {
 		command = "claude"

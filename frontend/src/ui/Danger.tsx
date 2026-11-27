@@ -1,5 +1,6 @@
-// Dangerously allow: a red badge on the card while it is on, and the dialog
-// that turns it on (passphrase, how long). The server enforces it (package
+// Dangerously allow: the top step of an agent's Approvals (its menu; the card
+// label shows "danger 42m" while it is on), and the dialog that turns it on
+// (passphrase, how long). The server enforces it (package
 // danger); this only asks and shows.
 import { useEffect, useRef, useState } from 'react';
 import * as stylex from '@stylexjs/stylex';
@@ -20,11 +21,9 @@ export function useNow(ms: number) {
 export const dangerLeft = (agent: Agent, now = Date.now()) => (agent.danger ? new Date(agent.danger.until).getTime() - now : 0);
 const left = (ms: number) => formatDuration(ms / 1000);
 
-export function DangerBadge({ agent }: { agent: Agent }) {
-  const ms = dangerLeft(agent, useNow(1_000));
-  if (ms <= 0) return null;
-  return <span data-danger-badge={agent.id} title={`Dangerously allowed: calls run without asking for ${left(ms)} more${agent.danger?.branch ? `; the checkout stays on ${agent.danger.branch}` : ''}; ${callsText(agent.danger?.calls)}`} {...stylex.props(s.badge)}>⚠ {left(ms)}</span>;
-}
+// dangerTitle explains a running dangerously allow (the card's label shows it).
+export const dangerTitle = (agent: Agent, ms: number) => `Dangerously allowed: calls run without asking for ${left(ms)} more${agent.danger?.branch ? `; the checkout stays on ${agent.danger.branch}` : ''}; ${callsText(agent.danger?.calls)}. Then it is back on ${agent.policy?.review ?? 'its'} review.`;
+export const dangerLeftText = left;
 
 // callsText says what a session does to the limit on model calls in a row.
 const callsText = (calls?: number) => (calls === -1 ? 'no limit on model calls in a row' : `stops after ${calls || DEFAULT_CALLS} model calls in a row`);
@@ -74,7 +73,7 @@ export function DangerDialog() {
           <li>It stays in the sandbox: only its project folder.</li>
           <li>Nothing is switched. It works on its own branches (worktrees under <code>.worktrees/</code>); protected branches like <code>main</code> and the project's checkout are put back if a command changes them. No force pushes, no deleting branches, no pushing to protected branches, and every push names its branch.</li>
           <li>Secrets still ask each use unless you trusted them to it; channels to agents outside its family still ask.</li>
-          <li>Its subagents do not get it. You can turn it off any time from its menu.</li>
+          <li>Its subagents do not get it. When it ends it is back on its own review mode; pick Manual or Auto in its menu to end it early.</li>
         </ul>
         <div {...stylex.props(s.row)}>
           <span {...stylex.props(s.label)} id="danger-for-label">For <Info text="A number and a unit: s, m, h or d, like 10s, 15m, 10h or 1d (or combined, 1h30m). Between 10 seconds and 7 days." /></span>
@@ -120,7 +119,6 @@ export function DangerDialog() {
 }
 
 const s = stylex.create({
-  badge: { flexShrink: 0, fontSize: 9, fontWeight: 600, paddingInline: 5, paddingBlock: 1, borderRadius: 3, color: '#fff', backgroundColor: '#c0392b' },
   dialog: { maxWidth: 440, width: 'calc(100% - 32px)', padding: 18, borderRadius: 8, borderWidth: 1, borderStyle: 'solid', borderColor: '#c0392b', backgroundColor: colors.menu, color: colors.text, fontSize: 12, '::backdrop': { backgroundColor: 'rgba(0,0,0,0.55)' } },
   title: { margin: 0, marginBottom: 10, fontSize: 14, color: colors.textStrong },
   text: { margin: 0, marginBottom: 8, lineHeight: 1.5 },

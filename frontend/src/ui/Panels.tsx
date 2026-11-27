@@ -21,12 +21,14 @@ import { Secrets } from './Secrets.tsx';
 import { Skills } from './Skills.tsx';
 import { WebSettings } from './WebSettings.tsx';
 import { ClassifierSettings } from './ClassifierSettings.tsx';
+import { AgentSettings } from './AgentSettings.tsx';
 import { formatTime } from './appearance.ts';
 import { Files } from './Files.tsx';
 import { BoardList } from './Boards.tsx';
 import { Nodes, AddNodeButton } from './Nodes.tsx';
 import type { Channel as ChannelView } from '../types.ts';
 import { McpServers } from './Mcp.tsx';
+import { McpAccess } from './McpAccess.tsx';
 import { useApp, workspaceOf, update, toast } from './state/store.ts';
 import { visibleCommands, developerMode, closeBtw } from './state/composer.ts';
 import { newBoard } from './state/boards.ts';
@@ -129,7 +131,7 @@ function Channels({ channelId }: { channelId?: string }) {
   const [seen, setSeen] = useState(readSeen);
   const all = flatten(w.agents);
   const title = (id: number | string) => all.find(agent => agent.id === Number(id))?.title || '';
-  const name = (id: number | string) => (typeof id === 'string' && id.startsWith('outside:') ? `${id.slice(8)} (outside)` : `#${id}`);
+  const name = (id: number | string) => (typeof id === 'string' && id.startsWith('outside:') ? `${id.slice(8)} (outside)` : typeof id === 'string' && id.startsWith('mcp:') ? `${id.slice(4)} (MCP)` : `#${id}`);
   const open = channels.find(c => c.id === openId);
   const openCount = open?.count ?? open?.messages.length ?? 0;
   useEffect(() => {
@@ -406,7 +408,7 @@ function Help() {
 
 // Settings holds the configuration you rarely reach for, as sections that
 // expand in place (no sub-pages). /providers and /tools open their section.
-type SectionId = 'models' | 'usage' | 'tools' | 'skills' | 'secrets' | 'dictation' | 'appearance' | 'security' | 'developer';
+type SectionId = 'models' | 'agents' | 'usage' | 'tools' | 'skills' | 'secrets' | 'mcp-access' | 'dictation' | 'appearance' | 'security' | 'developer';
 function Section({ id, title, summary, open, onToggle, children }: { id: string; title: string; summary: string; open: boolean; onToggle(): void; children: ReactNode }) {
   return (
     <section data-settings-section={id} {...stylex.props(settings.section)}>
@@ -452,6 +454,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         <Section id="models" title="Models" summary={providers ? `${providers} provider${providers > 1 ? 's' : ''}` : 'none set up'} open={open.has('models')} onToggle={() => toggle('models')}>
           <Providers message={message} testing={testing} />
         </Section>
+        <Section id="agents" title="Agents" summary="what agents may do without asking" open={open.has('agents')} onToggle={() => toggle('agents')}>
+          <AgentSettings />
+        </Section>
         <Section id="usage" title="Usage and cost" summary={usageSummary} open={open.has('usage')} onToggle={() => toggle('usage')}>
           <UsagePanel />
         </Section>
@@ -463,6 +468,9 @@ function Settings({ focus, message, testing, request }: { focus?: SectionId; mes
         </Section>
         <Section id="secrets" title="Secrets" summary="tokens for agents' commands" open={open.has('secrets')} onToggle={() => toggle('secrets')}>
           <Secrets />
+        </Section>
+        <Section id="mcp-access" title="MCP access" summary="let Claude Code drive agents from elsewhere" open={open.has('mcp-access')} onToggle={() => toggle('mcp-access')}>
+          <McpAccess />
         </Section>
         <Section id="dictation" title="Dictation" summary="hints for the speech model" open={open.has('dictation')} onToggle={() => toggle('dictation')}>
           <DictationSettings />

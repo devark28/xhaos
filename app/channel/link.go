@@ -385,7 +385,9 @@ func (s *Service) serveGet(w http.ResponseWriter, r *http.Request, c Channel, pa
 // outsideView is a message as the link shows it.
 func outsideView(m Message, s *Service, ws string) map[string]any {
 	v := map[string]any{"id": m.ID, "body": m.Body, "createdAt": m.CreatedAt}
-	if m.SenderID == 0 {
+	if m.SenderID == 0 && m.Via == ViaMCP {
+		v["from"] = map[string]any{"mcp": m.SenderName}
+	} else if m.SenderID == 0 {
 		v["from"] = map[string]any{"outside": m.SenderName}
 	} else {
 		v["from"] = map[string]any{"agent": m.SenderID, "title": s.title(ws, m.SenderID)}

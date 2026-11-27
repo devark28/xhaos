@@ -27,6 +27,7 @@ Build tag `server` selects Wails server mode; `embed` (release builds) compiles 
 | `policy` | Per-agent policy (`RW + Manual + Review commit` by default) and its ordering; a subagent can't exceed its parent. `Gate` decides allow, ask, or deny for each tool call. |
 | `project` | Projects: registered server folders, their file listings, and the default project for `-root`. |
 | `mcp` | MCP servers (stdio and Streamable HTTP): configs with sealed secrets, live sessions, and their tools for agents, gated by each server's trust. |
+| `mcpserver` | Xhaos as an MCP server (`/mcp`, `/xhaos/mcp`): scoped access tokens, and tools for an MCP client to drive agents, answer questions and use channels for the owner ([mcp.md](mcp.md)). |
 | `tool` | Tool definitions, input validation, path confinement, and execution inside the workspace root. |
 | `btw` | Side questions about the workspace, answered from a read-only digest; writes nothing. |
 | `run` | The turn loop: model call, tool calls through the gate, results back to the model; Stop, and resume after restart. |

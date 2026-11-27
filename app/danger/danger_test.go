@@ -155,6 +155,14 @@ func TestGuardRepairsProtectedState(t *testing.T) {
 	}
 }
 
+// A line joined with a backslash is checked as one command: a push to a
+// protected branch split over two lines is still refused.
+func TestCheckCommandReadsJoinedLines(t *testing.T) {
+	if CheckCommand("gi\\\nt push origin main") == "" {
+		t.Error("a push to main split over two lines was allowed")
+	}
+}
+
 func TestCurrentBranch(t *testing.T) {
 	dir := t.TempDir()
 	if b, err := CurrentBranch(dir); b != "" || err != nil {

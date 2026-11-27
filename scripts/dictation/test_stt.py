@@ -270,5 +270,53 @@ class ServerTest(Env):
         self.assertEqual(self.post(port, "/transcribe", b"")[0], 400)
         self.assertEqual(self.post(port, "/transcribe", make_wav(0.5))[0], 200)
 
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout=10):
+        super().__init__("localhost", timeout=timeout)
+        self.unix_path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.unix_path)
+
+
+class SocketTest(Env):
+    run_stt = OneShotTest.run_stt
+
+    def test_serves_on_a_private_unix_socket(self):
+        sock = str(Path(self.dir.name) / "run" / "dictation.sock")
+        os.mkdir(Path(self.dir.name) / "run", 0o700)
+        Path(sock).write_text("stale")  # left by an earlier run
+        proc = subprocess.Popen(
+            [sys.executable, str(STT), "--serve", "--model", "/models/x", "--socket", sock, "--threads", "2"],
+            env=self.env, stderr=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(self.stop, proc)
+        deadline = time.time() + 20
+        while True:
+            if proc.poll() is not None:
+                self.fail("server exited: " + proc.stderr.read())
+            try:
+                conn = UnixConnection(sock, timeout=1)
+                conn.request("GET", "/health")
+                if conn.getresponse().status == 200:
+                    break
+            except OSError:
+                if time.time() > deadline:
+                    self.fail("server did not answer /health on its socket")
+                time.sleep(0.1)
+        self.assertEqual(os.stat(sock).st_mode & 0o077, 0, "the socket must be private to its user")
+        conn = UnixConnection(sock)
+        conn.request("POST", "/transcribe", body=make_wav(1.0))
+        resp = conn.getresponse()
+        self.assertEqual((resp.status, resp.read().decode()), (200, "heard 16000 samples"))
+
+    def test_socket_must_be_absolute(self):
+        res = self.run_stt("--serve", "--socket", "rel.sock", "--model", "/models/x")
+        self.assertEqual(res.returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

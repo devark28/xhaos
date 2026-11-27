@@ -142,6 +142,24 @@ func (s *Service) Projects(workspaceID string) ([]Project, error) {
 	return out, rows.Err()
 }
 
+// AllPaths lists every project's folder, in every workspace.
+func AllPaths(q sqlitedb.Querier) ([]string, error) {
+	rows, err := q.Query(`SELECT DISTINCT path FROM projects`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 type AddRequest struct {
 	WorkspaceID string `json:"workspaceId"`
 	Path        string `json:"path"` // an existing folder on the server; ~/ is the server user's home

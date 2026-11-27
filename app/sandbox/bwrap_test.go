@@ -169,7 +169,7 @@ func TestBwrapCommandsSeeOnlyTheirProject(t *testing.T) {
 	ok("write and read in the project", "echo hello > notes.txt && cat notes.txt && pwd", root)
 	ok("read system files", "head -c 0 /etc/hostname && ls /usr/bin | head -1 && echo fine", "fine")
 	ok("run tools from PATH", "git --version", "git version")
-	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(dir, "cache", "home"))
+	ok("a writable home of its own", "touch ~/x && echo $HOME", filepath.Join(c.ProjectCache(root), "home"))
 	ok("$TMPDIR is kept between commands", "echo build log > $TMPDIR/build.log", "")
 	ok("… and read by the next one", "cat $TMPDIR/build.log", "build log")
 	ok("devices", "echo x > /dev/null && head -c 1 /dev/urandom | wc -c", "1")

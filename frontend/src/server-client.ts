@@ -29,6 +29,7 @@ const services = {
   dictation: 'github.com/devark28/xhaos/app/dictation.Service',
   node: 'github.com/devark28/xhaos/app/node.Service',
   classifier: 'github.com/devark28/xhaos/app/classifier.Service',
+  mcpserver: 'github.com/devark28/xhaos/app/mcpserver.Service',
 } as const;
 export type ServiceName = keyof typeof services;
 

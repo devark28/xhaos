@@ -41,7 +41,7 @@ const (
 	EventMessage = "agent.message"
 	EventStatus  = "agent.status"
 	EventTool    = "agent.tool"
-	EventTitle   = "agent.title"  // a better title, written by the model
+	EventTitle   = "agent.title"  // a better title: the model's first, or a rename it proposed (title.go)
 	EventDanger  = "agent.danger" // dangerously allow turned on (data: Danger) or off (data: null)
 )
 
@@ -82,6 +82,8 @@ type Agent struct {
 	CreatedAt   time.Time     `json:"createdAt"`
 	// Danger: the owner turned on "dangerously allow" (package danger).
 	Danger *Danger `json:"danger,omitempty"`
+	// TitleProposal is a new title the agent proposed, waiting for the owner.
+	TitleProposal *TitleProposal `json:"titleProposal,omitempty"`
 }
 
 // Danger is "dangerously allow": until Until, the agent's calls that would
@@ -130,6 +132,9 @@ type MessageData struct {
 	Sender  int64 `json:"sender,omitempty"`
 	// Attachments are files sent with an owner message.
 	Attachments []attachment.Ref `json:"attachments,omitempty"`
+	// Via names who sent an owner message on the owner's behalf: an MCP
+	// client, by its token's name (package mcpserver). Empty: the owner.
+	Via string `json:"via,omitempty"`
 }
 
 // ToolData is the payload of an agent.tool event: one state of one call.
@@ -144,6 +149,15 @@ type ToolData struct {
 	By      string `json:"by,omitempty"`     // "owner", "policy", "danger" or "classifier" for allowed/denied
 	Reason  string `json:"reason,omitempty"` // why it asks or was denied
 	Output  string `json:"output,omitempty"`
+	// ViaModel is set when the local model, not the built-in list, allowed the
+	// call: it then runs with no TCP connections.
+	ViaModel bool `json:"viaModel,omitempty"`
+	// Via names the MCP client (its token's name) that answered or decided
+	// the call on the owner's behalf; empty when the owner did.
+	Via string `json:"via,omitempty"`
+	// Run, on a call an MCP client allowed under approve-feature-branch, is
+	// the command Xhaos runs instead of the agent's (package mcpserver).
+	Run string `json:"run,omitempty"`
 }
 
 // StatusData is the payload of an agent.status event.
@@ -194,8 +208,10 @@ type CreateRequest struct {
 	Role           string         `json:"role,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
-	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else policy.Default
+	Policy         *policy.Policy `json:"policy,omitempty"`      // nil: parent's policy, else the workspace's default (AgentSettings)
 	Attachments    []string       `json:"attachments,omitempty"` // uploaded attachment IDs, sent with Prompt
+	// Via: see MessageData.Via. Never read from a client call (json "-").
+	Via string `json:"-"`
 }
 
 type DecideRequest struct {
@@ -204,6 +220,8 @@ type DecideRequest struct {
 	AgentID        int64  `json:"agentId"`
 	CallID         string `json:"callId"`
 	Allow          bool   `json:"allow"`
+	Via            string `json:"-"` // see ToolData.Via
+	Run            string `json:"-"` // see ToolData.Run; only with Allow
 }
 
 type MessageRequest struct {
@@ -213,6 +231,7 @@ type MessageRequest struct {
 	Body           string  `json:"body"`
 	// Attachments are uploaded attachment IDs sent with Body.
 	Attachments []string `json:"attachments,omitempty"`
+	Via         string   `json:"-"` // see MessageData.Via
 }
 
 const schema = `
@@ -275,6 +294,24 @@ func NewService(db *sql.DB, publish eventlog.Publisher) (*Service, error) {
 	// 1: the title is the prompt's first line, for the model to replace.
 	if err := addColumn(db, "agents", "title_auto", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, fmt.Errorf("migrate agents: %w", err)
+	}
+	// A title the agent proposed for itself, waiting for the owner (title.go).
+	for _, col := range []string{"title_proposal", "title_reason", "title_proposed_at"} {
+		if err := addColumn(db, "agents", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return nil, fmt.Errorf("migrate agents: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS agent_settings (
+		workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+		self_rename  INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return nil, fmt.Errorf("migrate agent settings: %w", err)
+	}
+	// The policy of new top-level agents (settings.go); empty: policy.Default.
+	for _, col := range []string{"default_access", "default_review", "default_commit"} {
+		if err := addColumn(db, "agent_settings", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return nil, fmt.Errorf("migrate agent settings: %w", err)
+		}
 	}
 	return &Service{db: db, publish: publish, now: time.Now}, nil
 }
@@ -469,7 +506,8 @@ func TitleFrom(prompt string) string {
 }
 
 // Create creates an agent, or a subagent when ParentID is set. A subagent
-// inherits its parent's policy and can only be restricted further.
+// inherits its parent's policy and can only be restricted further; a
+// top-level agent without a policy gets the workspace's default.
 func (s *Service) Create(req CreateRequest) (Agent, error) {
 	req.Title = strings.TrimSpace(req.Title)
 	auto := 0
@@ -485,7 +523,7 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 		if _, err := workspace.Get(tx, req.WorkspaceID); err != nil {
 			return err
 		}
-		p := policy.Default()
+		p := defaultPolicy(tx, req.WorkspaceID)
 		if req.ParentID != 0 {
 			parent, err := get(tx, req.WorkspaceID, req.ParentID)
 			if err != nil {
@@ -543,7 +581,7 @@ func (s *Service) Create(req CreateRequest) (Agent, error) {
 			if err != nil {
 				return err
 			}
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt, Attachments: files}, at)
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Prompt, Attachments: files, Via: req.Via}, at)
 			if err != nil {
 				return err
 			}
@@ -599,7 +637,10 @@ func (s *Service) Decide(req DecideRequest) (eventlog.Event, error) {
 		if req.Allow {
 			call.State, call.Reason = ToolAllowed, ""
 		}
-		call.Output = ""
+		call.Output, call.Via, call.Run = "", req.Via, ""
+		if req.Allow {
+			call.Run = req.Run
+		}
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})
@@ -621,6 +662,7 @@ type AnswerRequest struct {
 	AgentID        int64                  `json:"agentId"`
 	CallID         string                 `json:"callId"`
 	Answers        map[string]tool.Answer `json:"answers"`
+	Via            string                 `json:"-"` // see ToolData.Via
 }
 
 // Answer records the user's answers to an ask_user call; they become the
@@ -654,7 +696,7 @@ func (s *Service) Answer(req AnswerRequest) (eventlog.Event, error) {
 		if err != nil {
 			return fmt.Errorf("%w: %v", apperr.Invalid, err)
 		}
-		call.State, call.By, call.Reason, call.Output = ToolDone, FromOwner, "", text
+		call.State, call.By, call.Reason, call.Output, call.Via = ToolDone, FromOwner, "", text, req.Via
 		out, err = eventlog.Append(tx, req.WorkspaceID, a.ID, EventTool, call, s.now())
 		return err
 	})
@@ -855,7 +897,7 @@ func (s *Service) Message(req MessageRequest) ([]eventlog.Event, error) {
 			if err != nil {
 				return err
 			}
-			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body, Attachments: files}, at)
+			ev, err := eventlog.Append(tx, req.WorkspaceID, id, EventMessage, MessageData{From: FromOwner, Body: req.Body, Attachments: files, Via: req.Via}, at)
 			if err != nil {
 				return err
 			}
@@ -892,15 +934,19 @@ func (s *Service) emit(events []eventlog.Event) {
 	}
 }
 
-const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch, danger_calls FROM agents`
+const selectAgent = `SELECT id, workspace_id, COALESCE(parent_id, 0), title, role, status, provider, model, access, review, commit_policy, created_at, COALESCE(project_id, 0), danger_until, danger_branch, danger_calls, title_proposal, title_reason, title_proposed_at FROM agents`
 
 func scan(r interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
-	var at, dangerUntil, dangerBranch string
+	var at, dangerUntil, dangerBranch, proposal, reason, proposedAt string
 	var dangerCalls int
 	err := r.Scan(&a.ID, &a.WorkspaceID, &a.ParentID, &a.Title, &a.Role, &a.Status, &a.Provider, &a.Model,
-		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch, &dangerCalls)
+		&a.Policy.Access, &a.Policy.Review, &a.Policy.Commit, &at, &a.ProjectID, &dangerUntil, &dangerBranch, &dangerCalls,
+		&proposal, &reason, &proposedAt)
 	a.CreatedAt = sqlitedb.ParseStamp(at)
+	if proposal != "" {
+		a.TitleProposal = &TitleProposal{Title: proposal, Reason: reason, At: sqlitedb.ParseStamp(proposedAt)}
+	}
 	if dangerUntil != "" {
 		a.Danger = &Danger{Until: sqlitedb.ParseStamp(dangerUntil), Branch: dangerBranch, Calls: dangerCalls}
 	}
@@ -918,9 +964,10 @@ func get(q sqlitedb.Querier, workspaceID string, id int64) (Agent, error) {
 // Store is what the server itself does to agents (model runs). It is not
 // bound to clients, so they cannot impersonate an agent or set statuses.
 type Store struct {
-	db      *sql.DB
-	publish eventlog.Publisher
-	now     func() time.Time
+	db        *sql.DB
+	publish   eventlog.Publisher
+	now       func() time.Time
+	proposals proposals // recent title proposals, for the rate limit (title.go)
 }
 
 func NewStore(db *sql.DB, publish eventlog.Publisher) *Store {
@@ -955,10 +1002,38 @@ func (st *Store) Tools(workspaceID string, id int64) (map[string]ToolData, error
 	return toolStates(st.db, workspaceID, id)
 }
 
-// RecordTool appends one state of a tool call.
+// RecordTool appends one state of a tool call. A call the classifier allowed
+// with no reason yet keeps the reason SetToolReason gave it since: the runner
+// writes its states from copies taken before the reason came.
 func (st *Store) RecordTool(workspaceID string, id int64, d ToolData) error {
 	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		if d.By == "classifier" && d.Reason == "" {
+			states, err := toolStates(tx, workspaceID, id)
+			if err != nil {
+				return eventlog.Event{}, err
+			}
+			if prev, ok := states[d.CallID]; ok && prev.By == "classifier" {
+				d.Reason = prev.Reason
+			}
+		}
 		return eventlog.Append(tx, workspaceID, id, EventTool, d, at)
+	})
+}
+
+// SetToolReason sets the reason of a call the classifier allowed, as its
+// latest state with the reason changed. A call with no state is skipped.
+func (st *Store) SetToolReason(workspaceID string, id int64, callID, reason string) error {
+	return st.write(workspaceID, id, func(tx *sql.Tx, at time.Time) (eventlog.Event, error) {
+		states, err := toolStates(tx, workspaceID, id)
+		if err != nil {
+			return eventlog.Event{}, err
+		}
+		prev, ok := states[callID]
+		if !ok {
+			return eventlog.Event{}, errSkip
+		}
+		prev.Reason = reason
+		return eventlog.Append(tx, workspaceID, id, EventTool, prev, at)
 	})
 }
 
@@ -1002,11 +1077,6 @@ func (st *Store) TitlePending(workspaceID string, id int64) bool {
 	var auto int
 	err := st.db.QueryRow(`SELECT title_auto FROM agents WHERE workspace_id = ? AND id = ?`, workspaceID, id).Scan(&auto)
 	return err == nil && auto == 1
-}
-
-// TitleData is an agent.title event.
-type TitleData struct {
-	Title string `json:"title"`
 }
 
 // SetTitle replaces a pending title (once; a title the user or a parent gave
