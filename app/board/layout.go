@@ -249,7 +249,14 @@ func (a *addition) shapes(list []Shape) {
 		}
 	}
 	dx, dy := -minX, contentTop-minY
+
+	// Boxes and text first, so an arrow can bind to a box wherever it sits in
+	// the list. Arrows come after and bind to the boxes their ends fall on.
+	var boxes []shapeBox
 	for _, s := range list {
+		if s.Type == "arrow" { // arrows are built after the boxes, so they can bind
+			continue
+		}
 		x, y := s.X+dx, s.Y+dy
 		var e element
 		switch s.Type {
@@ -263,13 +270,6 @@ func (a *addition) shapes(list []Shape) {
 			if s.Fill != "" {
 				e["backgroundColor"] = s.Fill
 			}
-		case "arrow":
-			px, py := s.X2-s.X, s.Y2-s.Y
-			e = a.base("arrow", x, y, math.Abs(px), math.Abs(py))
-			e["points"] = [][2]float64{{0, 0}, {px, py}}
-			e["lastCommittedPoint"], e["startBinding"], e["endBinding"] = nil, nil, nil
-			e["startArrowhead"], e["endArrowhead"], e["elbowed"] = nil, "arrow", false
-			e["roundness"] = map[string]any{"type": 2}
 		case "text":
 			e = a.text(x, y, s.Text, noteSize, ink)
 		}
@@ -281,6 +281,26 @@ func (a *addition) shapes(list []Shape) {
 			e["height"] = height // grow the box to fit its label; keep its width
 			a.label(e, wrapped, noteSize, "center", "middle")
 		}
+		if s.Type == "rectangle" || s.Type == "ellipse" {
+			boxes = append(boxes, shapeBox{id: e["id"].(string), e: e, x: x, y: y,
+				w: e["width"].(float64), h: e["height"].(float64)})
+		}
+	}
+	for _, s := range list {
+		if s.Type != "arrow" {
+			continue
+		}
+		x, y := s.X+dx, s.Y+dy
+		px, py := s.X2-s.X, s.Y2-s.Y
+		e := a.base("arrow", x, y, math.Abs(px), math.Abs(py))
+		e["points"] = [][2]float64{{0, 0}, {px, py}}
+		e["lastCommittedPoint"], e["startBinding"], e["endBinding"] = nil, nil, nil
+		e["startArrowhead"], e["endArrowhead"], e["elbowed"] = nil, "arrow", false
+		e["roundness"] = map[string]any{"type": 2}
+		if s.Color != "" {
+			e["strokeColor"] = s.Color
+		}
+		a.bindArrow(e, x, y, x+px, y+py, boxes)
 	}
 }
 
@@ -317,6 +337,10 @@ type sceneElement struct {
 	Container  string         `json:"containerId"`
 	CustomData map[string]any `json:"customData"`
 	Version    int64          `json:"version"`
+
+	StartBinding  *binding       `json:"startBinding"`
+	EndBinding    *binding       `json:"endBinding"`
+	BoundElements []boundElement `json:"boundElements"`
 }
 
 // agentOf is the agent that added an element (0: the owner drew it).

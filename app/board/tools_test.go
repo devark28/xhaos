@@ -434,6 +434,83 @@ func TestShapesAndRead(t *testing.T) {
 	}
 }
 
+func TestArrowsBindToShapes(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60, "text": "Sensor"},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+		{"type": "arrow", "x": 400, "y": 30, "x2": 500, "y2": 30}, // free → free
+		{"type": "arrow", "x": 380, "y": 20, "x2": 500, "y2": 20}, // ellipse → free
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var arrows []*sceneElement
+	var rect, ellipse *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "arrow":
+			arrows = append(arrows, &scene[i])
+		case "rectangle":
+			rect = &scene[i]
+		case "ellipse":
+			ellipse = &scene[i]
+		}
+	}
+	if len(arrows) != 3 || rect == nil || ellipse == nil {
+		t.Fatalf("arrows %d rect %v ellipse %v", len(arrows), rect, ellipse)
+	}
+	bound := arrows[0]
+	if bound.StartBinding == nil || bound.StartBinding.ElementID != rect.ID || bound.StartBinding.Focus != 0 || bound.StartBinding.Gap != 1 {
+		t.Errorf("arrow 0 start binding: %+v", bound.StartBinding)
+	}
+	if bound.EndBinding == nil || bound.EndBinding.ElementID != ellipse.ID || bound.EndBinding.Focus != 0 || bound.EndBinding.Gap != 1 {
+		t.Errorf("arrow 0 end binding: %+v", bound.EndBinding)
+	}
+	if !boundTo(rect.BoundElements, bound.ID) {
+		t.Errorf("rectangle does not list arrow 0 in boundElements: %+v", rect.BoundElements)
+	}
+	if !textBoundTo(rect.BoundElements, rect.ID) {
+		t.Errorf("rectangle lost its label binding: %+v", rect.BoundElements)
+	}
+	if !boundTo(ellipse.BoundElements, bound.ID) {
+		t.Errorf("ellipse does not list arrow 0 in boundElements: %+v", ellipse.BoundElements)
+	}
+	// A free arrow binds to nothing.
+	if arrows[1].StartBinding != nil || arrows[1].EndBinding != nil {
+		t.Errorf("free arrow should not bind: start %+v end %+v", arrows[1].StartBinding, arrows[1].EndBinding)
+	}
+	// A half-bound arrow binds only its shape end.
+	if arrows[2].StartBinding == nil || arrows[2].StartBinding.ElementID != ellipse.ID {
+		t.Errorf("arrow 2 start binding: %+v", arrows[2].StartBinding)
+	}
+	if arrows[2].EndBinding != nil {
+		t.Errorf("arrow 2 end should be free: %+v", arrows[2].EndBinding)
+	}
+}
+
+func boundTo(list []boundElement, id string) bool {
+	for _, be := range list {
+		if be.ID == id && be.Type == "arrow" {
+			return true
+		}
+	}
+	return false
+}
+
+// textBoundTo reports whether containerID has a bound label (a text entry
+// whose id is some other element).
+func textBoundTo(list []boundElement, containerID string) bool {
+	for _, be := range list {
+		if be.Type == "text" && be.ID != containerID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCreate(t *testing.T) {
 	tf := newToolFixture(t)
 	out, call, err := tf.run(t, "board_create", map[string]any{"name": "Wiring"})
