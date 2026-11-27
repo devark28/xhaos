@@ -14,9 +14,11 @@ import "math"
 // Excalidraw computes them for an arrow snapped where the agent drew it, so
 // the arrow keeps pointing at the same spot when the shape moves.
 
-// bindTol is how far outside a shape an arrow's end may sit and still be
-// snapped to it.
-const bindTol = 2.0
+// bindDist is how far outside a shape an arrow's end may sit and still be
+// snapped to it: Excalidraw's maxBindingDistance at zoom 1, the smallest its
+// zoom-dependent value takes (BASE_BINDING_DISTANCE = max(BASE_BINDING_GAP, 15)
+// = 15, clamped to 15..30). Boards have no zoom, so we use the zoom-1 value.
+const bindDist = 15.0
 
 // binding is an arrow's startBinding or endBinding as Excalidraw stores it.
 type binding struct {
@@ -39,19 +41,49 @@ type shapeBox struct {
 	w, h float64
 }
 
-// holds reports whether the point is on or inside the shape (within bindTol).
-func (b shapeBox) holds(x, y float64) bool {
-	return x >= b.x-bindTol && x <= b.x+b.w+bindTol && y >= b.y-bindTol && y <= b.y+b.h+bindTol
+// dist is the signed distance from the point to the shape's outline, measured
+// the way Excalidraw's bindableElementBorderDistanceIfClose measures it:
+// positive inside, negative outside, 0 on the outline.
+func (b shapeBox) dist(x, y float64) float64 {
+	p := point{x - b.x, y - b.y}
+	if b.e.str("type") == "ellipse" {
+		d := ellipseDist(p.x, p.y, b.w, b.h)
+		if ellipseInside(p.x, p.y, b.w, b.h) {
+			return d
+		}
+		return -d
+	}
+	d := rectOutlineDist(p, b.w, b.h)
+	if p.x >= 0 && p.x <= b.w && p.y >= 0 && p.y <= b.h {
+		return d
+	}
+	return -d
 }
 
-// boxAt is the first shape the point falls on, if any.
+// holds reports whether the point is on or inside the shape, or within bindDist
+// of its outline (Excalidraw's isPointInBindingArea).
+func (b shapeBox) holds(x, y float64) bool {
+	return b.dist(x, y) > -bindDist
+}
+
+// boxAt is the shape the point falls on, if any: the one whose outline it is
+// closest to, as Excalidraw's getHoveredElementForBinding chooses (ties go to
+// the shape drawn later, which is in front). It skips Excalidraw's
+// nested-overlap rule, which never applies to a board's non-overlapping shapes.
 func boxAt(boxes []shapeBox, x, y float64) (shapeBox, bool) {
+	var best shapeBox
+	bestAbs, found := math.Inf(1), false
 	for _, b := range boxes {
-		if b.holds(x, y) {
-			return b, true
+		if !b.holds(x, y) {
+			continue
+		}
+		// boxes are sorted by index ascending; <= keeps the later (front) one
+		// on an equal distance.
+		if abs := math.Abs(b.dist(x, y)); abs <= bestAbs {
+			best, bestAbs, found = b, abs, true
 		}
 	}
-	return shapeBox{}, false
+	return best, found
 }
 
 // bindArrow binds an arrow's start and end to the shapes they fall on, if any.
@@ -80,6 +112,76 @@ func (b shapeBox) bind(arrowID string) {
 	}
 	b.e["boundElements"] = append(list, map[string]any{"type": "arrow", "id": arrowID})
 }
+
+// ---- distance to a shape's outline --------------------------------------------
+
+// rectOutlineDist is the shortest distance from a point in a rectangle's own
+// coordinates (top-left at 0,0, size w×h) to its outline. As in Excalidraw's
+// distanceToRectanguloidElement, the outline is its four sides: for a
+// sharp-cornered rectangle (roundness type 3) each side's segment also covers
+// the corner, so the four sides suffice.
+func rectOutlineDist(p point, w, h float64) float64 {
+	sides := [4]seg{
+		{point{0, 0}, point{w, 0}},
+		{point{w, 0}, point{w, h}},
+		{point{w, h}, point{0, h}},
+		{point{0, h}, point{0, 0}},
+	}
+	d := math.Inf(1)
+	for _, s := range sides {
+		d = min(d, s.distTo(p))
+	}
+	return d
+}
+
+// ellipseInside reports whether a point in an ellipse's own coordinates
+// (top-left at 0,0, size w×h) is on or inside its outline.
+func ellipseInside(px, py, w, h float64) bool {
+	a, b := w/2, h/2
+	nx, ny := (px-a)/a, (py-b)/b
+	return nx*nx+ny*ny <= 1
+}
+
+// ellipseDist is the shortest distance from a point in an ellipse's own
+// coordinates to its outline, exactly Excalidraw's ellipseDistanceFromPoint
+// (three iterations of its Newton step, then the distance to the closest
+// point found).
+func ellipseDist(px, py, w, h float64) float64 {
+	a, b := w/2, h/2
+	tx0, ty0 := px-a, py-b
+	if a == b { // a circle is exact, and avoids the 0/0 below at its centre
+		return math.Abs(math.Hypot(tx0, ty0) - a)
+	}
+	ax, ay := math.Abs(tx0), math.Abs(ty0)
+	tx, ty := 0.707, 0.707
+	for i := 0; i < 3; i++ {
+		x, y := a*tx, b*ty
+		ex := ((a*a - b*b) * tx * tx * tx) / a
+		ey := ((b*b - a*a) * ty * ty * ty) / b
+		rx, ry := x-ex, y-ey
+		qx, qy := ax-ex, ay-ey
+		r := math.Hypot(ry, rx)
+		q := math.Hypot(qy, qx)
+		if q == 0 {
+			break
+		}
+		tx = clamp01(((qx*r)/q + ex) / a)
+		ty = clamp01(((qy*r)/q + ey) / b)
+		t := math.Hypot(ty, tx)
+		tx /= t
+		ty /= t
+	}
+	mx, my := a*tx, b*ty
+	if tx0 < 0 {
+		mx = -mx
+	}
+	if ty0 < 0 {
+		my = -my
+	}
+	return math.Hypot(tx0-mx, ty0-my)
+}
+
+func clamp01(v float64) float64 { return min(1, max(0, v)) }
 
 // ---- focus -------------------------------------------------------------------
 
@@ -137,6 +239,17 @@ func (s seg) on(p point) bool {
 	}
 	t := ((p.x-s[0].x)*c + (p.y-s[0].y)*dd) / lenSq
 	return t >= -1e-9 && t <= 1+1e-9
+}
+
+// distTo is the shortest distance from point p to the segment.
+func (s seg) distTo(p point) float64 {
+	dx, dy := s[1].x-s[0].x, s[1].y-s[0].y
+	l2 := dx*dx + dy*dy
+	if l2 == 0 {
+		return p.sub(s[0]).len()
+	}
+	t := clamp01(((p.x-s[0].x)*dx + (p.y-s[0].y)*dy) / l2)
+	return math.Hypot(p.x-(s[0].x+t*dx), p.y-(s[0].y+t*dy))
 }
 
 // focusOf returns the focus Excalidraw stores for an arrow whose end sits at b
