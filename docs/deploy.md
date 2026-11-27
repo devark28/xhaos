@@ -145,7 +145,7 @@ The installer's **classifier** part (on by default; `--without classifier` skips
 |---|---|
 | llama.cpp | release `b12110` (a nightly build, commit `cd959bae99ff4bed22bef2604f45241c09bbb8c8`), the prebuilt CPU build for Ubuntu from github.com/ggml-org/llama.cpp, x64 (23 MB download, 56 MB unpacked) or arm64 (19 MB download; not tried on a machine yet). MIT license. Checked against a SHA-256 pinned in `install.sh` before it is unpacked, then unpacked whole into `/var/lib/xhaos/classifier/llama-b12110/`. It needs libgomp and OpenSSL's libraries: on Debian and Ubuntu the installer adds `libgomp1` and `openssl` when `llama-server` does not start without them. |
 | model | `qwen2.5-coder-3b-instruct-q4_k_m.gguf` from Qwen/Qwen2.5-Coder-3B-Instruct-GGUF on Hugging Face, at commit `f74adce6aa16316c625447af059dbebe4983757c`: 2,104,932,800 bytes (about 2.1 GB), Apache-2.0, checked against a pinned SHA-256, in `/var/lib/xhaos/classifier/models/`. An interrupted download resumes on the next run. |
-| service | `xhaos-classifier.service`, as the `xhaos` user: `llama-server --host /run/xhaos-classifier/classifier.sock -m <model> -t 4 -c 4096` (a Unix socket in a fresh 0700 folder, `RuntimeDirectory=`), `Restart=on-failure`, `ProtectSystem=strict` with only its own folder writable, `NoNewPrivileges=yes`. It keeps the model in memory while it runs. |
+| service | `xhaos-classifier.service`, as the `xhaos` user: `llama-server --host /run/xhaos-classifier/classifier.sock -m <model> -t 4 -c 4096 -np 2 --load-mode none` (a Unix socket in a fresh 0700 folder, `RuntimeDirectory=`), `Restart=on-failure`, `ProtectSystem=strict` with only its own folder writable, `NoNewPrivileges=yes`. `--load-mode none` reads the model into the process's own memory (about 2 GB), so it stays loaded while the classifier is idle; see "Classifier speed" below. |
 | Xhaos | gets `-classifier-url unix:/run/xhaos-classifier/classifier.sock` (a socket, not a loopback port, which a sandboxed command could take while the classifier is down and answer "allow"); its unit has `Wants=` and `After=xhaos-classifier.service`, not `Requires=`, so Xhaos starts even when the classifier does not (commands then ask). |
 
 At start `llama-server` logs `no API key is set and CORS allows all origins`: expected, as it listens only on a socket in a folder of the `xhaos` user, for Xhaos.
@@ -173,6 +173,16 @@ sudo rm -f /etc/systemd/system/xhaos-classifier.service
 sudo systemctl daemon-reload
 sudo rm -rf /var/lib/xhaos/classifier
 ```
+
+### Classifier speed
+
+A verdict reads only the part of the prompt that changed since the last one (the rest is cached; about 60 new tokens) and writes one token, so it takes a few seconds on a modest CPU. What made it slow on a VPS, measured 2026-11-27 (8 shared EPYC cores, 3B model):
+
+- **The model dropping out of memory.** With the default memory-mapped loading, the kernel drops the model's pages while the classifier sits idle, and the next request reads them back from disk: 1.2 tokens/s for the first request after hours idle, against 14-16 warm, so every real request ran past the timeout. `--load-mode none` keeps it resident (`systemctl status xhaos-classifier` shows about 2 GB). This build has no `--mlock` or `--no-mmap`: they became `--load-mode`.
+- **One slot.** After an allow, Xhaos asks the model in the background for a reason, a sentence long; with one slot a verdict waits behind it. `-np 2` gives each its own (the 4096-token context is split, 2048 each; the prompt fits).
+- **More threads did not help.** 8 threads on shared VPS cores wrote at 1.4-9 tokens/s against 4-9 with 4 threads.
+
+Check its speed as the `xhaos` user: `curl -s --unix-socket /run/xhaos-classifier/classifier.sock http://x/completion -d '{"prompt":"Answer with one word:","n_predict":8}'` and read `timings` (`prompt_per_second`, `predicted_per_second`). If verdicts still pass `-classifier-timeout`, raise it (for example `30s`) or use a smaller model.
 
 By hand, without the installer: run `llama-server` as above (its own unit; the socket's folder private to Xhaos's user) and add `-classifier-url unix:<the socket>` to Xhaos's `ExecStart` (an `http://` URL still works, with a warning in the log: a command could take that port while the classifier is down); remove the flag to turn it off. `-classifier-timeout` (15 s by default) limits each answer; past it the command asks. At start Xhaos sends the model one fixed command, in the background, and waits up to 120 s for the model to load (a first answer can be slow while it loads); this is logged as "classifier: warm-up failed" if it does not answer.
 

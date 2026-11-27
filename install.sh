@@ -624,7 +624,11 @@ path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # The classifier's service, set up before Xhaos's (which wants it).
 if [ "$CLASSIFIER" = yes ]; then
-  cls_cmd="$LLAMA_DIR/llama-server --host $CLS_SOCK -m $CLS_MODEL -t 4 -c 4096"
+  # --load-mode none: the model in the process's own memory, not a file mapping the kernel drops while the
+  # classifier sits idle (measured 2026-11-27 on a VPS: 1.2 tok/s on the first request after hours idle, 14-16
+  # warm). -np 2: a verdict never queues behind the background "why" request. -t 4: 8 threads on shared
+  # VPS cores were slower and less steady.
+  cls_cmd="$LLAMA_DIR/llama-server --host $CLS_SOCK -m $CLS_MODEL -t 4 -c 4096 -np 2 --load-mode none"
   {
     printf '%s\n' "$MARK"
     printf '[Unit]\nDescription=Xhaos command classifier (llama.cpp server, private Unix socket)\n\n'
