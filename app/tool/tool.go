@@ -166,7 +166,7 @@ func Prepare(root string, c llm.ToolCall) (Call, error) {
 		}
 		call.Summary = in.Command
 		call.Commit = commitsOrPushes(in.Command, 0)
-		call.Effect = ClassifyCommand(in.Command) // read, git, or exec
+		call.Effect = ClassifyCommand(Relative(root, in.Command)) // read, git, or exec; the project by its absolute path counts as inside
 		if call.Effect == Read && GitDriverRisk(root, in.Command) {
 			call.Effect = Exec // git diff/log/show would run a driver the project's config names
 		}

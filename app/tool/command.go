@@ -339,3 +339,38 @@ func shellWords(s string) ([]string, bool) {
 	}
 	return words, true
 }
+
+// Relative rewrites paths inside root, the project folder, to project-relative ones (root itself
+// becomes ".", root/x becomes ./x). It is for deciding what a command does, never for running it:
+// agents often cd into the project, or a worktree under it, by its absolute path, and an absolute
+// path otherwise counts as outside the project, so such a command would always ask. Only root as a
+// whole path changes: it must start a word (after a space, an operator, = or a quote) and end at a
+// / or the end of the word, so /home/me/project2 or /x/home/me/project are left alone. A ".." that
+// climbs back out is still caught by the outside checks, as in any relative path.
+func Relative(root, command string) string {
+	if root == "" || !filepath.IsAbs(root) {
+		return command
+	}
+	root = filepath.Clean(root)
+	if root == "/" {
+		return command
+	}
+	const starts = " \t\n;&|()='\""
+	const ends = "/ \t\n;&|()'\""
+	var b strings.Builder
+	for i := 0; i < len(command); {
+		if strings.HasPrefix(command[i:], root) {
+			j := i + len(root)
+			startOK := i == 0 || strings.IndexByte(starts, command[i-1]) >= 0
+			endOK := j == len(command) || strings.IndexByte(ends, command[j]) >= 0
+			if startOK && endOK {
+				b.WriteByte('.')
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(command[i])
+		i++
+	}
+	return b.String()
+}
