@@ -84,7 +84,7 @@ func (t *Tools) Specs(string) []llm.Tool {
 	return []llm.Tool{
 		{Name: "board_list", Description: "List the workspace's boards (the user's Excalidraw drawings in the Draw tab): id and name.",
 			Schema: llm.ToolSchema{Properties: map[string]any{}}},
-		{Name: "board_read", Description: "Read a board as text. Each element is named by a short id prefix (unique, at least 4 characters). mode \"items\" (default) lists each element's type, id, version, position, size and text, in drawing order; mode \"outline\" gives a compact list with type, id, text and group, without geometry. Narrow the result with ids (element ids or prefixes), group (a group id), type (an element type), or region (elements in the rectangle x, y, width, height). Images are listed by name, without their pixels.",
+		{Name: "board_read", Description: "Read a board as text. Each element is named by a short id prefix (unique, at least 4 characters). mode \"items\" (default) lists each element's type, id, version, position, size and text, in drawing order; mode \"outline\" gives a compact list with type, id, version, text and group, without geometry. Narrow the result with ids (element ids or prefixes), group (a group id), type (an element type), or region (elements in the rectangle x, y, width, height). Images are listed by name, without their pixels.",
 			Schema: llm.ToolSchema{Properties: map[string]any{
 				"board": boardID,
 				"mode":  map[string]any{"type": "string", "enum": []string{"outline", "items"}},

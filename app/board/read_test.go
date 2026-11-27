@@ -1,6 +1,7 @@
 package board
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -143,11 +144,16 @@ func TestBoardReadOutline(t *testing.T) {
 	if !strings.Contains(out, "(outline)") {
 		t.Errorf("outline has no marker:\n%s", out)
 	}
-	if !strings.Contains(out, "text "+short[sensor.ID]+` text "Sensor" group `+groups[group]) {
+	if !strings.Contains(out, "text "+short[sensor.ID]+fmt.Sprintf(" v%d text %q group %s", sensor.Version, "Sensor", groups[group])) {
 		t.Errorf("outline lacks the Sensor line with its group:\n%s", out)
 	}
 	if !strings.Contains(out, "arrow "+short[arrow.ID]) {
 		t.Errorf("outline lacks the arrow:\n%s", out)
+	}
+	// The outline carries each element's version, so an agent can board_edit
+	// straight after reading it.
+	if !strings.Contains(out, "rectangle own v3") {
+		t.Errorf("outline lacks the version:\n%s", out)
 	}
 	if strings.Contains(out, "v1 at (") || strings.Contains(out, "(x right, y down)") {
 		t.Errorf("outline shows geometry:\n%s", out)

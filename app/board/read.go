@@ -300,9 +300,10 @@ func writeItem(w *strings.Builder, e sceneElement, short map[string]string, mime
 }
 
 // writeOutline is one element's compact line (board_read outline): type, short
-// id and text, without geometry.
+// id, version and text, without geometry. The version lets an agent board_edit
+// straight after an outline read.
 func writeOutline(w *strings.Builder, e sceneElement, short, groupShort map[string]string) {
-	fmt.Fprintf(w, "- %s %s", e.Type, short[e.ID])
+	fmt.Fprintf(w, "- %s %s v%d", e.Type, short[e.ID], e.Version)
 	if e.Type == "image" {
 		name, _ := e.CustomData["xhaosName"].(string)
 		if name == "" {
