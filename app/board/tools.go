@@ -102,12 +102,14 @@ func (t *Tools) Specs(string) []llm.Tool {
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "path": str, "caption": str}, Required: []string{"board", "path"}}},
 		{Name: "board_add_shapes", Description: fmt.Sprintf("Add a small diagram to a board: rectangles, ellipses, arrows (x,y to x2,y2) and text, in your own coordinates (x right, y down; only their relative positions matter), at most %d shapes. An arrow whose x,y or x2,y2 lands on a rectangle or ellipse is bound to it and follows it when it moves or resizes.", maxShapes) + where + " The user may review it first.",
 			Schema: llm.ToolSchema{Properties: map[string]any{"board": boardID, "shapes": map[string]any{"type": "array", "items": shape}}, Required: []string{"board", "shapes"}}},
-		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
+		{Name: "board_edit", Description: "Change an element of a board by its id: move it (x, y), move an arrow's end (x2, y2), resize a rectangle or ellipse (width, height), set its text or label (text), recolour (color), fill (fill), or delete (delete). Give the id and version board_read showed; a change made since you read it is refused. Deleting always waits for the user.",
 			Schema: llm.ToolSchema{Properties: map[string]any{
 				"board":   boardID,
 				"id":      map[string]any{"type": "string", "description": "The element's id (board_read shows them)."},
 				"version": map[string]any{"type": "integer", "description": "The element's version (board_read shows it)."},
 				"x":       num, "y": num,
+				"x2":     map[string]any{"type": "number", "description": "arrow: move its end point"},
+				"y2":     map[string]any{"type": "number", "description": "arrow: move its end point"},
 				"width":  map[string]any{"type": "number", "description": "rectangle and ellipse"},
 				"height": map[string]any{"type": "number", "description": "rectangle and ellipse"},
 				"text":   map[string]any{"type": "string", "description": "the element's (or its label's) new text"},
@@ -133,6 +135,8 @@ type input struct {
 	Version int64    `json:"version"`
 	X       *float64 `json:"x"` // board_edit: move
 	Y       *float64 `json:"y"`
+	X2      *float64 `json:"x2"` // board_edit: move an arrow's end
+	Y2      *float64 `json:"y2"`
 	Width   *float64 `json:"width"`
 	Height  *float64 `json:"height"`
 	Color   string   `json:"color"`
@@ -163,6 +167,15 @@ func editOp(in input) (EditOp, error) {
 			return EditOp{}, fmt.Errorf("coordinates are between -%.0f and %.0f", maxCoord, maxCoord)
 		}
 		op.X, op.Y = in.X, in.Y
+	}
+	if in.X2 != nil || in.Y2 != nil {
+		if in.X2 == nil || in.Y2 == nil {
+			return EditOp{}, errors.New("a move of an arrow's end needs both x2 and y2")
+		}
+		if math.IsNaN(*in.X2) || math.Abs(*in.X2) > maxCoord || math.IsNaN(*in.Y2) || math.Abs(*in.Y2) > maxCoord {
+			return EditOp{}, fmt.Errorf("coordinates are between -%.0f and %.0f", maxCoord, maxCoord)
+		}
+		op.X2, op.Y2 = in.X2, in.Y2
 	}
 	op.Width, op.Height = in.Width, in.Height
 	return op, nil

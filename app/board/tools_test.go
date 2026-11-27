@@ -345,6 +345,190 @@ func TestBoardEditDeleteUnbindsArrows(t *testing.T) {
 	}
 }
 
+func TestBoardEditArrowEndRebinds(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "rectangle", "x": 600, "y": 300, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var rect, ellipse, target, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "rectangle":
+			if rect == nil {
+				rect = &scene[i]
+			} else {
+				target = &scene[i]
+			}
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if rect == nil || ellipse == nil || target == nil || arrow == nil {
+		t.Fatalf("fixture incomplete: rect %v ellipse %v target %v arrow %v", rect, ellipse, target, arrow)
+	}
+	if arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("arrow end not bound to the ellipse: %+v", arrow.EndBinding)
+	}
+
+	// Move the end onto the far rectangle.
+	x2, y2 := target.X+target.Width/2, target.Y+target.Height/2
+	out, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": x2, "y2": y2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "arrow end moved to") {
+		t.Errorf("result: %q", out)
+	}
+
+	scene = tf.scene(t)
+	var rectAfter, ellipseAfter, targetAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case rect.ID:
+			rectAfter = &scene[i]
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case target.ID:
+			targetAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if arrowAfter == nil || arrowAfter.Version != arrow.Version+1 {
+		t.Fatalf("arrow after: %+v", arrowAfter)
+	}
+	if len(arrowAfter.Points) != 2 || arrowAfter.Points[1] != [2]float64{x2 - arrowAfter.X, y2 - arrowAfter.Y} {
+		t.Errorf("arrow points %+v, want end at (%.1f, %.1f)", arrowAfter.Points, x2-arrowAfter.X, y2-arrowAfter.Y)
+	}
+	if arrowAfter.EndBinding == nil || arrowAfter.EndBinding.ElementID != target.ID {
+		t.Errorf("arrow end not rebound to the rectangle: %+v", arrowAfter.EndBinding)
+	}
+	// The ellipse the end left is unbound and bumped; the new target is bound.
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the arrow: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d", ellipseAfter.Version, ellipse.Version+1)
+	}
+	if !boundTo(targetAfter.BoundElements, arrow.ID) {
+		t.Errorf("rectangle does not list the arrow: %+v", targetAfter.BoundElements)
+	}
+	if targetAfter.Version != target.Version+1 {
+		t.Errorf("rectangle version %d, want %d", targetAfter.Version, target.Version+1)
+	}
+	// The shape the arrow starts on is untouched.
+	if !boundTo(rectAfter.BoundElements, arrow.ID) {
+		t.Errorf("start rectangle lost the arrow: %+v", rectAfter.BoundElements)
+	}
+	if rectAfter.Version != rect.Version {
+		t.Errorf("start rectangle version %d, want %d", rectAfter.Version, rect.Version)
+	}
+}
+
+func TestBoardEditArrowEndUnbinds(t *testing.T) {
+	tf := newToolFixture(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30}, // rect → ellipse
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var ellipse, arrow *sceneElement
+	for i := range scene {
+		switch scene[i].Type {
+		case "ellipse":
+			ellipse = &scene[i]
+		case "arrow":
+			arrow = &scene[i]
+		}
+	}
+	if ellipse == nil || arrow == nil || arrow.EndBinding == nil || arrow.EndBinding.ElementID != ellipse.ID {
+		t.Fatalf("fixture: ellipse %v arrow %v", ellipse, arrow)
+	}
+
+	// Move the end to free space far from every shape.
+	x2, y2 := arrow.X+2000, arrow.Y+1000
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": x2, "y2": y2}); err != nil {
+		t.Fatal(err)
+	}
+	scene = tf.scene(t)
+	var ellipseAfter, arrowAfter *sceneElement
+	for i := range scene {
+		switch scene[i].ID {
+		case ellipse.ID:
+			ellipseAfter = &scene[i]
+		case arrow.ID:
+			arrowAfter = &scene[i]
+		}
+	}
+	if arrowAfter == nil || arrowAfter.EndBinding != nil {
+		t.Fatalf("arrow end should be unbound: %+v", arrowAfter)
+	}
+	if boundTo(ellipseAfter.BoundElements, arrow.ID) {
+		t.Errorf("ellipse still lists the arrow: %+v", ellipseAfter.BoundElements)
+	}
+	if ellipseAfter.Version != ellipse.Version+1 {
+		t.Errorf("ellipse version %d, want %d", ellipseAfter.Version, ellipse.Version+1)
+	}
+	if arrowAfter.Version != arrow.Version+1 {
+		t.Errorf("arrow version %d, want %d", arrowAfter.Version, arrow.Version+1)
+	}
+}
+
+func TestBoardEditArrowEndRefusals(t *testing.T) {
+	tf := newToolFixture(t)
+	tf.ownerDrawing(t)
+	shapes := []map[string]any{
+		{"type": "rectangle", "x": 0, "y": 0, "width": 160, "height": 60},
+		{"type": "ellipse", "x": 260, "y": 0, "width": 120, "height": 60},
+		{"type": "arrow", "x": 160, "y": 30, "x2": 260, "y2": 30},
+	}
+	if _, _, err := tf.run(t, "board_add_shapes", map[string]any{"board": tf.board.ID, "shapes": shapes}); err != nil {
+		t.Fatal(err)
+	}
+	scene := tf.scene(t)
+	var arrow *sceneElement
+	for i := range scene {
+		if scene[i].Type == "arrow" {
+			arrow = &scene[i]
+		}
+	}
+	if arrow == nil {
+		t.Fatal("no arrow")
+	}
+	cases := []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": 1.0}, "both x2 and y2"},
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": 1.0, "y2": 2e6}, "coordinates"},
+		{map[string]any{"board": tf.board.ID, "id": arrow.ID, "version": arrow.Version, "x2": arrow.X, "y2": arrow.Y}, "apart"},
+	}
+	for _, c := range cases {
+		_, _, err := tf.run(t, "board_edit", c.in)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%v: err %v, want %q", c.in, err, c.want)
+		}
+	}
+	// x2, y2 is only for an arrow's end.
+	if _, _, err := tf.run(t, "board_edit", map[string]any{"board": tf.board.ID, "id": "own", "version": 3, "x2": 5.0, "y2": 5.0}); err == nil ||
+		!strings.Contains(err.Error(), "x2, y2 move an arrow's end") {
+		t.Errorf("x2 on a rectangle: %v", err)
+	}
+}
+
 func TestBoardEditRefusals(t *testing.T) {
 	tf := newToolFixture(t)
 	tf.ownerDrawing(t)

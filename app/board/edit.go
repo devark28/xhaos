@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/devark28/xhaos/app/apperr"
@@ -24,7 +25,8 @@ import (
 // call can tell "not given" from "given as empty/zero".
 type EditOp struct {
 	Text   *string  // the element's (or its label's) new text
-	X, Y   *float64 // move the element to this anchor point
+	X, Y   *float64 // move the element (an arrow's start) to this anchor point
+	X2, Y2 *float64 // move an arrow's end point
 	Width  *float64 // resize a rectangle or ellipse
 	Height *float64
 	Color  string // stroke colour (#rgb or #rrggbb)
@@ -107,11 +109,52 @@ func loadEdit(q sqlitedb.Querier, boardID int64, id string, v int64, op EditOp) 
 			return nil, nil, nil, err
 		}
 	}
+	// An arrow edit rebinds its endpoints to the shapes they land on, so load
+	// the board's live shapes for that.
+	if te.str("type") == "arrow" {
+		if err := loadLiveShapes(q, boardID, loaded, heads); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	changed, changes, err := applyEdit(id, loaded, heads, op)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return changed, heads, changes, nil
+}
+
+// loadLiveShapes loads the board's live rectangles and ellipses — the shapes
+// an arrow can bind to — into loaded and heads, so an arrow edit can rebind
+// its endpoints to whatever they land on. Elements already loaded are kept.
+func loadLiveShapes(q sqlitedb.Querier, boardID int64, loaded map[string]element, heads map[string]header) error {
+	rows, err := q.Query(`SELECT element_id, version, version_nonce, data FROM board_elements WHERE board_id = ?`, boardID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var v, n int64
+		var data string
+		if err := rows.Scan(&id, &v, &n, &data); err != nil {
+			return err
+		}
+		if _, ok := loaded[id]; ok {
+			continue
+		}
+		var e element
+		if err := json.Unmarshal([]byte(data), &e); err != nil {
+			return err
+		}
+		if e.str("type") != "rectangle" && e.str("type") != "ellipse" {
+			continue
+		}
+		if deleted, _ := e["isDeleted"].(bool); deleted {
+			continue
+		}
+		loaded[id], heads[id] = e, header{ID: id, Version: v, VersionNonce: n}
+	}
+	return rows.Err()
 }
 
 // editForAgent loads the element the agent read, checks its version, applies
@@ -251,6 +294,20 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 		changes = append(changes, fmt.Sprintf("moved to (%.0f, %.0f)", *op.X, *op.Y))
 	}
 
+	if op.X2 != nil || op.Y2 != nil {
+		if kind != "arrow" {
+			return nil, nil, fmt.Errorf("x2, y2 move an arrow's end, not %s", kindName(kind))
+		}
+		if op.X2 == nil || op.Y2 == nil {
+			return nil, nil, errors.New("a move of an arrow's end needs both x2 and y2")
+		}
+		mark(targetID)
+		if err := moveArrowEnd(tgt, targetID, loaded, *op.X2, *op.Y2, mark); err != nil {
+			return nil, nil, err
+		}
+		changes = append(changes, fmt.Sprintf("arrow end moved to (%.0f, %.0f)", *op.X2, *op.Y2))
+	}
+
 	if op.Width != nil || op.Height != nil {
 		if kind != "rectangle" && kind != "ellipse" {
 			return nil, nil, fmt.Errorf("width and height resize a rectangle or ellipse, not %s", kindName(kind))
@@ -333,6 +390,96 @@ func bump(changed map[string]element, heads map[string]header) {
 		e["version"] = h.Version + 1
 		e["versionNonce"] = random()
 	}
+}
+
+// moveArrowEnd moves an arrow's end point to (x2, y2) and rebinds it: the end
+// binds to the live shape it now lands on (if any), and unbinds from the one
+// it left. mark is applyEdit's mark, so a shape whose boundElements change is
+// version-checked and bumped along with the arrow.
+func moveArrowEnd(arrow element, arrowID string, loaded map[string]element, x2, y2 float64, mark func(string) element) error {
+	pts, ok := arrowPoints(arrow)
+	if !ok || len(pts) < 2 {
+		return errors.New("an arrow needs points to move its end")
+	}
+	x, y := arrow.num("x"), arrow.num("y")
+	prev := point{x + pts[len(pts)-2][0], y + pts[len(pts)-2][1]}
+	if x2 == prev.x && y2 == prev.y {
+		return errors.New("an arrow's end needs x2, y2 apart from its previous point")
+	}
+	var oldID string
+	if eb, ok := arrow["endBinding"].(map[string]any); ok {
+		oldID, _ = eb["elementId"].(string)
+	}
+	pts[len(pts)-1] = [2]float64{x2 - x, y2 - y}
+	arrow["points"] = pts
+
+	var newID string
+	var newBox shapeBox
+	if b, ok := boxAt(liveBoxes(loaded), x2, y2); ok {
+		newID, newBox = b.id, b
+		arrow["endBinding"] = map[string]any{"elementId": b.id, "focus": focusOf(prev, point{x2, y2}, b), "gap": 1}
+	} else {
+		arrow["endBinding"] = nil
+	}
+	if oldID != newID {
+		if oldID != "" {
+			if old := mark(oldID); old != nil {
+				unbind(old, arrowID)
+			}
+		}
+		if newID != "" {
+			mark(newID)
+			newBox.bind(arrowID)
+		}
+	}
+	return nil
+}
+
+// arrowPoints returns an arrow's points (offsets from its x, y anchor) and
+// whether it has any. The last point is its end.
+func arrowPoints(e element) ([][2]float64, bool) {
+	raw, ok := e["points"].([]any)
+	if !ok {
+		return nil, false
+	}
+	pts := make([][2]float64, 0, len(raw))
+	for _, item := range raw {
+		pair, ok := item.([]any)
+		if !ok || len(pair) != 2 {
+			return nil, false
+		}
+		x, okx := pair[0].(float64)
+		y, oky := pair[1].(float64)
+		if !okx || !oky {
+			return nil, false
+		}
+		pts = append(pts, [2]float64{x, y})
+	}
+	return pts, true
+}
+
+// liveBoxes collects the live rectangles and ellipses in loaded, in drawing
+// order, as the shapes an arrow's end can bind to.
+func liveBoxes(loaded map[string]element) []shapeBox {
+	var boxes []shapeBox
+	for id, e := range loaded {
+		t := e.str("type")
+		if t != "rectangle" && t != "ellipse" {
+			continue
+		}
+		if deleted, _ := e["isDeleted"].(bool); deleted {
+			continue
+		}
+		boxes = append(boxes, shapeBox{id: id, e: e, x: e.num("x"), y: e.num("y"), w: e.num("width"), h: e.num("height")})
+	}
+	key := func(e element) string {
+		if s := e.str("index"); s != "" {
+			return s
+		}
+		return "\U0010FFFF" // no index sorts last, as sortByIndex does
+	}
+	sort.SliceStable(boxes, func(i, j int) bool { return key(boxes[i].e) < key(boxes[j].e) })
+	return boxes
 }
 
 // setText writes a text element's words and resizes its box to fit.
