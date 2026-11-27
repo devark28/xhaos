@@ -101,12 +101,20 @@ func (a *addition) bindArrow(e element, x0, y0, x1, y1 float64, boxes []shapeBox
 
 // bind appends the arrow to the shape's boundElements once.
 func (b shapeBox) bind(arrowID string) {
-	var list []map[string]any
-	if cur, ok := b.e["boundElements"].([]map[string]any); ok {
+	// A shape drawn in this call holds []map[string]any; one loaded from the
+	// board holds []any (JSON). Keep every existing entry either way: dropping
+	// them unbinds the shape's own label.
+	var list []any
+	switch cur := b.e["boundElements"].(type) {
+	case []any:
 		list = cur
+	case []map[string]any:
+		for _, m := range cur {
+			list = append(list, m)
+		}
 	}
-	for _, be := range list {
-		if be["id"] == arrowID {
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok && m["id"] == arrowID {
 			return
 		}
 	}
@@ -295,4 +303,150 @@ func focusDistance(a, b point, w, h float64) float64 {
 		}
 	}
 	return best
+}
+
+// ---- routing a bound arrow ----------------------------------------------------
+
+// routeArrow re-aims a bound arrow's ends at the shapes they are bound to, as
+// Excalidraw draws an arrow it binds with focus 0: each bound end sits on its
+// shape's outline (plus the binding's gap) on the line from the shape's centre
+// toward the other end, which is the other shape's centre when that end is
+// bound too. It is what keeps an arrow attached when an agent moves or
+// resizes a shape (the page does the same itself when the owner drags one),
+// and what makes an arrow an agent draws start and end on the outlines
+// instead of wherever its coordinates fell. Unbound ends stay where they are;
+// an arrow with middle points keeps them and aims each end at its neighbour.
+func routeArrow(arrow element, shapes map[string]element) {
+	abs, ok := absArrowPoints(arrow)
+	if !ok || len(abs) < 2 {
+		return
+	}
+	sb, sgap := boundBox(arrow, "startBinding", shapes)
+	eb, egap := boundBox(arrow, "endBinding", shapes)
+	if sb == nil && eb == nil {
+		return
+	}
+	n := len(abs)
+	startRef, endRef := abs[1], abs[n-2]
+	if n == 2 {
+		if eb != nil {
+			startRef = eb.center()
+		}
+		if sb != nil {
+			endRef = sb.center()
+		}
+	}
+	if sb != nil {
+		abs[0] = sb.edgeToward(startRef, sgap)
+		arrow["startBinding"].(map[string]any)["focus"] = 0.0
+	}
+	if eb != nil {
+		abs[n-1] = eb.edgeToward(endRef, egap)
+		arrow["endBinding"].(map[string]any)["focus"] = 0.0
+	}
+	setArrowPoints(arrow, abs)
+}
+
+// routeBound re-routes every arrow bound to a shape that changed, marking each
+// arrow so its version is checked and bumped with the shape.
+func routeBound(shapeIDs []string, loaded map[string]element, mark func(string) element) {
+	done := map[string]bool{}
+	for _, sid := range shapeIDs {
+		s := loaded[sid]
+		if s == nil {
+			continue
+		}
+		if t := s.str("type"); t != "rectangle" && t != "ellipse" {
+			continue
+		}
+		for _, aid := range boundArrowIDs(s) {
+			if done[aid] {
+				continue
+			}
+			if a := mark(aid); a != nil {
+				if deleted, _ := a["isDeleted"].(bool); !deleted {
+					routeArrow(a, loaded)
+				}
+				done[aid] = true
+			}
+		}
+	}
+}
+
+// boundBox is the live shape an arrow's binding names, and the binding's gap.
+func boundBox(arrow element, key string, shapes map[string]element) (*shapeBox, float64) {
+	b, ok := arrow[key].(map[string]any)
+	if !ok {
+		return nil, 0
+	}
+	id, _ := b["elementId"].(string)
+	e := shapes[id]
+	if e == nil {
+		return nil, 0
+	}
+	if deleted, _ := e["isDeleted"].(bool); deleted {
+		return nil, 0
+	}
+	gap, _ := b["gap"].(float64)
+	if g, ok := b["gap"].(int); ok {
+		gap = float64(g)
+	}
+	return &shapeBox{id: id, e: e, x: e.num("x"), y: e.num("y"), w: e.num("width"), h: e.num("height")}, gap
+}
+
+func (b shapeBox) center() point { return point{b.x + b.w/2, b.y + b.h/2} }
+
+// edgeToward is where the line from the shape's centre toward p leaves the
+// shape's outline, moved gap further out along that line.
+func (b shapeBox) edgeToward(p point, gap float64) point {
+	c := b.center()
+	d := p.sub(c)
+	if d.len() == 0 {
+		d = point{1, 0}
+	}
+	var t float64
+	if b.e.str("type") == "ellipse" {
+		a, bb := b.w/2, b.h/2
+		t = 1 / math.Sqrt((d.x/a)*(d.x/a)+(d.y/bb)*(d.y/bb))
+	} else {
+		tx, ty := math.Inf(1), math.Inf(1)
+		if d.x != 0 {
+			tx = (b.w / 2) / math.Abs(d.x)
+		}
+		if d.y != 0 {
+			ty = (b.h / 2) / math.Abs(d.y)
+		}
+		t = min(tx, ty)
+	}
+	return c.add(d.scale(t)).add(d.scale(gap / d.len()))
+}
+
+// absArrowPoints is an arrow's points in board coordinates.
+func absArrowPoints(arrow element) ([]point, bool) {
+	pts, ok := arrowPoints(arrow)
+	if !ok {
+		return nil, false
+	}
+	x, y := arrow.num("x"), arrow.num("y")
+	abs := make([]point, len(pts))
+	for i, p := range pts {
+		abs[i] = point{x + p[0], y + p[1]}
+	}
+	return abs, true
+}
+
+// setArrowPoints stores board-coordinate points on an arrow: its anchor is the
+// first point, its points are offsets from it, and its size their extent.
+func setArrowPoints(arrow element, abs []point) {
+	o := abs[0]
+	pts := make([][2]float64, len(abs))
+	minX, minY, maxX, maxY := 0.0, 0.0, 0.0, 0.0
+	for i, p := range abs {
+		dx, dy := p.x-o.x, p.y-o.y
+		pts[i] = [2]float64{dx, dy}
+		minX, minY, maxX, maxY = min(minX, dx), min(minY, dy), max(maxX, dx), max(maxY, dy)
+	}
+	arrow["x"], arrow["y"] = o.x, o.y
+	arrow["points"] = pts
+	arrow["width"], arrow["height"] = maxX-minX, maxY-minY
 }

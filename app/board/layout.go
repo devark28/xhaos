@@ -301,6 +301,11 @@ func (a *addition) shapes(list []Shape) {
 			e["strokeColor"] = s.Color
 		}
 		a.bindArrow(e, x, y, x+px, y+py, boxes)
+		byID := make(map[string]element, len(boxes))
+		for _, b := range boxes {
+			byID[b.id] = b.e
+		}
+		routeArrow(e, byID)
 	}
 }
 

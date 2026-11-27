@@ -477,8 +477,14 @@ func TestBoardEditArrowEndRebinds(t *testing.T) {
 	if arrowAfter == nil || arrowAfter.Version != arrow.Version+1 {
 		t.Fatalf("arrow after: %+v", arrowAfter)
 	}
-	if len(arrowAfter.Points) != 2 || arrowAfter.Points[1] != [2]float64{x2 - arrowAfter.X, y2 - arrowAfter.Y} {
-		t.Errorf("arrow points %+v, want end at (%.1f, %.1f)", arrowAfter.Points, x2-arrowAfter.X, y2-arrowAfter.Y)
+	// The bound end is routed onto the target's outline (its 1 px gap outside), aimed at its centre.
+	if len(arrowAfter.Points) != 2 {
+		t.Fatalf("arrow points %+v", arrowAfter.Points)
+	}
+	end := point{arrowAfter.X + arrowAfter.Points[1][0], arrowAfter.Y + arrowAfter.Points[1][1]}
+	box := shapeBox{e: element{"type": "rectangle"}, x: target.X, y: target.Y, w: target.Width, h: target.Height}
+	if d := box.dist(end.x, end.y); d > 0 || d < -1.5 {
+		t.Errorf("arrow end %+v is %.2f from the target's outline, want just outside it", end, d)
 	}
 	if arrowAfter.EndBinding == nil || arrowAfter.EndBinding.ElementID != target.ID {
 		t.Errorf("arrow end not rebound to the rectangle: %+v", arrowAfter.EndBinding)
@@ -733,11 +739,12 @@ func TestShapesAndRead(t *testing.T) {
 			}
 		}
 	}
-	if len(arrow.Points) != 2 || arrow.Points[1] != [2]float64{100, 0} {
+	// Bound ends sit on the outlines, the binding's 1 px gap outside them.
+	if len(arrow.Points) != 2 || arrow.Points[1] != [2]float64{98, 0} {
 		t.Errorf("arrow points %v", arrow.Points)
 	}
-	if arrow.X-rect.X != 160 {
-		t.Errorf("arrow starts %v right of the rectangle, want 160", arrow.X-rect.X)
+	if arrow.X-rect.X != 161 {
+		t.Errorf("arrow starts %v right of the rectangle, want 161", arrow.X-rect.X)
 	}
 	if byText["Sensor"].Container != rect.ID {
 		t.Errorf("label not bound to its rectangle")

@@ -106,13 +106,20 @@ func loadEdit(q sqlitedb.Querier, boardID int64, id string, v int64, op EditOp) 
 	// deleted, and the shapes they are bound to at the other end lose them from
 	// their boundElements. Load the arrows and those shapes for their version
 	// checks.
-	for _, arrowID := range boundArrowIDs(te) {
-		if err := load(arrowID); err != nil {
-			return nil, nil, nil, err
-		}
-		for _, other := range arrowBoundIDs(loaded[arrowID]) {
-			if err := load(other); err != nil {
+	// A label's container can grow with the label, carrying its arrows too.
+	owners := []element{te}
+	if cid := containerID(te); cid != "" && loaded[cid] != nil {
+		owners = append(owners, loaded[cid])
+	}
+	for _, owner := range owners {
+		for _, arrowID := range boundArrowIDs(owner) {
+			if err := load(arrowID); err != nil {
 				return nil, nil, nil, err
+			}
+			for _, other := range arrowBoundIDs(loaded[arrowID]) {
+				if err := load(other); err != nil {
+					return nil, nil, nil, err
+				}
 			}
 		}
 	}
@@ -397,6 +404,14 @@ func applyEdit(targetID string, loaded map[string]element, heads map[string]head
 	if len(changed) == 0 {
 		return nil, nil, errors.New("nothing to change")
 	}
+	// A shape that moved, was resized or grew to fit its label carries its
+	// bound arrows along.
+	var shapesChanged []string
+	for id := range changed {
+		shapesChanged = append(shapesChanged, id)
+	}
+	sort.Strings(shapesChanged)
+	routeBound(shapesChanged, loaded, mark)
 	bump(changed, heads)
 	return changed, changes, nil
 }
@@ -449,12 +464,16 @@ func moveArrowEnd(arrow element, arrowID string, loaded map[string]element, x2, 
 			newBox.bind(arrowID)
 		}
 	}
+	routeArrow(arrow, loaded)
 	return nil
 }
 
 // arrowPoints returns an arrow's points (offsets from its x, y anchor) and
 // whether it has any. The last point is its end.
 func arrowPoints(e element) ([][2]float64, bool) {
+	if p, ok := e["points"].([][2]float64); ok {
+		return append([][2]float64(nil), p...), true
+	}
 	raw, ok := e["points"].([]any)
 	if !ok {
 		return nil, false
